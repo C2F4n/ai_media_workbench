@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.ai_media_workbench.mapper.AuthTokenMapper">
+    <insert id="insert">
+        INSERT INTO auth_token (id, user_id, purpose, token_hash, expires_at, consumed_at, created_at)
+        VALUES (#{id}, #{userId}, #{purpose}, #{tokenHash}, #{expiresAt}, #{consumedAt}, #{createdAt})
+    </insert>
+    <select id="findByHash" resultType="org.example.ai_media_workbench.entity.AuthTokenEntity">
+        SELECT id, user_id, purpose, token_hash, expires_at, consumed_at, created_at
+        FROM auth_token WHERE token_hash = #{tokenHash}
+    </select>
+    <update id="consume">
+        UPDATE auth_token SET consumed_at = #{consumedAt}
+        WHERE id = #{id} AND consumed_at IS NULL AND expires_at &gt; #{consumedAt}
+    </update>
+    <update id="revokeAll">
+        UPDATE auth_token SET consumed_at = #{consumedAt}
+        WHERE user_id = #{userId} AND consumed_at IS NULL
+    </update>
+</mapper>

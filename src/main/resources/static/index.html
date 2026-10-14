@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>账户 · AI音视频工作台</title>
+  <link rel="icon" href="/assets/brand.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/vendor/lucide.min.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="AI音视频工作台首页">
+      <img src="/assets/brand.svg" width="34" height="34" alt="">
+      <span>AI音视频工作台</span>
+    </a>
+    <span class="header-label">账户</span>
+    <button id="header-logout" class="button secondary compact" hidden>
+      <i data-lucide="log-out" aria-hidden="true"></i>退出登录
+    </button>
+  </header>
+
+  <main>
+    <section id="loading-view" class="loading-view" aria-live="polite">
+      <i data-lucide="loader-circle" class="spinning" aria-hidden="true"></i>
+      <span>正在加载账户…</span>
+    </section>
+    <section id="unavailable-view" class="auth-shell" hidden>
+      <h1>暂时无法连接</h1>
+      <p class="muted">服务暂时不可用，请稍后重试。</p>
+      <button id="retry-connection" class="button primary">
+        <i data-lucide="refresh-cw" aria-hidden="true"></i>重新连接
+      </button>
+    </section>
+
+    <section id="auth-view" class="auth-shell" hidden>
+      <div class="auth-title">
+        <p class="eyebrow">AI音视频工作台</p>
+        <h1 id="auth-title">登录账户</h1>
+      </div>
+      <div class="tabs" role="tablist" aria-label="账户操作">
+        <button id="login-tab" role="tab" aria-selected="true" aria-controls="login-panel">登录</button>
+        <button id="register-tab" role="tab" aria-selected="false" aria-controls="register-panel">注册</button>
+      </div>
+
+      <div id="auth-notice" class="notice" role="status" hidden></div>
+
+      <div id="login-panel" role="tabpanel" aria-labelledby="login-tab">
+        <form id="login-form">
+          <label class="field">用户名
+            <input id="login-username" name="username" autocomplete="username" required pattern="[a-zA-Z0-9_]{4,32}" placeholder="请输入用户名">
+          </label>
+          <label class="field">密码
+            <span class="password-field">
+              <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="请输入密码">
+              <button class="icon-button password-toggle" type="button" data-password-target="login-password" aria-label="显示密码" title="显示密码">
+                <i data-lucide="eye" aria-hidden="true"></i>
+              </button>
+            </span>
+          </label>
+          <label class="check-field"><input id="remember-me" name="rememberMe" type="checkbox">保持登录</label>
+          <p id="login-error" class="form-error" role="alert" hidden></p>
+          <button class="button primary full-width" type="submit"><i data-lucide="log-in" aria-hidden="true"></i><span>登录</span></button>
+        </form>
+      </div>
+
+      <div id="register-panel" role="tabpanel" aria-labelledby="register-tab" hidden>
+        <form id="register-form">
+          <label class="field">用户名
+            <input id="register-username" name="username" autocomplete="username" required pattern="[a-zA-Z0-9_]{4,32}" placeholder="4–32位字母、数字或下划线">
+          </label>
+          <label class="field">邮箱
+            <input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" required placeholder="name@example.com">
+          </label>
+          <label class="field">昵称 <span class="optional">选填</span>
+            <input id="register-name" name="displayName" autocomplete="nickname" placeholder="如何称呼你">
+          </label>
+          <label class="field">密码
+            <span class="password-field">
+              <input id="register-password" name="password" type="password" autocomplete="new-password" required placeholder="15–128个字符">
+              <button class="icon-button password-toggle" type="button" data-password-target="register-password" aria-label="显示密码" title="显示密码"><i data-lucide="eye" aria-hidden="true"></i></button>
+            </span>
+          </label>
+          <label class="field">确认密码
+            <input id="register-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" required placeholder="再次输入密码">
+          </label>
+          <p id="register-error" class="form-error" role="alert" hidden></p>
+          <button id="register-submit" class="button primary full-width" type="submit"><i data-lucide="user-plus" aria-hidden="true"></i><span>创建账户</span></button>
+        </form>
+      </div>
+    </section>
+
+    <section id="account-view" class="account-shell" hidden>
+      <div class="account-heading">
+        <div>
+          <p class="eyebrow">我的账户</p>
+          <h1 id="account-greeting"></h1>
+        </div>
+        <span class="status-badge"><span class="status-dot"></span>已登录</span>
+      </div>
+      <div id="account-notice" class="notice" role="status" hidden></div>
+      <div class="account-layout">
+        <aside class="account-nav" aria-label="账户分区">
+          <a href="#profile-section"><i data-lucide="user-round" aria-hidden="true"></i>账户资料</a>
+          <a href="#security-section"><i data-lucide="shield-check" aria-hidden="true"></i>账户安全</a>
+        </aside>
+        <div class="account-sections">
+          <section id="profile-section" class="account-section">
+            <h2>账户资料</h2>
+            <dl class="profile-info">
+              <div><dt>用户名</dt><dd id="profile-username"></dd></div>
+              <div><dt>邮箱</dt><dd id="profile-email"></dd></div>
+              <div><dt>邮箱状态</dt><dd id="profile-email-status"></dd></div>
+              <div><dt>注册时间</dt><dd id="profile-created"></dd></div>
+            </dl>
+            <form id="profile-form" class="profile-form">
+              <label class="field">昵称<input id="profile-name" name="displayName" required autocomplete="nickname"></label>
+              <button class="icon-button save-button" type="submit" title="保存昵称" aria-label="保存昵称"><i data-lucide="save" aria-hidden="true"></i></button>
+            </form>
+            <p id="profile-error" class="form-error" role="alert" hidden></p>
+          </section>
+          <section id="security-section" class="account-section">
+            <h2>账户安全</h2>
+            <form id="password-form">
+              <label class="field">当前密码<input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required></label>
+              <label class="field">新密码<input id="new-password" name="newPassword" type="password" autocomplete="new-password" required placeholder="15–128个字符"></label>
+              <label class="field">确认新密码<input id="confirm-new-password" name="confirmNewPassword" type="password" autocomplete="new-password" required></label>
+              <p id="password-error" class="form-error" role="alert" hidden></p>
+              <button class="button secondary" type="submit"><i data-lucide="key-round" aria-hidden="true"></i>修改密码</button>
+            </form>
+            <div class="session-actions">
+              <button id="logout-all" class="button secondary"><i data-lucide="log-out" aria-hidden="true"></i>退出所有设备</button>
+            </div>
+          </section>
+          <section class="account-section danger-section">
+            <h2>注销账号</h2>
+            <p class="muted">注销后无法恢复，所属项目和文件将被清理，用户名和邮箱将保留占用。</p>
+            <button id="open-delete-dialog" class="button danger-outline"><i data-lucide="trash-2" aria-hidden="true"></i>注销账号</button>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <div class="dialog-heading">
+      <h2 id="delete-title">确认注销账号</h2>
+      <button id="close-delete-dialog" class="icon-button" type="button" title="取消" aria-label="取消"><i data-lucide="x" aria-hidden="true"></i></button>
+    </div>
+    <p id="delete-description" class="muted">所有设备将退出登录。账号与所属项目将无法访问，此操作不可恢复。</p>
+    <form id="delete-form">
+      <label class="field">当前密码<input id="delete-password" name="currentPassword" type="password" autocomplete="current-password" required></label>
+      <label class="field">输入用户名以确认<input id="delete-username" name="confirmUsername" required autocomplete="off" spellcheck="false"></label>
+      <p id="delete-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="cancel-delete" class="button secondary" type="button">取消</button>
+        <button class="button danger" type="submit"><i data-lucide="trash-2" aria-hidden="true"></i>确认注销</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

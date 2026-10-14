@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.ai_media_workbench.mapper.UserMapper">
+    <sql id="columns">
+        id, username, email, display_name, password_hash, email_verified,
+        status, created_at, updated_at, deleted_at
+    </sql>
+    <select id="findById" resultType="org.example.ai_media_workbench.entity.UserEntity">
+        SELECT <include refid="columns"/> FROM app_user WHERE id = #{id}
+    </select>
+    <select id="findByUsername" resultType="org.example.ai_media_workbench.entity.UserEntity">
+        SELECT <include refid="columns"/> FROM app_user WHERE username = #{username}
+    </select>
+    <select id="findByIdForUpdate" resultType="org.example.ai_media_workbench.entity.UserEntity">
+        SELECT <include refid="columns"/> FROM app_user WHERE id = #{id} FOR UPDATE
+    </select>
+    <insert id="insert">
+        INSERT INTO app_user
+            (id, username, email, display_name, password_hash, email_verified, status, created_at, updated_at)
+        VALUES
+            (#{id}, #{username}, #{email}, #{displayName}, #{passwordHash},
+             #{emailVerified}, #{status}, #{createdAt}, #{updatedAt})
+    </insert>
+    <update id="updateDisplayName">
+        UPDATE app_user SET display_name = #{displayName}, updated_at = #{updatedAt}
+        WHERE id = #{id} AND status = 'ACTIVE'
+    </update>
+    <update id="updatePassword">
+        UPDATE app_user SET password_hash = #{passwordHash}, updated_at = #{updatedAt}
+        WHERE id = #{id} AND status = 'ACTIVE'
+    </update>
+    <update id="deleteAccount">
+        UPDATE app_user SET status = 'DELETED', password_hash = '!DELETED', email_verified = FALSE,
+            display_name = 'Deleted account', deleted_at = #{now}, updated_at = #{now}
+        WHERE id = #{id} AND status = 'ACTIVE'
+    </update>
+</mapper>
