@@ -70,6 +70,8 @@ class AuthIntegrationTests {
     @Autowired PasswordEncoder encoder;
     @Autowired JdbcIndexedSessionRepository sessions;
     @Autowired AccountCleanupMapper cleanupMapper;
+    @Autowired org.example.ai_media_workbench.properties.MediaToolProperties mediaToolProperties;
+    @Autowired org.example.ai_media_workbench.properties.TranscodeProperties transcodeProperties;
     @Autowired JdbcTemplate jdbc;
     @TempDir Path storage;
     @Autowired RegistrationEmailService registrationEmails;
@@ -468,7 +470,7 @@ class AuthIntegrationTests {
                 .content(json.writeValueAsString(Map.of("username", username, "password", PASSWORD))))
                 .andExpect(status().isUnauthorized()).andExpect(jsonPath("code").value("INVALID_CREDENTIALS"));
         var cleanup = new AccountCleanupServiceImpl(cleanupMapper, Clock.systemUTC(),
-                new StorageProperties(storage.toString()), new AccountCleanupProperties(false, 5000));
+                new StorageProperties(storage.toString()), new AccountCleanupProperties(false, 5000), mediaToolProperties, transcodeProperties);
         assertThat(cleanup.runPending()).isGreaterThan(0);
         assertThat(owned).doesNotExist();
         assertThat(unrelated).exists();
@@ -528,7 +530,7 @@ class AuthIntegrationTests {
                 .andExpect(status().isOk()).andExpect(jsonPath("code").value("SUCCESS"))
                 .andExpect(jsonPath("data").isEmpty());
         var cleanup = new AccountCleanupServiceImpl(cleanupMapper, Clock.systemUTC(),
-                new StorageProperties(root.toString()), new AccountCleanupProperties(false, 5000));
+                new StorageProperties(root.toString()), new AccountCleanupProperties(false, 5000), mediaToolProperties, transcodeProperties);
         cleanup.runPending();
         assertThat(outside).exists();
         assertThat(jdbc.queryForObject("SELECT status FROM account_cleanup_job WHERE user_id=?", String.class, ownerId)).isEqualTo("FAILED");

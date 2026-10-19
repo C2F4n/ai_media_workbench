@@ -15,6 +15,7 @@ import org.example.ai_media_workbench.mapper.MediaMapper;
 import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.service.MediaProbe;
 import org.example.ai_media_workbench.service.MediaService;
+import org.example.ai_media_workbench.service.AccountCleanupService;
 import org.example.ai_media_workbench.vo.common.PageVO;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.example.ai_media_workbench.vo.media.MediaVO;
@@ -36,11 +37,13 @@ public class MediaServiceImpl implements MediaService {
     private final Clock clock;
     private final ObjectMapper json;
     private final TransactionTemplate transactions;
+    private final AccountCleanupService cleanup;
 
     public MediaServiceImpl(MediaMapper mapper, UserMapper users, LocalMediaStorage storage, MediaProbe probe,
-                            Clock clock, ObjectMapper json, PlatformTransactionManager manager) {
+                            Clock clock, ObjectMapper json, PlatformTransactionManager manager, AccountCleanupService cleanup) {
         this.mapper=mapper; this.users=users; this.storage=storage; this.probe=probe;
         this.clock=clock; this.json=json; this.transactions=new TransactionTemplate(manager);
+        this.cleanup=cleanup;
     }
 
     @Override
@@ -85,6 +88,24 @@ public class MediaServiceImpl implements MediaService {
         if(!storage.exists(media.getStorageKey())) throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
         mapper.retry(userId,id,now());
         return get(userId,id);
+    }
+
+    @Override
+    public void delete(String userId, String id) {
+        transactions.executeWithoutResult(status -> {
+            // 与建方案、执行、发布及注销采用相同的账号锁顺序，删除与新任务不能交错提交。
+            var account = users.findByIdForUpdate(userId);
+            if (account == null || account.getStatus() != UserStatus.ACTIVE) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
+            var item = mapper.lockOwnedIncludingDeleted(userId, id);
+            if (item == null) throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+            if (item.getDeletedAt() != null) return;
+            var time = now();
+            mapper.markDeleted(userId, id, time);
+            mapper.markPlansDeleted(userId, id, time);
+            mapper.markTasksDeleted(userId, id, time);
+            mapper.markOutputsDeleted(userId, id, time);
+            cleanup.enqueueMedia(userId, id);
+        });
     }
 
     private MediaEntity owned(String userId,String id) {

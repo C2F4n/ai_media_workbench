@@ -109,7 +109,7 @@
           <button id="detect-tool" class="tool-choice active" type="button" aria-current="page"><i data-lucide="scan-line" aria-hidden="true"></i>视频检测</button>
           <button id="convert-tool" class="tool-choice" type="button"><i data-lucide="file-video" aria-hidden="true"></i>视频转换</button>
           <button id="compress-tool" class="tool-choice" type="button"><i data-lucide="minimize-2" aria-hidden="true"></i>视频压缩</button>
-          <button class="tool-choice" type="button" data-unavailable disabled title="尚未开放"><i data-lucide="audio-lines" aria-hidden="true"></i>提取音频</button>
+          <button id="audio-tool" class="tool-choice" type="button"><i data-lucide="audio-lines" aria-hidden="true"></i>提取音频</button>
           <button class="tool-choice" type="button" data-unavailable disabled title="尚未开放"><i data-lucide="captions" aria-hidden="true"></i>字幕处理</button>
         </nav>
         <div class="processing-layout">
@@ -134,9 +134,10 @@
           <div class="conversion-layout">
             <form id="conversion-form">
               <label class="field">当前素材<output id="conversion-source" class="conversion-source">未选择就绪素材</output></label>
-              <div class="conversion-fields"><label class="field">输出格式<output>MP4 · H.264</output></label><label class="field">分辨率<select id="conversion-resolution"><option value="source">原分辨率</option><option value="720p">720p</option></select></label><label class="field">音轨<output>保留音轨</output></label></div>
+              <div id="processing-fields" class="conversion-fields"><label class="field">输出格式<output id="processing-format">MP4 · H.264</output></label><label id="resolution-field" class="field">分辨率<select id="conversion-resolution"><option value="source">原分辨率</option><option value="720p">720p</option></select></label><label class="field">音轨<output id="processing-audio-mode">保留音轨</output></label></div>
               <label id="compression-target-field" class="field compression-target-field" hidden>目标体积（MB）<input id="compression-target" type="number" min="0.03125" step="any" inputmode="decimal"></label>
               <p id="compression-small" class="form-error" role="status" hidden>当前素材体积过小，无法进行目标体积压缩。</p>
+              <p id="audio-missing" class="form-error" role="status" hidden>当前素材没有可提取的音轨。</p>
               <p id="conversion-error" class="form-error" role="alert" hidden></p>
               <button id="start-conversion" class="button primary" type="submit" disabled><i data-lucide="play" aria-hidden="true"></i><span id="start-processing-label">开始转换</span></button>
             </form>
@@ -144,7 +145,8 @@
               <div class="section-heading"><h2>处理结果</h2><span id="task-status" class="media-status"></span></div>
               <p id="task-stage" class="muted"></p><p id="compression-stats" class="muted" hidden></p><p id="task-error" class="form-error" role="alert" hidden></p>
               <video id="output-preview" controls preload="metadata" hidden></video>
-              <div class="conversion-actions"><button id="cancel-task" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消任务</button><a id="download-output" class="button primary compact" hidden><i data-lucide="download" aria-hidden="true"></i>下载 MP4</a></div>
+              <audio id="output-audio" controls preload="metadata" hidden></audio><p id="audio-stats" class="muted" hidden></p>
+              <div class="conversion-actions"><button id="cancel-task" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消任务</button><a id="download-output" class="button primary compact" hidden><i data-lucide="download" aria-hidden="true"></i><span id="download-label">下载 MP4</span></a></div>
             </div>
           </div>
         </section>
@@ -203,6 +205,16 @@
       </div>
     </section>
   </main>
+
+  <dialog id="delete-media-dialog" aria-labelledby="delete-media-title" aria-describedby="delete-media-description">
+    <div class="dialog-heading"><h2 id="delete-media-title">删除素材</h2><button id="close-delete-media" class="icon-button" type="button" title="取消" aria-label="取消删除素材"><i data-lucide="x" aria-hidden="true"></i></button></div>
+    <p id="delete-media-name" class="result-filename"></p>
+    <p id="delete-media-description" class="muted">关联的处理记录和结果也会删除，正在进行的任务将停止。此操作不可恢复。</p>
+    <form id="delete-media-form">
+      <p id="delete-media-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button id="cancel-delete-media" class="button secondary" type="button">取消</button><button class="button danger" type="submit"><i data-lucide="trash-2" aria-hidden="true"></i>确认删除</button></div>
+    </form>
+  </dialog>
 
   <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
     <div class="dialog-heading">

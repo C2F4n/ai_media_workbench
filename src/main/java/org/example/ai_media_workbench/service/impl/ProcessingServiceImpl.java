@@ -12,6 +12,8 @@ import org.example.ai_media_workbench.dto.common.PageQuery;
 import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
 import org.example.ai_media_workbench.dto.processing.UpdatePlanRequest;
 import org.example.ai_media_workbench.dto.processing.VideoParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
 import org.example.ai_media_workbench.entity.MediaEntity;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
@@ -60,8 +62,8 @@ public class ProcessingServiceImpl implements ProcessingService {
     public PlanVO create(String userId, CreatePlanRequest input) {
         var parameters = parameters(input.parameters(), input.instruction());
         lockUser(userId);
-        validateCompression(parameters, requireReady(userId, input.mediaId().toString()));
-        requireTool();
+        validateOperation(parameters, requireReady(userId, input.mediaId().toString()));
+        requireTool(parameters);
         var plan = new OperationPlanEntity();
         plan.setId(UUID.randomUUID().toString()); plan.setUserId(userId); plan.setMediaId(input.mediaId().toString());
         plan.setVersion(1); plan.setStatus(PlanStatus.READY);
@@ -78,7 +80,7 @@ public class ProcessingServiceImpl implements ProcessingService {
         if (plan.getVersion() != input.expectedVersion()) throw new BusinessException(ErrorCode.PLAN_VERSION_CONFLICT);
         if (plan.getStatus() != PlanStatus.READY) throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
         var parameters = parameters(input.parameters(), input.instruction());
-        validateCompression(parameters, requireReady(userId, plan.getMediaId())); requireTool();
+        validateOperation(parameters, requireReady(userId, plan.getMediaId())); requireTool(parameters);
         apply(plan, parameters);
         plan.setVersion(Math.addExact(plan.getVersion(), 1)); mapper.updatePlan(plan);
         return views.plan(plan);
@@ -107,7 +109,8 @@ public class ProcessingServiceImpl implements ProcessingService {
         var existing = mapper.taskForPlan(userId, id);
         if (existing != null) return views.task(existing);
         if (plan.getStatus() != PlanStatus.READY) throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
-        validateCompression(json.readValue(plan.getParametersJson(), VideoParameters.class), requireReady(userId, plan.getMediaId())); requireTool();
+        var parameters = json.readValue(plan.getParametersJson(), OperationParameters.class);
+        validateOperation(parameters, requireReady(userId, plan.getMediaId())); requireTool(parameters);
         mapper.lockQueue();
         if (mapper.activeCount() >= properties.queueLimit()) throw new BusinessException(ErrorCode.QUEUE_FULL);
         var task = new TaskEntity();
@@ -147,17 +150,24 @@ public class ProcessingServiceImpl implements ProcessingService {
         return task(userId, id);
     }
 
-    private void apply(OperationPlanEntity plan, VideoParameters parameters) {
+    private void apply(OperationPlanEntity plan, OperationParameters parameters) {
         plan.setParametersJson(json.writeValueAsString(parameters));
-        plan.setSummary("MP4 / " + (parameters.resolutionPreset().equals("720p") ? "720p" : "原分辨率") + " / 保留音轨");
+        if (parameters instanceof VideoParameters video)
+            plan.setSummary("MP4 / " + (video.resolutionPreset().equals("720p") ? "720p" : "原分辨率") + " / 保留音轨");
+        else plan.setSummary("MP3 / 提取第一条音轨 / 192 kbps");
         if (parameters instanceof CompressionParameters compression)
             plan.setSummary(plan.getSummary() + " / 压缩至最多 " + compression.targetSizeBytes() + " 字节");
         plan.setUpdatedAt(now());
     }
 
-    private VideoParameters parameters(JsonNode node, String instruction) {
+    private OperationParameters parameters(JsonNode node, String instruction) {
         if ((node == null) == (instruction == null)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         if (instruction != null) throw new BusinessException(ErrorCode.AI_UNAVAILABLE);
+        if ("extract_audio".equals(node.path("operation").asText())) {
+            if (!node.isObject() || node.size() != 2 || !node.path("outputFormat").isString() || !"mp3".equals(node.path("outputFormat").asText()))
+                throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+            return json.treeToValue(node, OperationParameters.class);
+        }
         boolean compression = "compress".equals(node.path("operation").asText());
         if (!node.isObject() || node.size() != (compression ? 5 : 4)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         for (String key : Set.of("operation", "outputFormat", "resolutionPreset", "audioMode"))
@@ -167,10 +177,12 @@ public class ProcessingServiceImpl implements ProcessingService {
                 || !node.path("audioMode").asText().equals("keep")) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         if (compression && (!node.path("targetSizeBytes").isIntegralNumber() || !node.path("targetSizeBytes").canConvertToLong()
                 || node.path("targetSizeBytes").asLong() <= 0)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
-        return json.treeToValue(node, VideoParameters.class);
+        return json.treeToValue(node, OperationParameters.class);
     }
 
-    private void validateCompression(VideoParameters parameters, MediaEntity source) {
+    private void validateOperation(OperationParameters parameters, MediaEntity source) {
+        if (parameters instanceof ExtractAudioParameters && !json.readValue(source.getMetadataJson(), MediaMetadataVO.class).hasAudio())
+            throw new BusinessException(ErrorCode.SOURCE_HAS_NO_AUDIO);
         if (parameters instanceof CompressionParameters compression) {
             if (compression.targetSizeBytes() >= source.getSizeBytes()
                     || compression.targetSizeBytes() > properties.maxOutputSize().toBytes())
@@ -198,8 +210,10 @@ public class ProcessingServiceImpl implements ProcessingService {
         var user = users.findByIdForUpdate(userId);
         if (user == null || user.getStatus() != UserStatus.ACTIVE) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
     }
-    private void requireTool() {
-        if (!transcoder.isAvailable() || !probe.isAvailable()) throw new BusinessException(ErrorCode.TRANSCODE_UNAVAILABLE);
+    private void requireTool(OperationParameters parameters) {
+        boolean audio = parameters instanceof ExtractAudioParameters;
+        if (!probe.isAvailable() || !(audio ? transcoder.isAudioExtractionAvailable() : transcoder.isAvailable()))
+            throw new BusinessException(audio ? ErrorCode.AUDIO_EXTRACTION_UNAVAILABLE : ErrorCode.TRANSCODE_UNAVAILABLE);
     }
     private LocalDateTime now() { return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC); }
 }

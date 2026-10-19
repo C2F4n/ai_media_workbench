@@ -31,8 +31,11 @@ public class SystemServiceImpl implements SystemService {
     public CapabilitiesVO getCapabilities() {
         // 工具探测成功才开放转换；AI 等尚未接入的能力保持关闭。
         boolean registration = auth.registrationEnabled() && mail.isAvailable();
+        var operations = new java.util.ArrayList<String>();
+        if (probe.isAvailable() && transcoder.isAvailable()) operations.addAll(List.of("transcode", "compress"));
+        if (probe.isAvailable() && transcoder.isAudioExtractionAvailable()) operations.add("extract_audio");
         return new CapabilitiesVO(registration, registration, false, false, false, false,
                 false, probe.isAvailable(), media.maxUploadSize().toBytes(), media.maxDuration().toMillis(),
-                probe.isAvailable() && transcoder.isAvailable() ? List.of("transcode", "compress") : List.of());
+                List.copyOf(operations));
     }
 }

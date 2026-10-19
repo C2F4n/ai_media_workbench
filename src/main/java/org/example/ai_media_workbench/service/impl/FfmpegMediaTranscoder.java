@@ -11,6 +11,8 @@ import java.util.function.BooleanSupplier;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.processing.VideoParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
@@ -24,18 +26,33 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(FfmpegMediaTranscoder.class);
     private final TranscodeProperties properties;
     private final boolean available;
+    private final boolean audioAvailable;
 
     public FfmpegMediaTranscoder(TranscodeProperties properties) {
         this.properties = properties;
-        this.available = checkAvailable();
+        String encoders = encoders();
+        this.available = encoders.contains(" libx264 ") && encoders.contains(" aac ");
+        this.audioAvailable = encoders.contains(" libmp3lame ");
     }
 
     @Override public boolean isAvailable() { return available; }
+    @Override public boolean isAudioExtractionAvailable() { return audioAvailable; }
 
     @Override
-    public void convert(Path source, Path target, MediaMetadataVO metadata, VideoParameters parameters, BooleanSupplier cancelled) {
+    public void convert(Path source, Path target, MediaMetadataVO metadata, OperationParameters parameters, BooleanSupplier cancelled) {
+        if (parameters instanceof ExtractAudioParameters) {
+            if (!audioAvailable) throw new BusinessException(ErrorCode.AUDIO_EXTRACTION_UNAVAILABLE);
+            if (!metadata.hasAudio()) throw new BusinessException(ErrorCode.SOURCE_HAS_NO_AUDIO);
+            // 固定提取第一条音轨；不裁剪、不携带封面或源文件元数据。
+            run(List.of(properties.ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                    "-protocol_whitelist", "file", "-format_whitelist", "mov,matroska,webm", "-threads", "2", "-i", source.toAbsolutePath().toString(),
+                    "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100", "-ac", "2",
+                    "-threads", "2", "-fs", Long.toString(Math.addExact(properties.maxOutputSize().toBytes(), 1)), "-f", "mp3", target.toAbsolutePath().toString()),
+                    target, cancelled, System.nanoTime() + properties.timeout().toNanos());
+            return;
+        }
         if (!available) throw new BusinessException(ErrorCode.TRANSCODE_UNAVAILABLE);
-        int[] size = dimensions(metadata, parameters);
+        int[] size = dimensions(metadata, (VideoParameters) parameters);
         long deadline = System.nanoTime() + properties.timeout().toNanos();
         try {
             var base = List.of(properties.ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -120,7 +137,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
         return new int[]{width, height};
     }
 
-    private boolean checkAvailable() {
+    private String encoders() {
         Process process = null;
         var readers = Executors.newVirtualThreadPerTaskExecutor();
         try {
@@ -128,13 +145,13 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
                     .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             Process running = process;
             var result = readers.submit(() -> running.getInputStream().readNBytes(128 * 1024 + 1));
-            if (!process.waitFor(4, TimeUnit.SECONDS) || process.exitValue() != 0) return false;
+            if (!process.waitFor(4, TimeUnit.SECONDS) || process.exitValue() != 0) return "";
             byte[] bytes = result.get(1, TimeUnit.SECONDS);
             String encoders = new String(bytes, StandardCharsets.UTF_8);
-            return bytes.length <= 128 * 1024 && encoders.contains(" libx264 ") && encoders.contains(" aac ");
+            return bytes.length <= 128 * 1024 ? encoders : "";
         } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt(); return false;
-        } catch (Exception exception) { return false; }
+            Thread.currentThread().interrupt(); return "";
+        } catch (Exception exception) { return ""; }
         finally {
             if (process != null && process.isAlive()) stop(process);
             readers.shutdownNow();

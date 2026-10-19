@@ -61,6 +61,7 @@ class ProcessingIntegrationTests {
     @Autowired LocalMediaStorage storage;
     @Autowired TranscodeWorker worker;
     @Autowired AccountCleanupService cleanup;
+    @Autowired MediaService mediaService;
     @MockitoBean MediaProbe probe;
     @MockitoBean MediaTranscoder transcoder;
     private static final String PASSWORD = "Testing-2026!";
@@ -69,9 +70,14 @@ class ProcessingIntegrationTests {
     private final Map<String, String> parameters = Map.of("operation", "transcode", "outputFormat", "mp4", "resolutionPreset", "720p", "audioMode", "keep");
 
     @BeforeEach void prepare() throws Exception {
+        jdbc.update("UPDATE account_cleanup_job SET status='DONE'");
         jdbc.update("UPDATE media_task SET status='CANCELLED',stage='CANCELLED' WHERE status IN ('QUEUED','RUNNING','CANCELLING')");
         when(probe.isAvailable()).thenReturn(true); when(probe.inspect(any())).thenReturn(metadata);
         when(transcoder.isAvailable()).thenReturn(true);
+        when(transcoder.isAudioExtractionAvailable()).thenReturn(true);
+        when(probe.inspectAudio(any())).thenAnswer(call -> call.getArgument(0, Path.class).toString().endsWith(".mp3")
+                ? new MediaMetadataVO("mp3", 1230, null, null, null, true, "mp3")
+                : new MediaMetadataVO("mov", 1200, null, null, null, true, "aac"));
         doAnswer(call -> { Files.write(call.getArgument(1, Path.class), OUTPUT); return null; })
                 .when(transcoder).convert(any(), any(), any(), any(), any());
     }
@@ -269,6 +275,171 @@ class ProcessingIntegrationTests {
         cleanup.runPending();
         assertThat(jdbc.queryForObject("SELECT status FROM account_cleanup_job WHERE user_id=?", String.class, owner.id())).isEqualTo("DONE");
         try (var files = Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isZero(); }
+    }
+
+    @Test void audioExtractionUsesItsOwnCapabilityAndReturnsPrivateMp3Streams() throws Exception {
+        Browser owner = login(), other = login(); String mediaId = audioSource(owner);
+        when(transcoder.isAvailable()).thenReturn(false);
+        mvc.perform(get("/api/system/capabilities")).andExpect(status().isOk())
+                .andExpect(jsonPath("data.supportedOperations[0]").value("extract_audio"))
+                .andExpect(jsonPath("data.supportedOperations.length()").value(1));
+        var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId),
+                json.valueToTree(Map.of("operation", "extract_audio", "outputFormat", "mp3")), null));
+        var task = processing.execute(owner.id(), plan.id(), 1);
+        worker.runOne();
+        var complete = processing.task(owner.id(), task.id());
+        assertThat(complete.status().name()).isEqualTo("SUCCEEDED");
+        assertThat(json.readTree(json.writeValueAsString(complete.parameters())).size()).isEqualTo(2);
+        var output = complete.outputs().getFirst();
+        assertThat(output.contentType()).isEqualTo("audio/mpeg");
+        assertThat(output.filename()).endsWith("-audio.mp3");
+        assertThat(output.metadata().width()).isNull(); assertThat(output.metadata().videoCodec()).isNull();
+        assertThat(output.metadata().audioCodec()).isEqualTo("mp3");
+        mvc.perform(get(output.downloadUrl()).cookie(other.cookie())).andExpect(status().isNotFound());
+        var result = mvc.perform(get(output.previewUrl()).cookie(owner.cookie()).header("Range", "bytes=0-3"))
+                .andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(result)).andExpect(status().isPartialContent()).andExpect(content().contentType("audio/mpeg"))
+                .andExpect(content().bytes(java.util.Arrays.copyOfRange(OUTPUT, 0, 4)));
+        var download = mvc.perform(get(output.downloadUrl()).cookie(owner.cookie())).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(download)).andExpect(status().isOk()).andExpect(content().contentType("audio/mpeg")).andExpect(content().bytes(OUTPUT));
+    }
+
+    @Test void silentSourcesExtraFieldsAndMissingMp3EncoderAreRejectedBeforeEnqueue() throws Exception {
+        Browser owner = login(); String mediaId = source(owner);
+        var params = Map.of("operation", "extract_audio", "outputFormat", "mp3");
+        mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId", mediaId, "parameters", params))))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("SOURCE_HAS_NO_AUDIO"));
+        String withAudio = audioSource(owner);
+        for (var invalid : List.of(Map.of("operation", "extract_audio", "outputFormat", "mp4"),
+                Map.of("operation", "extract_audio", "outputFormat", "mp3", "outputPath", "forged.mp3"))) {
+            mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId", withAudio, "parameters", invalid))))
+                    .andExpect(status().isUnprocessableEntity());
+        }
+        when(transcoder.isAudioExtractionAvailable()).thenReturn(false);
+        mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId", withAudio, "parameters", params))))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("code").value("AUDIO_EXTRACTION_UNAVAILABLE"));
+        assertThat(mapper.countPlans(owner.id(), null)).isZero(); assertThat(mapper.countTasks(owner.id(), null)).isZero();
+    }
+
+    @Test void wrongAudioOutputsFailAndRunningAudioCancellationDoesNotPublishPartialFiles() throws Exception {
+        Browser owner = login(); String mediaId = audioSource(owner);
+        var input = new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(Map.of("operation", "extract_audio", "outputFormat", "mp3")), null);
+        var badTask = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1);
+        doAnswer(call -> call.getArgument(0, Path.class).toString().endsWith(".mp3")
+                ? new MediaMetadataVO("mp3", 100, null, null, null, true, "mp3")
+                : new MediaMetadataVO("mov", 1200, null, null, null, true, "aac")).when(probe).inspectAudio(any());
+        worker.runOne();
+        assertThat(processing.task(owner.id(), badTask.id()).error().code()).isEqualTo("AUDIO_EXTRACTION_FAILED");
+        assertThat(mapper.taskOutputs(owner.id(), badTask.id())).isEmpty();
+        var cancelled = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1);
+        doAnswer(call -> {
+            Path path = call.getArgument(1, Path.class); assertThat(path.toString()).endsWith(".mp3"); Files.write(path, OUTPUT);
+            processing.cancel(owner.id(), cancelled.id()); throw new BusinessException(ErrorCode.TASK_CANCELLED);
+        }).when(transcoder).convert(any(), any(), any(), any(), any());
+        worker.runOne();
+        assertThat(processing.task(owner.id(), cancelled.id()).status().name()).isEqualTo("CANCELLED");
+        try (var files = Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
+    }
+
+    @Test void expiredAndDeletedAudioTasksCleanUnpublishedMp3Files() throws Exception {
+        Browser owner = login(); String mediaId = audioSource(owner);
+        var input = new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(Map.of("operation", "extract_audio", "outputFormat", "mp3")), null);
+        var task = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1);
+        String token = UUID.randomUUID().toString(); mapper.claim(task.id(), token, LocalDateTime.now().minusDays(1));
+        var expired = storage.createOutput(owner.id(), task.id(), token, "mp3");
+        worker.runOne(); assertThat(Files.exists(expired.path())).isFalse();
+        assertThat(processing.task(owner.id(), task.id()).error().code()).isEqualTo("TASK_INTERRUPTED");
+        var next = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1);
+        token = UUID.randomUUID().toString(); mapper.claim(next.id(), token, LocalDateTime.now());
+        var partial = storage.createOutput(owner.id(), next.id(), token, "mp3");
+        users.deleteAccount(owner.id(), new DeleteUserRequest(PASSWORD, owner.name())); cleanup.runPending();
+        assertThat(Files.exists(partial.path())).isFalse();
+        try (var files = Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isZero(); }
+    }
+
+    @Test void deletingOneMediaRevokesAllRelatedResourcesWithoutTouchingAnotherMedia() throws Exception {
+        Browser owner=login(); String mediaId=source(owner),keep=source(owner);
+        String planId=create(owner,mediaId);
+        String taskId=data(execute(owner,planId,1).andReturn()).path("id").asText();
+        worker.runOne();
+        String outputId=processing.task(owner.id(),taskId).outputs().getFirst().id();
+        Path outputPath=storage.resolve(mapper.output(owner.id(),outputId).getStorageKey());
+        String queuedPlan=create(owner,mediaId);
+        String queuedTask=data(execute(owner,queuedPlan,1).andReturn()).path("id").asText();
+        mediaService.delete(owner.id(),mediaId);
+        for(String path:List.of("/api/media/"+mediaId,"/api/operation-plans/"+planId,"/api/tasks/"+taskId,
+                "/api/tasks/"+queuedTask,"/api/outputs/"+outputId,"/api/outputs/"+outputId+"/preview","/api/outputs/"+outputId+"/download"))
+            mvc.perform(get(path).cookie(owner.cookie())).andExpect(status().isNotFound());
+        execute(owner,queuedPlan,1).andExpect(status().isNotFound());
+        mvc.perform(get("/api/tasks").cookie(owner.cookie())).andExpect(jsonPath("data.total").value(0));
+        mvc.perform(get("/api/outputs").cookie(owner.cookie())).andExpect(jsonPath("data.total").value(0));
+        assertThat(jdbc.queryForObject("SELECT status FROM media_task WHERE id=?",String.class,queuedTask)).isEqualTo("CANCELLED");
+        assertThat(mapper.activeCount()).isZero();
+        cleanup.runPending(); assertThat(Files.exists(outputPath)).isFalse();
+        assertThat(mediaService.get(owner.id(),keep)).isNotNull();
+        try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
+        users.deleteAccount(owner.id(),new DeleteUserRequest(PASSWORD,owner.name())); cleanup.runPending();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_cleanup_job WHERE user_id=?",Integer.class,owner.id())).isEqualTo(2);
+        try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isZero(); }
+    }
+
+    @Test void deletingWhileExtractingStopsTheWorkerAndNeverPublishesAnMp3() throws Exception {
+        Browser owner=login(); String mediaId=audioSource(owner);
+        var input=new CreatePlanRequest(UUID.fromString(mediaId),json.valueToTree(Map.of("operation","extract_audio","outputFormat","mp3")),null);
+        var task=processing.execute(owner.id(),processing.create(owner.id(),input).id(),1);
+        doAnswer(call->{
+            Files.write(call.getArgument(1,Path.class),OUTPUT);
+            mediaService.delete(owner.id(),mediaId);
+            assertThat(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue();
+            throw new BusinessException(ErrorCode.TASK_CANCELLED);
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        worker.runOne();
+        assertThat(mapper.taskOutputs(owner.id(),task.id())).isEmpty();
+        assertThat(mapper.task(owner.id(),task.id())).isNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM media_task WHERE id=?",String.class,task.id())).isEqualTo("CANCELLED");
+        try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
+        assertThat(jdbc.queryForObject("SELECT next_attempt_at FROM account_cleanup_job WHERE user_id=?",LocalDateTime.class,owner.id()))
+                .isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(6));
+        jdbc.update("UPDATE account_cleanup_job SET next_attempt_at=? WHERE user_id=?",LocalDateTime.now().minusDays(1),owner.id());
+        cleanup.runPending();
+        try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isZero(); }
+    }
+
+    @Test void deletionCleansInterruptedVideoAudioAndEncodingCachesWithinItsScope() throws Exception {
+        Browser owner=login(); String mediaId=source(owner),keep=source(owner);
+        String taskId=data(execute(owner,create(owner,mediaId),1).andReturn()).path("id").asText();
+        String token=UUID.randomUUID().toString(); mapper.claim(taskId,token,LocalDateTime.now().minusDays(1));
+        var video=storage.createOutput(owner.id(),taskId,token,"mp4");
+        storage.createOutput(owner.id(),taskId,token,"mp3");
+        for(String suffix:LocalMediaStorage.ENCODING_LOG_SUFFIXES) Files.writeString(Path.of(video.path()+suffix),"cache");
+        mediaService.delete(owner.id(),mediaId); cleanup.runPending();
+        assertThat(mediaService.get(owner.id(),keep)).isNotNull();
+        try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
+    }
+
+    @Test void concurrentExecutionAndRepeatedDeletionLeaveNoActiveOrVisibleWork() throws Exception {
+        Browser owner=login(); String mediaId=source(owner),planId=create(owner,mediaId);
+        try(var pool=Executors.newFixedThreadPool(3)) {
+            var calls=List.<Callable<Void>>of(()->{ mediaService.delete(owner.id(),mediaId); return null; },
+                    ()->{ mediaService.delete(owner.id(),mediaId); return null; },
+                    ()->{ try { processing.execute(owner.id(),planId,1); }
+                        catch(BusinessException exception) { assertThat(exception.code()).isEqualTo(ErrorCode.RESOURCE_NOT_FOUND); } return null; });
+            for(var result:pool.invokeAll(calls)) result.get();
+        }
+        assertThat(mapper.activeCount()).isZero();
+        assertThat(mapper.countTasks(owner.id(),null)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_cleanup_job WHERE user_id=?",Integer.class,owner.id())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM media_task WHERE media_id=? AND deleted_at IS NULL",Integer.class,mediaId)).isZero();
+    }
+
+    private String audioSource(Browser owner) {
+        String id = source(owner);
+        var withAudio = new MediaMetadataVO("mov", 1200, 160, 90, "h264", true, "aac");
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?", json.writeValueAsString(withAudio), id);
+        return id;
     }
 
     private void assertPreview(Browser user, String id, String range, int status, byte[] bytes) throws Exception {

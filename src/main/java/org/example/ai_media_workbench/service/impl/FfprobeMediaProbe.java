@@ -34,13 +34,22 @@ public class FfprobeMediaProbe implements MediaProbe {
 
     @Override
     public MediaMetadataVO inspect(Path file) {
+        return inspect(file, false);
+    }
+
+    @Override
+    public MediaMetadataVO inspectAudio(Path file) {
+        return inspect(file, true);
+    }
+
+    private MediaMetadataVO inspect(Path file, boolean audioOnly) {
         if(!available) throw new BusinessException(ErrorCode.MEDIA_TOOL_UNAVAILABLE);
         Process process=null;
         var readers=Executors.newVirtualThreadPerTaskExecutor();
         try {
             process=new ProcessBuilder(List.of(properties.ffprobe(),"-v","error","-protocol_whitelist","file",
-                    "-format_whitelist","mov,matroska,webm","-show_entries",
-                    "format=format_name,duration:stream=codec_type,codec_name,width,height,duration:stream_tags=rotate:stream_side_data=rotation",
+                    "-format_whitelist",audioOnly ? "mov,matroska,webm,mp3" : "mov,matroska,webm","-show_entries",
+                    "format=format_name,duration:stream=codec_type,codec_name,width,height,duration:stream_tags=rotate,DURATION:stream_side_data=rotation",
                     "-of","json","-i",file.toAbsolutePath().toString()))
                     .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             Process running=process;
@@ -51,7 +60,7 @@ public class FfprobeMediaProbe implements MediaProbe {
             }
             byte[] bytes=output.get(2,TimeUnit.SECONDS);
             if(process.exitValue()!=0 || bytes.length>1024*1024) throw new BusinessException(ErrorCode.MEDIA_PROBE_FAILED);
-            return metadata(json.readTree(bytes));
+            return metadata(json.readTree(bytes), audioOnly);
         } catch (BusinessException exception) {
             throw exception;
         } catch (InterruptedException exception) {
@@ -65,12 +74,25 @@ public class FfprobeMediaProbe implements MediaProbe {
         }
     }
 
-    private MediaMetadataVO metadata(JsonNode document) {
+    private MediaMetadataVO metadata(JsonNode document, boolean audioOnly) {
         JsonNode video=null;
+        JsonNode audioStream=null;
         String audio=null;
         for(JsonNode stream:document.path("streams")) {
             if("video".equals(stream.path("codec_type").asText()) && video==null) video=stream;
-            if("audio".equals(stream.path("codec_type").asText()) && audio==null) audio=stream.path("codec_name").asText();
+            if("audio".equals(stream.path("codec_type").asText()) && audioStream==null) {
+                audio=stream.path("codec_name").asText(); audioStream=stream;
+            }
+        }
+        if (audioOnly) {
+            if (audioStream == null) throw new BusinessException(ErrorCode.SOURCE_HAS_NO_AUDIO);
+            String container = document.path("format").path("format_name").asText();
+            if (container.equals("mp3") && video != null) throw new BusinessException(ErrorCode.AUDIO_EXTRACTION_FAILED);
+            long audioDuration = duration(audioStream.path("duration").asText());
+            if (audioDuration <= 0) audioDuration = taggedDuration(audioStream.path("tags").path("DURATION").asText());
+            if (audioDuration <= 0) audioDuration = duration(document.path("format").path("duration").asText());
+            if (audioDuration <= 0) throw new BusinessException(ErrorCode.MEDIA_PROBE_FAILED);
+            return new MediaMetadataVO(container, audioDuration, null, null, null, true, audio);
         }
         if(video==null) throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA);
         int width=video.path("width").asInt(),height=video.path("height").asInt();
@@ -88,6 +110,11 @@ public class FfprobeMediaProbe implements MediaProbe {
     private long duration(String value) {
         try { return new BigDecimal(value).movePointRight(3).setScale(0,RoundingMode.CEILING).longValueExact(); }
         catch (NumberFormatException | ArithmeticException exception) { return 0; }
+    }
+
+    private long taggedDuration(String value) {
+        try { return (java.time.LocalTime.parse(value).toNanoOfDay() + 999_999) / 1_000_000; }
+        catch (java.time.format.DateTimeParseException invalid) { return 0; }
     }
 
     private boolean checkAvailable() {

@@ -9,6 +9,8 @@ import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import org.example.ai_media_workbench.dto.processing.VideoParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
 import org.example.ai_media_workbench.entity.OutputEntity;
 import org.example.ai_media_workbench.entity.TaskEntity;
@@ -59,8 +61,10 @@ public class TranscodeWorker {
     public synchronized boolean runOne() {
         var cutoff = now().minus(properties.lease());
         for (var old : mapper.expired(cutoff)) {
-            if (mapper.expire(old.getId(), cutoff, now()) == 1 && old.getRunToken() != null)
+            if (mapper.expire(old.getId(), cutoff, now()) == 1 && old.getRunToken() != null) {
                 discard(old.getUserId() + "/" + old.getId() + "-" + old.getRunToken() + ".mp4");
+                discard(old.getUserId() + "/" + old.getId() + "-" + old.getRunToken() + ".mp3");
+            }
         }
         var pending = mapper.pending();
         if (pending.isEmpty()) return false;
@@ -69,16 +73,20 @@ public class TranscodeWorker {
         if (mapper.claim(task.getId(), task.getRunToken(), now()) != 1) return false;
         LocalMediaStorage.OutputTarget target = null;
         boolean published = false;
+        boolean extractingAudio = false;
         try {
             var source = media.findOwned(task.getUserId(), task.getMediaId());
             if (source == null) throw new BusinessException(ErrorCode.TASK_CANCELLED);
             var original = json.readValue(source.getMetadataJson(), MediaMetadataVO.class);
-            var parameters = json.readValue(task.getParametersJson(), VideoParameters.class);
-            target = storage.createOutput(task.getUserId(), task.getId(), task.getRunToken());
-            transcoder.convert(storage.resolve(source.getStorageKey()), target.path(), original, parameters,
+            var parameters = json.readValue(task.getParametersJson(), OperationParameters.class);
+            extractingAudio = parameters instanceof ExtractAudioParameters;
+            var input = storage.resolve(source.getStorageKey());
+            if (extractingAudio) original = probe.inspectAudio(input);
+            target = storage.createOutput(task.getUserId(), task.getId(), task.getRunToken(), parameters.outputFormat());
+            transcoder.convert(input, target.path(), original, parameters,
                     () -> mapper.running(task.getId(), task.getRunToken()) != 1);
             if (mapper.verifying(task.getId(), task.getRunToken()) != 1) throw new BusinessException(ErrorCode.TASK_CANCELLED);
-            var metadata = probe.inspect(target.path());
+            var metadata = extractingAudio ? probe.inspectAudio(target.path()) : probe.inspect(target.path());
             verify(original, metadata, parameters);
             long size = Files.size(target.path());
             if (size <= 0 || size > properties.maxOutputSize().toBytes()) throw new BusinessException(ErrorCode.OUTPUT_TOO_LARGE);
@@ -89,14 +97,16 @@ public class TranscodeWorker {
             output.setId(UUID.randomUUID().toString()); output.setUserId(task.getUserId()); output.setTaskId(task.getId());
             String name = source.getOriginalFilename().replaceFirst("\\.[^.]*$", "");
             if (name.codePointCount(0, name.length()) > 120) name = name.substring(0, name.offsetByCodePoints(0, 120));
-            output.setFilename(name + (parameters instanceof CompressionParameters ? "-compressed.mp4" : "-converted.mp4")); output.setStorageKey(target.key());
-            output.setContentType("video/mp4"); output.setSizeBytes(size); output.setMetadataJson(json.writeValueAsString(metadata));
+            output.setFilename(name + (extractingAudio ? "-audio.mp3" : parameters instanceof CompressionParameters ? "-compressed.mp4" : "-converted.mp4")); output.setStorageKey(target.key());
+            output.setContentType(extractingAudio ? "audio/mpeg" : "video/mp4"); output.setSizeBytes(size); output.setMetadataJson(json.writeValueAsString(metadata));
             output.setCreatedAt(now());
             published = Boolean.TRUE.equals(transactions.execute(status -> finish(task, output, null)));
         } catch (Exception exception) {
             // Background work has no HTTP response: persist a safe failure, never raw tool output or disk paths.
             ErrorCode error = exception instanceof BusinessException business ? business.code() : ErrorCode.TRANSCODE_FAILED;
-            transactions.executeWithoutResult(status -> finish(task, null, error));
+            if (extractingAudio && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.AUDIO_EXTRACTION_FAILED;
+            ErrorCode failure = error;
+            transactions.executeWithoutResult(status -> finish(task, null, failure));
         } finally {
             // Unpublished/partial outputs must not become accessible after cancellation, deletion or a stale lease.
             if (!published && target != null) discard(target.key());
@@ -120,8 +130,15 @@ public class TranscodeWorker {
         return false;
     }
 
-    private void verify(MediaMetadataVO source, MediaMetadataVO output, VideoParameters parameters) {
-        int[] size = FfmpegMediaTranscoder.dimensions(source, parameters);
+    private void verify(MediaMetadataVO source, MediaMetadataVO output, OperationParameters parameters) {
+        if (parameters instanceof ExtractAudioParameters) {
+            if (!"mp3".equals(output.container()) || !output.hasAudio() || !"mp3".equals(output.audioCodec())
+                    || output.width() != null || output.height() != null || output.videoCodec() != null
+                    || Math.abs(output.durationMs() - source.durationMs()) > Math.max(250, source.durationMs() / 1000))
+                throw new BusinessException(ErrorCode.AUDIO_EXTRACTION_FAILED);
+            return;
+        }
+        int[] size = FfmpegMediaTranscoder.dimensions(source, (VideoParameters) parameters);
         if (output.width() != size[0] || output.height() != size[1] || !"h264".equals(output.videoCodec())
                 || output.hasAudio() != source.hasAudio() || (output.hasAudio() && !"aac".equals(output.audioCodec()))
                 || Math.abs(output.durationMs() - source.durationMs()) > Math.max(250, source.durationMs() / 1000))

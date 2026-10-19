@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI音视频工作台接口文档",
-    "version": "2.2.0",
-    "description": "轻量版契约，共52个接口。登录后直接使用功能，不创建项目或分类；素材直接归属当前用户，处理方案关联素材、结果关联任务。所有业务JSON统一Result<T>。登录使用Spring Session JDBC的HttpOnly AMW_SESSION会话Cookie，不是JWT，写请求校验CSRF；注册前邮箱验证保留。已实现与规划接口由x-implementation-status区分，具体范围见API.md。2.0为破坏性调整，删除项目接口及projectId，不创建隐式默认项目。 当前已实现27个接口：账号与素材、明确参数MP4转换及压缩、持久化任务与取消、结果预览和下载；其他能力仍为规划。"
+    "version": "2.4.0",
+    "description": "轻量版契约，共52个接口。登录后直接使用功能，不创建项目或分类；素材直接归属当前用户，处理方案关联素材、结果关联任务。所有业务JSON统一Result<T>。登录使用Spring Session JDBC的HttpOnly AMW_SESSION会话Cookie，不是JWT，写请求校验CSRF；注册前邮箱验证保留。已实现与规划接口由x-implementation-status区分，具体范围见API.md。2.0为破坏性调整，删除项目接口及projectId，不创建隐式默认项目。 当前已实现28个接口：账号、素材上传检测与删除、明确参数MP4转换、压缩和MP3音频提取、持久化任务与取消、结果预览和下载；其他能力仍为规划。"
   },
   "servers": [
     {
@@ -209,7 +209,7 @@
             "description": "先GET /api/auth/csrf获取；登录后使用旋转令牌。"
           }
         ],
-        "description": "检测或关联任务活动中409 RESOURCE_BUSY。删除后关联方案/字幕/片段/输出不可访问，文件异步清理。",
+        "description": "已实现。需要登录及CSRF；本人素材在PROBING、READY或FAILED时均可删除，活动任务取消，不因处理中返回409。事务内逻辑删除素材、关联方案、任务与结果，并保存持久化清理任务；提交后所有相关接口立即不可访问。本人重复删除幂等200 Result.success()；不存在或他人素材404。磁盘文件异步清理，现有检测/处理租约未结束时等待租约后再清理，失败有界重试；200不表示已完成物理删除。只影响指定素材，不注销账号或删除其他素材。",
         "responses": {
           "200": {
             "description": "成功，统一返回Result，data为null。",
@@ -240,9 +240,6 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "409": {
-            "$ref": "#/components/responses/ResourceConflict"
-          },
           "415": {
             "$ref": "#/components/responses/UnsupportedContentType"
           },
@@ -250,7 +247,7 @@
             "$ref": "#/components/responses/InternalError"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/media/{mediaId}/preview": {
@@ -457,6 +454,15 @@
                       "targetSizeBytes": 10485760,
                       "resolutionPreset": "720p",
                       "audioMode": "keep"
+                    }
+                  }
+                },
+                "extractAudio": {
+                  "value": {
+                    "expectedVersion": 1,
+                    "parameters": {
+                      "operation": "extract_audio",
+                      "outputFormat": "mp3"
                     }
                   }
                 }
@@ -1089,7 +1095,7 @@
         ],
         "operationId": "previewOutput",
         "summary": "预览已完成的转换结果",
-        "description": "本轮输出为H.264/AAC MP4。鉴权后支持单段Range（含开放结尾/后缀），非法语法或多段Range忽略返回200；越界416并返回Result与Content-Range。",
+        "description": "支持鉴权后的H.264/AAC MP4或MP3，MP3以audio/mpeg供音频播放器试听。支持单段Range（含开放结尾/后缀），非法语法或多段Range忽略返回200；越界416并返回Result与Content-Range。",
         "parameters": [
           {
             "name": "outputId",
@@ -1234,7 +1240,7 @@
         ],
         "operationId": "downloadOutput",
         "summary": "下载已验证的真实MP4",
-        "description": "本轮返回真实MP4文件，attachment；忽略Range返回完整200。中文名使用UTF-8 filename*并提供ASCII回退；原文件丢失410 OUTPUT_UNAVAILABLE。",
+        "description": "返回真实完整MP4或MP3，attachment；忽略Range返回完整200。中文名使用UTF-8 filename*并提供ASCII回退；文件丢失410 OUTPUT_UNAVAILABLE。",
         "parameters": [
           {
             "name": "outputId",
@@ -1355,7 +1361,8 @@
                     "maxDurationMs": 900000,
                     "supportedOperations": [
                       "transcode",
-                      "compress"
+                      "compress",
+                      "extract_audio"
                     ]
                   },
                   "requestId": "req-capabilities",
@@ -4984,7 +4991,7 @@
         ],
         "operationId": "createOperationPlan",
         "summary": "按明确参数或自然语言创建方案",
-        "description": "本轮支持明确参数transcode和compress，输出MP4(H.264/AAC)，source或720p，保留音轨。compress额外要求整数targetSizeBytes：至少32768字节、小于原文件且不超过服务端输出上限；按时长与音轨预算预检，不可达422 COMPRESSION_TARGET_UNREACHABLE。自然语言暂不可用，返回503 AI_UNAVAILABLE；其他操作或额外参数422。",
+        "description": "已实现明确参数transcode、compress和extract_audio。前两者输出MP4，source或720p，保留音轨；extract_audio只提供operation=extract_audio、outputFormat=mp3，固定第一条音轨，192kbps、44.1kHz、双声道，无音轨422 SOURCE_HAS_NO_AUDIO。compress要求整数targetSizeBytes，至少32768字节、小于原文件且不超过输出上限；目标不可达422 COMPRESSION_TARGET_UNREACHABLE。缺少MP3编码器503 AUDIO_EXTRACTION_UNAVAILABLE，其他工具不可用503 TRANSCODE_UNAVAILABLE；自然语言503 AI_UNAVAILABLE。其他操作或额外参数422。",
         "parameters": [
           {
             "name": "X-CSRF-Token",
@@ -5030,6 +5037,15 @@
                       "targetSizeBytes": 10485760,
                       "resolutionPreset": "720p",
                       "audioMode": "keep"
+                    }
+                  }
+                },
+                "extractAudio": {
+                  "value": {
+                    "mediaId": "22222222-2222-4222-8222-222222222222",
+                    "parameters": {
+                      "operation": "extract_audio",
+                      "outputFormat": "mp3"
                     }
                   }
                 }
@@ -5729,7 +5745,8 @@
             "type": "string",
             "nullable": true
           }
-        }
+        },
+        "description": "视频素材保留展示尺寸与视频编码；纯音频结果的width、height、videoCodec均为null。音频结果durationMs表示真实音轨时长，可与源视频总时长不同。"
       },
       "ResourceError": {
         "type": "object",
@@ -5888,7 +5905,7 @@
             "$ref": "#/components/schemas/BurnSubtitleParameters"
           }
         ],
-        "description": "本轮仅transcode与compress已实现；其他变体仍为规划，明确参数请求返回422。"
+        "description": "本轮transcode、compress、extract_audio已实现；其他变体仍为规划，明确参数请求返回422。"
       },
       "CreatePlanWithParameters": {
         "type": "object",
@@ -6737,7 +6754,7 @@
             "items": {
               "type": "string"
             },
-            "description": "ffprobe、FFmpeg及H.264/AAC编码器均可用时包含transcode和compress；其他操作不开放。"
+            "description": "ffprobe可用时，H.264/AAC编码器可用则包含transcode、compress，libmp3lame可用则独立包含extract_audio；其他操作不开放。"
           }
         }
       },
@@ -7463,7 +7480,8 @@
               "mp3"
             ]
           }
-        }
+        },
+        "description": "已实现。固定提取第一条音轨为MP3，192kbps、44.1kHz、双声道，不附带视频、封面或源元数据。不裁剪或补静音；无音轨拒绝入队。完成后验证MP3编码、无视频流和第一条源音轨时长。"
       },
       "TrimParameters": {
         "type": "object",

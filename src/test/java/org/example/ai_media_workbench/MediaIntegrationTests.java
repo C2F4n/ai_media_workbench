@@ -34,6 +34,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doReturn;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -53,12 +54,15 @@ class MediaIntegrationTests {
     @Autowired PasswordEncoder passwords;
     @Autowired MediaProbeWorker worker;
     @Autowired MediaMapper media;
+    @Autowired org.example.ai_media_workbench.service.MediaService mediaService;
+    @Autowired org.example.ai_media_workbench.service.AccountCleanupService cleanup;
     @Autowired jakarta.servlet.MultipartConfigElement multipartLimits;
     @MockitoBean MediaProbe probe;
     private final MediaMetadataVO metadata=new MediaMetadataVO("mov,mp4",1200,160,90,"h264",false,null);
 
     @BeforeEach
     void prepareProbe() {
+        jdbc.update("UPDATE account_cleanup_job SET status='DONE'");
         jdbc.update("UPDATE media SET status='FAILED' WHERE status='PROBING'");
         when(probe.isAvailable()).thenReturn(true);
         when(probe.inspect(any())).thenReturn(metadata);
@@ -150,6 +154,64 @@ class MediaIntegrationTests {
         Browser browser=login(); when(probe.isAvailable()).thenReturn(false);
         assertThat(upload(browser,"video.mp4",new byte[]{1}).getResponse().getStatus()).isEqualTo(503);
         assertThat(media.countOwned(browser.id())).isZero();
+    }
+
+    @Test
+    void deletionIsAuthenticatedScopedIdempotentAndCleansOnlyTheSelectedFile() throws Exception {
+        Browser owner=login(),other=login();
+        String id=id(upload(owner,"remove.mp4",new byte[]{1}));
+        String keep=id(upload(owner,"keep.mp4",new byte[]{2}));
+        String otherId=id(upload(other,"private.mp4",new byte[]{3}));
+        Path deletedFile=root.resolve(media.findOwned(owner.id(),id).getStorageKey());
+        mvc.perform(delete("/api/media/"+id)).andExpect(status().isUnauthorized());
+        mvc.perform(delete("/api/media/"+id).cookie(owner.cookie())).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/media/"+id).cookie(other.cookie()).header("X-CSRF-Token",other.csrf()))
+                .andExpect(status().isNotFound());
+        mvc.perform(delete("/api/media/"+UUID.randomUUID()).cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf()))
+                .andExpect(status().isNotFound());
+        for(int i=0;i<2;i++) mvc.perform(delete("/api/media/"+id).cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf()))
+                .andExpect(status().isOk()).andExpect(jsonPath("code").value("SUCCESS"))
+                .andExpect(jsonPath("data").isEmpty()).andExpect(jsonPath("details").isArray());
+        mvc.perform(get("/api/media/"+id).cookie(owner.cookie())).andExpect(status().isNotFound());
+        mvc.perform(post("/api/media/"+id+"/probe").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf()))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/media").cookie(owner.cookie())).andExpect(jsonPath("data.total").value(1));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_cleanup_job WHERE user_id=?",Integer.class,owner.id())).isEqualTo(1);
+        cleanup.runPending();
+        assertThat(java.nio.file.Files.exists(deletedFile)).isFalse();
+        assertThat(java.nio.file.Files.exists(root.resolve(media.findOwned(owner.id(),keep).getStorageKey()))).isTrue();
+        assertThat(java.nio.file.Files.exists(root.resolve(media.findOwned(other.id(),otherId).getStorageKey()))).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM app_user WHERE id=?",String.class,owner.id())).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void deletionDuringDetectionCannotResurrectMediaAndDefersDiskCleanupUntilTheLeaseEnds() throws Exception {
+        Browser owner=login(); String id=id(upload(owner,"probing.mp4",new byte[]{1}));
+        Path file=root.resolve(media.findOwned(owner.id(),id).getStorageKey());
+        when(probe.inspect(any())).thenAnswer(call->{ mediaService.delete(owner.id(),id); return metadata; });
+        worker.runOne();
+        assertThat(media.findOwned(owner.id(),id)).isNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM media WHERE id=?",String.class,id)).isEqualTo("PROBING");
+        var ready=jdbc.queryForObject("SELECT next_attempt_at FROM account_cleanup_job WHERE user_id=? AND media_id=?",LocalDateTime.class,owner.id(),id);
+        assertThat(ready).isAfter(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).plusSeconds(60));
+        cleanup.runPending(); assertThat(java.nio.file.Files.exists(file)).isTrue();
+        jdbc.update("UPDATE account_cleanup_job SET next_attempt_at=? WHERE user_id=?",LocalDateTime.now().minusDays(1),owner.id());
+        cleanup.runPending(); assertThat(java.nio.file.Files.exists(file)).isFalse();
+    }
+
+    @Test
+    void cleanupQueueFailureRollsBackDeletionAndActiveResourcesCannotBeCleaned() throws Exception {
+        Browser owner=login(); String id=id(upload(owner,"protected.mp4",new byte[]{1}));
+        String key=media.findOwned(owner.id(),id).getStorageKey();
+        jdbc.update("INSERT INTO account_cleanup_job(id,user_id,media_id,scope_key,status,attempts,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                UUID.randomUUID().toString(),owner.id(),id,id);
+        jdbc.update("UPDATE account_cleanup_job SET next_attempt_at=? WHERE user_id=?",LocalDateTime.now().minusDays(1),owner.id());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->mediaService.delete(owner.id(),id))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(media.findOwned(owner.id(),id)).isNotNull();
+        cleanup.runPending();
+        assertThat(java.nio.file.Files.exists(root.resolve(key))).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM account_cleanup_job WHERE user_id=?",String.class,owner.id())).isEqualTo("FAILED");
     }
 
     private MvcResult upload(Browser browser,String filename,byte[] bytes) throws Exception {

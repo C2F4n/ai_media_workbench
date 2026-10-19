@@ -10,6 +10,12 @@ import org.example.ai_media_workbench.entity.MediaEntity;
 public interface MediaMapper {
     void insert(MediaEntity media);
     MediaEntity findOwned(@Param("userId") String userId, @Param("id") String id);
+    /** 删除专用：包含已删除记录，以便重复请求幂等成功。 */
+    MediaEntity lockOwnedIncludingDeleted(@Param("userId") String userId, @Param("id") String id);
+    void markDeleted(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
+    void markPlansDeleted(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
+    void markTasksDeleted(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
+    void markOutputsDeleted(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
     List<MediaEntity> listOwned(@Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
     long countOwned(String userId);
     int retry(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);

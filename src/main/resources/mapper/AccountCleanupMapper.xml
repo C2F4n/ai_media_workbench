@@ -28,11 +28,11 @@
         WHERE user_id = #{userId} AND deleted_at IS NULL
     </update>
     <insert id="insertJob">
-        INSERT INTO account_cleanup_job (id, user_id, status, attempts, next_attempt_at, created_at, updated_at)
-        VALUES (#{id}, #{userId}, #{status}, 0, #{nextAttemptAt}, #{createdAt}, #{updatedAt})
+        INSERT INTO account_cleanup_job (id, user_id, media_id, scope_key, status, attempts, next_attempt_at, created_at, updated_at)
+        VALUES (#{id}, #{userId}, #{mediaId}, #{scopeKey}, #{status}, 0, #{nextAttemptAt}, #{createdAt}, #{updatedAt})
     </insert>
     <select id="findPending" resultType="org.example.ai_media_workbench.entity.AccountCleanupJobEntity">
-        SELECT id, user_id, status, attempts, next_attempt_at, created_at, updated_at
+        SELECT id, user_id, media_id, scope_key, status, attempts, next_attempt_at, created_at, updated_at
         FROM account_cleanup_job
         WHERE status IN ('QUEUED', 'FAILED') AND attempts &lt; 5 AND next_attempt_at &lt;= #{now}
         ORDER BY created_at, id LIMIT 10
@@ -50,6 +50,28 @@
     <select id="isDeletedAccount" resultType="int">
         SELECT COUNT(*) FROM app_user WHERE id = #{userId} AND status = 'DELETED'
     </select>
+    <select id="isDeletedMedia" resultType="int">
+        SELECT COUNT(*) FROM media WHERE user_id=#{userId} AND id=#{mediaId} AND deleted_at IS NOT NULL
+    </select>
+    <select id="mediaProbeStarted" resultType="java.time.LocalDateTime">
+        SELECT probe_started_at FROM media WHERE user_id=#{userId} AND id=#{mediaId} AND deleted_at IS NOT NULL
+    </select>
+    <select id="latestMediaTaskLease" resultType="java.time.LocalDateTime">
+        SELECT MAX(lease_started_at) FROM media_task
+        WHERE user_id=#{userId} AND media_id=#{mediaId} AND deleted_at IS NOT NULL AND run_token IS NOT NULL
+    </select>
+    <select id="findMediaStorageKeys" resultType="string">
+        SELECT storage_key FROM media WHERE user_id=#{userId} AND id=#{mediaId} AND deleted_at IS NOT NULL
+        UNION
+        SELECT o.storage_key FROM output_file o JOIN media_task t ON t.id=o.task_id AND t.user_id=o.user_id
+        WHERE o.user_id=#{userId} AND t.media_id=#{mediaId} AND o.deleted_at IS NOT NULL AND t.deleted_at IS NOT NULL
+        UNION
+        SELECT CONCAT(user_id,'/',id,'-',run_token,'.mp4') FROM media_task
+        WHERE user_id=#{userId} AND media_id=#{mediaId} AND deleted_at IS NOT NULL AND run_token IS NOT NULL
+        UNION
+        SELECT CONCAT(user_id,'/',id,'-',run_token,'.mp3') FROM media_task
+        WHERE user_id=#{userId} AND media_id=#{mediaId} AND deleted_at IS NOT NULL AND run_token IS NOT NULL
+    </select>
     <select id="findStorageKeys" resultType="string">
         <!-- 包括逻辑删除的资源，以便清理对应文件；UNION 对重复存储键去重。 -->
         SELECT storage_key FROM media
@@ -59,6 +81,9 @@
         WHERE user_id = #{userId}
         UNION
         SELECT CONCAT(user_id,'/',id,'-',run_token,'.mp4') FROM media_task
+        WHERE user_id = #{userId} AND run_token IS NOT NULL
+        UNION
+        SELECT CONCAT(user_id,'/',id,'-',run_token,'.mp3') FROM media_task
         WHERE user_id = #{userId} AND run_token IS NOT NULL
     </select>
     <update id="complete">

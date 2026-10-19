@@ -1,5 +1,5 @@
 /**
- * 轻量音视频工作台阅读入口。登录后直接使用工具，不创建项目；已实现账号、上传检测、MP4转换和目标体积压缩。
+ * 轻量音视频工作台阅读入口。登录后直接使用工具，不创建项目；已实现账号、上传检测与删除、MP4转换、目标体积压缩和MP3音频提取。
  *
  * <p>一次请求的主线：安全过滤器 -> Controller -> Service 接口 -> 实现类 -> Mapper -> 数据库。
  * 返回时由 Controller 将 Entity 转成 VO，再由 Result.success 包装，避免暴露敏感字段。
@@ -18,7 +18,10 @@
  * 素材从 MediaController -> MediaService -> MediaMapper 阅读；后台检测看 MediaProbeWorker 和 FfprobeMediaProbe。
  * 转换从 ProcessingController -> ProcessingService -> ProcessingMapper 阅读；TranscodeWorker负责后台执行与结果校验。
  * FfmpegMediaTranscoder只执行白名单参数；OutputController -> OutputService处理鉴权播放、Range与下载。
- * VideoParameters按operation区分转换与压缩；CompressionBudget计算码率预算，两遍编码共用超时，输出再按实际字节数验收。
+ * OperationParameters按operation区分转换、压缩与音频提取，VideoParameters仅定义视频专用字段。
+ * CompressionBudget计算码率预算，两遍编码共用超时，输出再按实际字节数验收。
+ * 音频提取独立检查MP3编码器，按首条音轨实际时长验收，不用视频时长补静音；结果复用鉴权、取消与清理。
+ * 素材删除与方案执行共用账号锁，原子撤销关联资源并入清理队列；V7扩展现有队列的素材范围，不修改旧迁移。
  * Service中的事务不覆盖整个转码过程；后台失败持久化，文件清理用于补偿，不在实现类组装HTTP错误响应。
  * V5 将资源直接归属用户，legacy_project 仅保留历史数据，不参与新的上传或处理业务。
  */

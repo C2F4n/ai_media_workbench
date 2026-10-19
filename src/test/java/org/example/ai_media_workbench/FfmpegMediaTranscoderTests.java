@@ -13,7 +13,8 @@ import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.processing.TranscodeParameters;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
-import org.example.ai_media_workbench.dto.processing.VideoParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
 import org.example.ai_media_workbench.service.impl.CompressionBudget;
 import org.example.ai_media_workbench.properties.MediaToolProperties;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
@@ -116,11 +117,68 @@ class FfmpegMediaTranscoderTests {
 
     @Test void oldTranscodeSnapshotsAndNewCompressionSnapshotsRoundTripWithoutChangingShape() {
         var json = new ObjectMapper();
-        var old = json.readValue("{\"operation\":\"transcode\",\"outputFormat\":\"mp4\",\"resolutionPreset\":\"source\",\"audioMode\":\"keep\"}", VideoParameters.class);
+        var old = json.readValue("{\"operation\":\"transcode\",\"outputFormat\":\"mp4\",\"resolutionPreset\":\"source\",\"audioMode\":\"keep\"}", OperationParameters.class);
         assertThat(old).isInstanceOf(TranscodeParameters.class);
         assertThat(json.readTree(json.writeValueAsString(old)).size()).isEqualTo(4);
         var compression = new CompressionParameters("compress", "mp4", 200_000, "720p", "keep");
-        assertThat(json.readValue(json.writeValueAsString(compression), VideoParameters.class)).isEqualTo(compression);
+        assertThat(json.readValue(json.writeValueAsString(compression), OperationParameters.class)).isEqualTo(compression);
+        var audio = new ExtractAudioParameters("extract_audio", "mp3");
+        assertThat(json.readValue(json.writeValueAsString(audio), OperationParameters.class)).isEqualTo(audio);
+        assertThat(json.readTree(json.writeValueAsString(audio)).size()).isEqualTo(2);
+    }
+
+    @Test void nativeAudioExtractionUsesTheFirstTrackWithoutVideoAndChecksItsOwnDuration() throws Exception {
+        var probe = new FfprobeMediaProbe(new MediaToolProperties("ffprobe", Duration.ofSeconds(10), Duration.ofMinutes(2), 1000, false), new ObjectMapper());
+        assumeTrue(probe.isAvailable(), "Install ffprobe for native audio checks");
+        Path source = root.resolve("two-audio-tracks.mkv"), output = root.resolve("audio.mp3");
+        try {
+            run("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=160x90:r=10:d=2",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=0.8",
+                    "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=1.5",
+                    "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-y", source.toString());
+        } catch (java.io.IOException missing) { assumeTrue(false, "Install ffmpeg for native audio checks"); return; }
+        assertThat(probe.inspect(source).durationMs()).isBetween(1900L, 2100L);
+        var firstTrack = probe.inspectAudio(source);
+        assertThat(firstTrack.durationMs()).isBetween(750L, 900L);
+        var converter = new FfmpegMediaTranscoder(properties(Duration.ofSeconds(20)));
+        assertThat(converter.isAudioExtractionAvailable()).isTrue();
+        long original = Files.size(source);
+        converter.convert(source, output, firstTrack, new ExtractAudioParameters("extract_audio", "mp3"), () -> false);
+        var result = probe.inspectAudio(output);
+        assertThat(result.container()).isEqualTo("mp3"); assertThat(result.audioCodec()).isEqualTo("mp3");
+        assertThat(result.videoCodec()).isNull(); assertThat(result.width()).isNull(); assertThat(result.height()).isNull();
+        assertThat(result.durationMs()).isBetween(750L, 1100L);
+        assertThat(Files.size(output)).isPositive(); assertThat(Files.size(source)).isEqualTo(original);
+        assertThatThrownBy(() -> probe.inspect(output)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> probe.inspectAudio(Files.writeString(root.resolve("broken.mp3"), "not audio")))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test void audioOnlyEncoderAvailabilityAndCancellationDoNotDependOnVideoCodecs() throws Exception {
+        Process available = mock(Process.class), stalled = mock(Process.class);
+        when(available.getInputStream()).thenReturn(new ByteArrayInputStream(" A libmp3lame encoder\n".getBytes(StandardCharsets.UTF_8)));
+        when(available.waitFor(4, TimeUnit.SECONDS)).thenReturn(true); when(available.exitValue()).thenReturn(0);
+        when(stalled.waitFor(anyLong(), any(TimeUnit.class))).thenReturn(false);
+        when(stalled.isAlive()).thenReturn(true); when(stalled.descendants()).thenAnswer(call -> Stream.empty());
+        try (var builders = mockConstruction(ProcessBuilder.class, (builder, context) -> {
+            when(builder.redirectOutput(any(ProcessBuilder.Redirect.class))).thenReturn(builder);
+            when(builder.redirectError(any(ProcessBuilder.Redirect.class))).thenReturn(builder);
+            when(builder.start()).thenReturn(context.getCount() == 1 ? available : stalled);
+            if (context.getCount() == 2) {
+                @SuppressWarnings("unchecked") var command = (List<String>) context.arguments().getFirst();
+                assertThat(command.getFirst()).isEqualTo("ffmpeg");
+                assertThat(command).containsSubsequence("-map", "0:a:0").contains("-vn", "libmp3lame");
+            }
+        })) {
+            var converter = new FfmpegMediaTranscoder(properties(Duration.ofSeconds(10)));
+            assertThat(converter.isAvailable()).isFalse(); assertThat(converter.isAudioExtractionAvailable()).isTrue();
+            AtomicInteger polls = new AtomicInteger();
+            var audio = new MediaMetadataVO("mov", 800, null, null, null, true, "aac");
+            assertThatThrownBy(() -> converter.convert(root.resolve("source.bin"), root.resolve("audio.mp3"), audio,
+                    new ExtractAudioParameters("extract_audio", "mp3"), () -> polls.getAndIncrement() > 0))
+                    .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.code()).isEqualTo(ErrorCode.TASK_CANCELLED));
+            verify(stalled, atLeastOnce()).destroyForcibly();
+        }
     }
 
     @Test void timedOutAndCancelledChildrenAreDestroyedWithoutInvokingAShell() throws Exception {

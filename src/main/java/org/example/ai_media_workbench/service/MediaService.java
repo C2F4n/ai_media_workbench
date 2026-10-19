@@ -11,4 +11,6 @@ public interface MediaService {
     PageVO<MediaVO> list(String userId, PageQuery query);
     MediaVO get(String userId, String mediaId);
     MediaVO retryProbe(String userId, String mediaId);
+    /** 原子撤销素材及关联资源，取消活动任务并安排持久化文件清理。 */
+    void delete(String userId, String mediaId);
 }

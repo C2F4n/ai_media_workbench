@@ -5,6 +5,8 @@ import org.example.ai_media_workbench.mapper.AccountCleanupMapper;
 import org.example.ai_media_workbench.service.AccountCleanupService;
 import org.example.ai_media_workbench.properties.StorageProperties;
 import org.example.ai_media_workbench.properties.AccountCleanupProperties;
+import org.example.ai_media_workbench.properties.MediaToolProperties;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -20,7 +22,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 注销后的文件清理队列：业务事务只入队，定时任务处理磁盘文件，失败保留记录供重试。 */
+/** 复用持久化队列清理已注销账号或单个已删除素材；业务事务只入队，磁盘清理失败可重试。 */
 @Service
 public class AccountCleanupServiceImpl implements AccountCleanupService {
     private static final Logger log = LoggerFactory.getLogger(AccountCleanupServiceImpl.class);
@@ -28,26 +30,49 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
     private final Clock clock;
     private final Path storageRoot;
     private final AccountCleanupProperties properties;
+    private final MediaToolProperties mediaTool;
+    private final TranscodeProperties transcode;
 
     public AccountCleanupServiceImpl(AccountCleanupMapper mapper, Clock clock,
-                                     StorageProperties storageProperties, AccountCleanupProperties properties) {
+                                     StorageProperties storageProperties, AccountCleanupProperties properties,
+                                     MediaToolProperties mediaTool, TranscodeProperties transcode) {
         this.mapper = mapper;
         this.clock = clock;
         this.storageRoot = Path.of(storageProperties.root()).toAbsolutePath().normalize();
         this.properties = properties;
+        this.mediaTool = mediaTool;
+        this.transcode = transcode;
     }
 
     /** 将指定用户的文件清理任务保存到数据库。 */
     @Override
     @Transactional
     public void enqueue(String userId) {
+        enqueue(userId, null, now());
+    }
+
+    @Override
+    @Transactional
+    public void enqueueMedia(String userId, String mediaId) {
+        LocalDateTime ready = now();
+        var probing = mapper.mediaProbeStarted(userId, mediaId);
+        var running = mapper.latestMediaTaskLease(userId, mediaId);
+        // 逻辑删除阻止后续执行/发布；等旧进程的租约结束，避免过早删除后旧工具再写入文件。
+        if (probing != null && probing.plus(mediaTool.lease()).isAfter(ready)) ready = probing.plus(mediaTool.lease());
+        if (running != null && running.plus(transcode.lease()).isAfter(ready)) ready = running.plus(transcode.lease());
+        enqueue(userId, mediaId, ready);
+    }
+
+    private void enqueue(String userId, String mediaId, LocalDateTime ready) {
         var job = new AccountCleanupJobEntity();
         job.setId(UUID.randomUUID().toString());
         job.setUserId(userId);
+        job.setMediaId(mediaId);
+        job.setScopeKey(mediaId == null ? "ACCOUNT" : mediaId);
         job.setStatus("QUEUED");
         job.setCreatedAt(now());
         job.setUpdatedAt(now());
-        job.setNextAttemptAt(now());
+        job.setNextAttemptAt(ready);
         mapper.insertJob(job);
     }
 
@@ -67,10 +92,13 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
             // 条件更新抢占任务；只有成功把待处理状态改为 RUNNING 的执行者才处理本轮任务。
             if (mapper.claim(job.getId(), now()) != 1) continue;
             try {
-                if (mapper.isDeletedAccount(job.getUserId()) != 1) {
-                    throw new IOException("Account is not deleted");
-                }
-                for (String key : mapper.findStorageKeys(job.getUserId())) {
+                boolean account = job.getMediaId() == null;
+                if ((account ? mapper.isDeletedAccount(job.getUserId())
+                        : mapper.isDeletedMedia(job.getUserId(), job.getMediaId())) != 1)
+                    throw new IOException("Cleanup scope is not deleted");
+                var keys = account ? mapper.findStorageKeys(job.getUserId())
+                        : mapper.findMediaStorageKeys(job.getUserId(), job.getMediaId());
+                for (String key : keys) {
                     deleteControlledFile(key);
                     // 运行中注销或进程中断可能留下未发布的输出和两遍编码缓存。
                     if (key.matches("[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36}-[0-9a-fA-F-]{36}\\.mp4"))
@@ -82,7 +110,7 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
                 // 定时任务没有 HTTP 请求，不能交给 ControllerAdvice；必须在此记录失败并安排重试。
                 // 已删除的文件再次处理不会报错，因此部分成功后也可以重试；重试间隔随次数增加。
                 mapper.fail(job.getId(), now(), now().plusSeconds(60L * (job.getAttempts() + 1)));
-                log.warn("Account cleanup job {} failed: {}", job.getId(), exception.getClass().getSimpleName());
+                log.warn("File cleanup job {} failed: {}", job.getId(), exception.getClass().getSimpleName());
             }
         }
         return completed;
@@ -111,6 +139,7 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
 
     /** 获取清理任务使用的当前 UTC 时间。 */
     private LocalDateTime now() {
-        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
+        // 与 DATETIME(6) 对齐，避免纳秒舍入把“立即执行”写成略晚于当前时间。
+        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
     }
 }

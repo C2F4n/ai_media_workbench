@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
-import org.example.ai_media_workbench.dto.processing.VideoParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
 import org.example.ai_media_workbench.entity.OperationPlanEntity;
 import org.example.ai_media_workbench.entity.OutputEntity;
 import org.example.ai_media_workbench.entity.TaskEntity;
@@ -46,8 +46,8 @@ public class ProcessingViews {
                 "/api/outputs/" + o.getId() + "/preview", "/api/outputs/" + o.getId() + "/download", instant(o.getCreatedAt()));
     }
 
-    private VideoParameters parameters(String value) {
-        return value == null ? null : json.readValue(value, VideoParameters.class);
+    private OperationParameters parameters(String value) {
+        return value == null ? null : json.readValue(value, OperationParameters.class);
     }
     private Instant instant(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC); }
 }
