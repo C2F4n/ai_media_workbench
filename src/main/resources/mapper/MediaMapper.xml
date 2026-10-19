@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.ai_media_workbench.mapper.MediaMapper">
+    <insert id="insert">
+        INSERT INTO media(id,user_id,original_filename,storage_key,size_bytes,status,created_at,updated_at)
+        VALUES(#{id},#{userId},#{originalFilename},#{storageKey},#{sizeBytes},'PROBING',#{createdAt},#{updatedAt})
+    </insert>
+    <select id="findOwned" resultType="org.example.ai_media_workbench.entity.MediaEntity">
+        SELECT * FROM media WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL
+    </select>
+    <select id="listOwned" resultType="org.example.ai_media_workbench.entity.MediaEntity">
+        SELECT * FROM media WHERE user_id=#{userId} AND deleted_at IS NULL
+        ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="countOwned" resultType="long">
+        SELECT COUNT(*) FROM media WHERE user_id=#{userId} AND deleted_at IS NULL
+    </select>
+    <update id="retry">
+        UPDATE media SET status='PROBING',error_code=NULL,error_message=NULL,metadata_json=NULL,
+            kind=NULL,probe_token=NULL,probe_started_at=NULL,updated_at=#{now}
+        WHERE id=#{id} AND user_id=#{userId} AND status='FAILED' AND deleted_at IS NULL
+    </update>
+    <select id="findPending" resultType="org.example.ai_media_workbench.entity.MediaEntity">
+        SELECT m.* FROM media m JOIN app_user u ON u.id=m.user_id
+        WHERE m.status='PROBING' AND m.deleted_at IS NULL AND u.status='ACTIVE'
+            AND (m.probe_started_at IS NULL OR m.probe_started_at &lt; #{cutoff})
+        ORDER BY m.created_at,m.id LIMIT 1
+    </select>
+    <update id="claim">
+        UPDATE media SET probe_token=#{token},probe_started_at=#{now}
+        WHERE id=#{id} AND status='PROBING' AND deleted_at IS NULL
+            AND (probe_started_at IS NULL OR probe_started_at &lt; #{cutoff})
+            AND EXISTS(SELECT 1 FROM app_user u WHERE u.id=media.user_id AND u.status='ACTIVE')
+    </update>
+    <update id="complete">
+        <!-- 租约和归属状态同时约束；旧执行者或注销账号不能复活素材。 -->
+        UPDATE media SET status=#{status},kind=#{kind},metadata_json=#{metadataJson},error_code=#{errorCode},
+            error_message=#{errorMessage},updated_at=#{updatedAt},probe_token=NULL,probe_started_at=NULL
+        WHERE id=#{id} AND status='PROBING' AND probe_token=#{probeToken} AND deleted_at IS NULL
+            AND EXISTS(SELECT 1 FROM app_user u WHERE u.id=media.user_id AND u.status='ACTIVE')
+    </update>
+</mapper>

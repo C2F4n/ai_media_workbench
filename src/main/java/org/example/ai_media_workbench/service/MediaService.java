@@ -1,0 +1,14 @@
+package org.example.ai_media_workbench.service;
+
+import org.example.ai_media_workbench.dto.common.PageQuery;
+import org.example.ai_media_workbench.vo.common.PageVO;
+import org.example.ai_media_workbench.vo.media.MediaVO;
+import org.springframework.web.multipart.MultipartFile;
+
+/** 素材直接归属于已认证用户，不创建默认项目。 */
+public interface MediaService {
+    MediaVO upload(String userId, MultipartFile file);
+    PageVO<MediaVO> list(String userId, PageQuery query);
+    MediaVO get(String userId, String mediaId);
+    MediaVO retryProbe(String userId, String mediaId);
+}

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.ai_media_workbench.mapper.RegistrationEmailMapper">
+    <insert id="insert">
+        INSERT INTO registration_email_challenge
+            (id,email,code_hash,attempts,max_attempts,expires_at,created_at)
+        VALUES (#{id},#{email},#{codeHash},0,#{maxAttempts},#{expiresAt},#{createdAt})
+    </insert>
+    <select id="findById" resultType="org.example.ai_media_workbench.entity.RegistrationEmailEntity">
+        SELECT id,email,code_hash,attempts,max_attempts,expires_at,consumed_at,created_at
+        FROM registration_email_challenge WHERE id=#{id}
+    </select>
+    <update id="attempt">
+        UPDATE registration_email_challenge SET attempts=attempts+1
+        WHERE id=#{id} AND email=#{email} AND consumed_at IS NULL
+            AND expires_at &gt; #{now} AND attempts &lt; max_attempts
+    </update>
+    <update id="consume">
+        UPDATE registration_email_challenge SET consumed_at=#{now}
+        WHERE id=#{id} AND email=#{email} AND consumed_at IS NULL
+            AND expires_at &gt; #{now} AND attempts &lt;= max_attempts
+    </update>
+    <delete id="deleteExpired">
+        DELETE FROM registration_email_challenge WHERE expires_at &lt; #{cutoff}
+    </delete>
+</mapper>

@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.ai_media_workbench.mapper.ProcessingMapper">
+    <insert id="insertPlan">
+        INSERT INTO operation_plan(id,user_id,media_id,version,status,parameters_json,summary,questions_json,warnings_json,created_at,updated_at)
+        VALUES(#{id},#{userId},#{mediaId},#{version},#{status},#{parametersJson},#{summary},'[]','[]',#{createdAt},#{updatedAt})
+    </insert>
+    <select id="plan" resultType="org.example.ai_media_workbench.entity.OperationPlanEntity">
+        SELECT * FROM operation_plan WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL
+    </select>
+    <select id="lockPlan" resultType="org.example.ai_media_workbench.entity.OperationPlanEntity">
+        SELECT * FROM operation_plan WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL FOR UPDATE
+    </select>
+    <update id="updatePlan">
+        UPDATE operation_plan SET version=#{version},status=#{status},parameters_json=#{parametersJson},summary=#{summary},updated_at=#{updatedAt}
+        WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL
+    </update>
+    <sql id="planFilter">user_id=#{userId} AND deleted_at IS NULL <if test="mediaId != null">AND media_id=#{mediaId}</if></sql>
+    <select id="plans" resultType="org.example.ai_media_workbench.entity.OperationPlanEntity">
+        SELECT * FROM operation_plan WHERE <include refid="planFilter"/> ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="countPlans" resultType="long">SELECT COUNT(*) FROM operation_plan WHERE <include refid="planFilter"/></select>
+    <select id="lockQueue" resultType="int">SELECT id FROM processing_queue_lock WHERE id=1 FOR UPDATE</select>
+    <select id="activeCount" resultType="long">
+        SELECT COUNT(*) FROM media_task WHERE status IN ('QUEUED','RUNNING','CANCELLING') AND deleted_at IS NULL
+    </select>
+    <insert id="insertTask">
+        INSERT INTO media_task(id,user_id,media_id,plan_id,plan_version,kind,source_id,source_version,parameters_json,status,stage,created_at)
+        VALUES(#{id},#{userId},#{mediaId},#{planId},#{planVersion},#{kind},#{sourceId},#{sourceVersion},#{parametersJson},#{status},#{stage},#{createdAt})
+    </insert>
+    <select id="task" resultType="org.example.ai_media_workbench.entity.TaskEntity">
+        SELECT * FROM media_task WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL
+    </select>
+    <select id="lockTask" resultType="org.example.ai_media_workbench.entity.TaskEntity">
+        SELECT * FROM media_task WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL FOR UPDATE
+    </select>
+    <select id="taskForPlan" resultType="org.example.ai_media_workbench.entity.TaskEntity">
+        SELECT * FROM media_task WHERE plan_id=#{planId} AND user_id=#{userId} AND deleted_at IS NULL
+    </select>
+    <sql id="taskFilter">user_id=#{userId} AND deleted_at IS NULL <if test="mediaId != null">AND media_id=#{mediaId}</if></sql>
+    <select id="tasks" resultType="org.example.ai_media_workbench.entity.TaskEntity">
+        SELECT * FROM media_task WHERE <include refid="taskFilter"/> ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="countTasks" resultType="long">SELECT COUNT(*) FROM media_task WHERE <include refid="taskFilter"/></select>
+    <update id="cancel">
+        UPDATE media_task SET stage=CASE WHEN status='QUEUED' THEN 'CANCELLED' ELSE stage END,
+            finished_at=CASE WHEN status='QUEUED' THEN #{now} ELSE finished_at END,
+            status=CASE WHEN status='QUEUED' THEN 'CANCELLED' ELSE 'CANCELLING' END
+        WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL AND status IN ('QUEUED','RUNNING')
+    </update>
+    <select id="pending" resultType="org.example.ai_media_workbench.entity.TaskEntity">
+        SELECT t.* FROM media_task t JOIN app_user u ON u.id=t.user_id
+        WHERE t.status='QUEUED' AND t.kind='MEDIA_PROCESSING' AND t.deleted_at IS NULL AND u.status='ACTIVE'
+        ORDER BY t.created_at,t.id LIMIT 1
+    </select>
+    <update id="claim">
+        UPDATE media_task SET status='RUNNING',stage='TRANSCODING',started_at=#{now},lease_started_at=#{now},run_token=#{token}
+        WHERE id=#{id} AND status='QUEUED' AND deleted_at IS NULL
+            AND EXISTS(SELECT 1 FROM app_user u WHERE u.id=media_task.user_id AND u.status='ACTIVE')
+    </update>
+    <select id="running" resultType="int">
+        SELECT COUNT(*) FROM media_task t JOIN app_user u ON u.id=t.user_id
+        WHERE t.id=#{id} AND t.run_token=#{token} AND t.status='RUNNING' AND t.deleted_at IS NULL AND u.status='ACTIVE'
+    </select>
+    <update id="verifying">
+        UPDATE media_task SET stage='VERIFYING' WHERE id=#{id} AND run_token=#{token} AND status='RUNNING' AND deleted_at IS NULL
+    </update>
+    <select id="expired" resultType="org.example.ai_media_workbench.entity.TaskEntity">
+        SELECT * FROM media_task WHERE status IN ('RUNNING','CANCELLING') AND deleted_at IS NULL AND lease_started_at &lt; #{cutoff} LIMIT 20
+    </select>
+    <update id="expire">
+        UPDATE media_task SET stage=CASE WHEN status='CANCELLING' THEN 'CANCELLED' ELSE 'FAILED' END,
+            error_code=CASE WHEN status='CANCELLING' THEN NULL ELSE 'TASK_INTERRUPTED' END,
+            error_message=CASE WHEN status='CANCELLING' THEN NULL ELSE 'Processing interrupted; submit a new conversion.' END,
+            finished_at=#{now},run_token=NULL,lease_started_at=NULL,
+            status=CASE WHEN status='CANCELLING' THEN 'CANCELLED' ELSE 'FAILED' END
+        WHERE id=#{id} AND status IN ('RUNNING','CANCELLING') AND lease_started_at &lt; #{cutoff} AND deleted_at IS NULL
+    </update>
+    <update id="finish">
+        UPDATE media_task SET status=#{task.status},stage=#{task.stage},progress_percent=#{task.progressPercent},
+            error_code=#{task.errorCode},error_message=#{task.errorMessage},finished_at=#{task.finishedAt},run_token=NULL,lease_started_at=NULL
+        WHERE id=#{task.id} AND user_id=#{task.userId} AND run_token=#{task.runToken} AND status IN ('RUNNING','CANCELLING')
+            AND deleted_at IS NULL AND lease_started_at &gt;= #{cutoff}
+            AND EXISTS(SELECT 1 FROM app_user u WHERE u.id=media_task.user_id AND u.status='ACTIVE')
+    </update>
+    <insert id="insertOutput">
+        INSERT INTO output_file(id,user_id,task_id,filename,storage_key,content_type,size_bytes,metadata_json,created_at)
+        VALUES(#{id},#{userId},#{taskId},#{filename},#{storageKey},#{contentType},#{sizeBytes},#{metadataJson},#{createdAt})
+    </insert>
+    <select id="output" resultType="org.example.ai_media_workbench.entity.OutputEntity">
+        SELECT o.* FROM output_file o JOIN media_task t ON t.id=o.task_id AND t.user_id=o.user_id
+        WHERE o.id=#{id} AND o.user_id=#{userId} AND o.deleted_at IS NULL AND t.deleted_at IS NULL AND t.status='SUCCEEDED'
+    </select>
+    <select id="taskOutputs" resultType="org.example.ai_media_workbench.entity.OutputEntity">
+        SELECT * FROM output_file WHERE task_id=#{taskId} AND user_id=#{userId} AND deleted_at IS NULL ORDER BY created_at,id
+    </select>
+    <sql id="outputFilter">
+        o.user_id=#{userId} AND o.deleted_at IS NULL AND t.deleted_at IS NULL AND t.status='SUCCEEDED'
+        <if test="mediaId != null">AND t.media_id=#{mediaId}</if>
+    </sql>
+    <select id="outputs" resultType="org.example.ai_media_workbench.entity.OutputEntity">
+        SELECT o.* FROM output_file o JOIN media_task t ON t.id=o.task_id AND t.user_id=o.user_id
+        WHERE <include refid="outputFilter"/> ORDER BY o.created_at DESC,o.id DESC LIMIT #{limit} OFFSET #{offset}
+    </select>
+    <select id="countOutputs" resultType="long">
+        SELECT COUNT(*) FROM output_file o JOIN media_task t ON t.id=o.task_id AND t.user_id=o.user_id WHERE <include refid="outputFilter"/>
+    </select>
+</mapper>

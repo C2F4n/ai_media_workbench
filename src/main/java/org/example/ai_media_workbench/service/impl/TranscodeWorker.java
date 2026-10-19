@@ -1,0 +1,136 @@
+package org.example.ai_media_workbench.service.impl;
+
+import java.nio.file.Files;
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.UUID;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
+import org.example.ai_media_workbench.dto.processing.VideoParameters;
+import org.example.ai_media_workbench.dto.processing.CompressionParameters;
+import org.example.ai_media_workbench.entity.OutputEntity;
+import org.example.ai_media_workbench.entity.TaskEntity;
+import org.example.ai_media_workbench.entity.UserStatus;
+import org.example.ai_media_workbench.entity.enums.TaskStage;
+import org.example.ai_media_workbench.entity.enums.TaskStatus;
+import org.example.ai_media_workbench.mapper.MediaMapper;
+import org.example.ai_media_workbench.mapper.ProcessingMapper;
+import org.example.ai_media_workbench.mapper.UserMapper;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.service.MediaProbe;
+import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
+
+/** One conversion per worker. No database locks are held while FFmpeg is running. */
+@Component
+public class TranscodeWorker {
+    private static final Logger log = LoggerFactory.getLogger(TranscodeWorker.class);
+    private final ProcessingMapper mapper;
+    private final MediaMapper media;
+    private final UserMapper users;
+    private final LocalMediaStorage storage;
+    private final MediaTranscoder transcoder;
+    private final MediaProbe probe;
+    private final TranscodeProperties properties;
+    private final ObjectMapper json;
+    private final Clock clock;
+    private final TransactionTemplate transactions;
+
+    public TranscodeWorker(ProcessingMapper mapper, MediaMapper media, UserMapper users, LocalMediaStorage storage,
+                           MediaTranscoder transcoder, MediaProbe probe, TranscodeProperties properties,
+                           ObjectMapper json, Clock clock, PlatformTransactionManager manager) {
+        this.mapper = mapper; this.media = media; this.users = users; this.storage = storage;
+        this.transcoder = transcoder; this.probe = probe; this.properties = properties;
+        this.json = json; this.clock = clock; this.transactions = new TransactionTemplate(manager);
+    }
+
+    @Scheduled(fixedDelay = 1000)
+    public void scheduledRun() { if (properties.workerEnabled()) runOne(); }
+
+    public synchronized boolean runOne() {
+        var cutoff = now().minus(properties.lease());
+        for (var old : mapper.expired(cutoff)) {
+            if (mapper.expire(old.getId(), cutoff, now()) == 1 && old.getRunToken() != null)
+                discard(old.getUserId() + "/" + old.getId() + "-" + old.getRunToken() + ".mp4");
+        }
+        var pending = mapper.pending();
+        if (pending.isEmpty()) return false;
+        var task = pending.getFirst();
+        task.setRunToken(UUID.randomUUID().toString());
+        if (mapper.claim(task.getId(), task.getRunToken(), now()) != 1) return false;
+        LocalMediaStorage.OutputTarget target = null;
+        boolean published = false;
+        try {
+            var source = media.findOwned(task.getUserId(), task.getMediaId());
+            if (source == null) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+            var original = json.readValue(source.getMetadataJson(), MediaMetadataVO.class);
+            var parameters = json.readValue(task.getParametersJson(), VideoParameters.class);
+            target = storage.createOutput(task.getUserId(), task.getId(), task.getRunToken());
+            transcoder.convert(storage.resolve(source.getStorageKey()), target.path(), original, parameters,
+                    () -> mapper.running(task.getId(), task.getRunToken()) != 1);
+            if (mapper.verifying(task.getId(), task.getRunToken()) != 1) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+            var metadata = probe.inspect(target.path());
+            verify(original, metadata, parameters);
+            long size = Files.size(target.path());
+            if (size <= 0 || size > properties.maxOutputSize().toBytes()) throw new BusinessException(ErrorCode.OUTPUT_TOO_LARGE);
+            if (parameters instanceof CompressionParameters compression
+                    && (size > compression.targetSizeBytes() || size >= source.getSizeBytes()))
+                throw new BusinessException(ErrorCode.COMPRESSION_TARGET_UNREACHABLE);
+            var output = new OutputEntity();
+            output.setId(UUID.randomUUID().toString()); output.setUserId(task.getUserId()); output.setTaskId(task.getId());
+            String name = source.getOriginalFilename().replaceFirst("\\.[^.]*$", "");
+            if (name.codePointCount(0, name.length()) > 120) name = name.substring(0, name.offsetByCodePoints(0, 120));
+            output.setFilename(name + (parameters instanceof CompressionParameters ? "-compressed.mp4" : "-converted.mp4")); output.setStorageKey(target.key());
+            output.setContentType("video/mp4"); output.setSizeBytes(size); output.setMetadataJson(json.writeValueAsString(metadata));
+            output.setCreatedAt(now());
+            published = Boolean.TRUE.equals(transactions.execute(status -> finish(task, output, null)));
+        } catch (Exception exception) {
+            // Background work has no HTTP response: persist a safe failure, never raw tool output or disk paths.
+            ErrorCode error = exception instanceof BusinessException business ? business.code() : ErrorCode.TRANSCODE_FAILED;
+            transactions.executeWithoutResult(status -> finish(task, null, error));
+        } finally {
+            // Unpublished/partial outputs must not become accessible after cancellation, deletion or a stale lease.
+            if (!published && target != null) discard(target.key());
+        }
+        return true;
+    }
+
+    private boolean finish(TaskEntity task, OutputEntity output, ErrorCode error) {
+        var user = users.findByIdForUpdate(task.getUserId());
+        if (user == null || user.getStatus() != UserStatus.ACTIVE) return false;
+        var current = mapper.lockTask(task.getUserId(), task.getId());
+        if (current == null || !task.getRunToken().equals(current.getRunToken())) return false;
+        boolean cancelled = current.getStatus() == TaskStatus.CANCELLING || error == ErrorCode.TASK_CANCELLED;
+        task.setStatus(cancelled ? TaskStatus.CANCELLED : error != null ? TaskStatus.FAILED : TaskStatus.SUCCEEDED);
+        task.setStage(cancelled ? TaskStage.CANCELLED : error != null ? TaskStage.FAILED : TaskStage.DONE);
+        task.setProgressPercent(task.getStatus() == TaskStatus.SUCCEEDED ? 100 : null);
+        task.setErrorCode(cancelled || error == null ? null : error.name());
+        task.setErrorMessage(cancelled || error == null ? null : error.message()); task.setFinishedAt(now());
+        if (mapper.finish(task, now().minus(properties.lease())) != 1) return false;
+        if (task.getStatus() == TaskStatus.SUCCEEDED && output != null) { mapper.insertOutput(output); return true; }
+        return false;
+    }
+
+    private void verify(MediaMetadataVO source, MediaMetadataVO output, VideoParameters parameters) {
+        int[] size = FfmpegMediaTranscoder.dimensions(source, parameters);
+        if (output.width() != size[0] || output.height() != size[1] || !"h264".equals(output.videoCodec())
+                || output.hasAudio() != source.hasAudio() || (output.hasAudio() && !"aac".equals(output.audioCodec()))
+                || Math.abs(output.durationMs() - source.durationMs()) > Math.max(250, source.durationMs() / 1000))
+            throw new BusinessException(ErrorCode.TRANSCODE_FAILED);
+    }
+
+    private void discard(String key) {
+        try { storage.discardOutput(key); }
+        catch (Exception exception) { log.warn("Unpublished conversion cleanup failed"); }
+    }
+    private LocalDateTime now() { return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC); }
+}
