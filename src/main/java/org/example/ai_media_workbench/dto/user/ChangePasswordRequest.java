@@ -5,7 +5,7 @@ import jakarta.validation.constraints.NotNull;
 
 public record ChangePasswordRequest(
         @NotNull @CodePointLength(min = 1, max = 128) String currentPassword,
-        @NotNull @CodePointLength(min = 15, max = 128) String newPassword) {
+        @NotNull @CodePointLength(min = 6, max = 16) String newPassword) {
 
     @Override
     public String toString() { return "ChangePasswordRequest[redacted]"; }

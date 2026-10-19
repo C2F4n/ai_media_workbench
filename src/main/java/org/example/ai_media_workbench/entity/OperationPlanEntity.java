@@ -7,7 +7,7 @@ import org.example.ai_media_workbench.entity.enums.PlanStatus;
 @Data
 public class OperationPlanEntity {
     private String id;
-    private String projectId;
+    private String userId;
     private String mediaId;
     private int version;
     private PlanStatus status;

@@ -9,7 +9,8 @@ import org.example.ai_media_workbench.entity.enums.MediaStatus;
 @Data
 public class MediaEntity {
     private String id;
-    private String projectId;
+    @JsonIgnore
+    private String userId;
     private String originalFilename;
     @JsonIgnore
     private String storageKey;
@@ -22,4 +23,6 @@ public class MediaEntity {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime deletedAt;
+    private String probeToken;
+    private LocalDateTime probeStartedAt;
 }

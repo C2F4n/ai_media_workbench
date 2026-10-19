@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const crypto = require('node:crypto');
 
-const passphrase = 'Browser-Testing-Passphrase-2026!';
+const passphrase = 'Br2026';
 const username = () => 'ui_' + crypto.randomBytes(6).toString('hex');
 
 async function register(page, account) {
@@ -9,7 +9,25 @@ async function register(page, account) {
   await page.getByRole('tab', { name: '注册', exact: true }).click();
   await page.locator('#register-username').fill(account);
   await page.locator('#register-email').fill(account + '@example.com');
+  await page.locator('#send-email-code').click();
+  await expect(page.locator('#email-code-notice')).toHaveText('验证码已发送，请查看邮箱。');
+  if (!process.env.TEST_MAILBOX_URL) throw new Error('Set TEST_MAILBOX_URL to the loopback test SMTP inbox; never bypass email verification.');
+  const mailbox = await page.request.get(process.env.TEST_MAILBOX_URL + '/messages?email=' + encodeURIComponent(account + '@example.com'));
+  expect(mailbox.ok()).toBe(true);
+  const { code } = await mailbox.json();
+  await page.locator('#register-email-code').fill(code === '000000' ? '000001' : '000000');
   await page.locator('#register-name').fill('测试创作者');
+  await page.locator('#register-password').fill(passphrase);
+  await page.locator('#register-confirm-password').fill(passphrase);
+  await page.getByRole('button', { name: '创建账户', exact: true }).click();
+  await expect(page.locator('#register-error')).toHaveText('验证码无效、已过期或尝试次数已用尽，请重新获取。');
+  await page.locator('#register-email-code').fill(code);
+  for (const rejected of ['Ab12!', 'Abcd1234Efgh56789']) {
+    await page.locator('#register-password').fill(rejected);
+    await page.locator('#register-confirm-password').fill(rejected);
+    await page.getByRole('button', { name: '创建账户', exact: true }).click();
+    await expect(page.locator('#register-error')).toHaveText('密码需要6–16个字符。');
+  }
   await page.locator('#register-password').fill(passphrase);
   await page.locator('#register-confirm-password').fill(passphrase);
   await page.getByRole('button', { name: '创建账户', exact: true }).click();
@@ -24,11 +42,16 @@ async function login(page, account, password = passphrase) {
 }
 
 async function deleteAccount(page, account, password = passphrase) {
+  await openAccount(page);
   await page.getByRole('button', { name: '注销账号', exact: true }).click();
   await page.locator('#delete-password').fill(password);
   await page.locator('#delete-username').fill(account);
   await page.getByRole('button', { name: '确认注销', exact: true }).click();
   await expect(page.locator('#auth-notice')).toHaveText('账号已注销。');
+}
+
+async function openAccount(page) {
+  if (await page.locator('#account-panel').isHidden()) await page.getByRole('button', { name: '账户设置', exact: true }).click();
 }
 
 test('registration, token validation, reload, logout and account deletion', async ({ page, context }) => {
@@ -54,6 +77,7 @@ test('registration, token validation, reload, logout and account deletion', asyn
   const unauthorized = await context.request.get('/api/users/me');
   expect(unauthorized.status()).toBe(401);
   await login(page, account);
+  await openAccount(page);
   await page.getByRole('button', { name: '注销账号', exact: true }).click();
   await page.locator('#delete-password').fill('Wrong-browser-passphrase!');
   await page.locator('#delete-username').fill(account);
@@ -77,7 +101,8 @@ test('second-device token is revoked by password change', async ({ page, browser
   const second = await other.newPage();
   await second.goto('/');
   await login(second, account);
-  const next = 'Updated-Browser-Passphrase-2026!';
+  const next = 'UpdatedPass2026!';
+  await openAccount(page);
   await page.locator('#current-password').fill(passphrase);
   await page.locator('#new-password').fill(next);
   await page.locator('#confirm-new-password').fill(next);
@@ -109,7 +134,7 @@ test('desktop and mobile pages have assets and no horizontal overflow', async ({
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('register-' + viewport.width + '.png'), fullPage: true });
   }
-  await context.addCookies([{ name: 'AMW_SESSION', value: 'dG90YWxseS1mYWtl', url: 'http://127.0.0.1:8088', httpOnly: true }]);
+  await context.addCookies([{ name: 'AMW_SESSION', value: 'dG90YWxseS1mYWtl', url: new URL(page.url()).origin, httpOnly: true }]);
   await page.reload();
   await expect(page.locator('#auth-view')).toBeVisible();
   expect((await context.request.get('/api/users/me')).status()).toBe(401);
@@ -120,6 +145,7 @@ test('mobile account and deletion dialog fit the viewport', async ({ page }, tes
   const account = username();
   await register(page, account);
   await login(page, account);
+  await openAccount(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('account-mobile.png'), fullPage: true });
   await page.getByRole('button', { name: '注销账号', exact: true }).click();
@@ -131,4 +157,23 @@ test('mobile account and deletion dialog fit the viewport', async ({ page }, tes
   await page.locator('#delete-username').fill(account);
   await page.getByRole('button', { name: '确认注销', exact: true }).click();
   await expect(page.locator('#auth-notice')).toHaveText('账号已注销。');
+});
+
+test('JSON success, empty success and security failures share the Result contract', async ({ context }) => {
+  const checks = [
+    [await context.request.get('/api/system/capabilities'), 200, 'SUCCESS'],
+    [await context.request.get('/api/users/me'), 401, 'UNAUTHENTICATED'],
+    [await context.request.post('/api/auth/login', { data: { username: username(), password: passphrase } }), 403, 'CSRF_INVALID'],
+    [await context.request.post('/api/auth/logout'), 200, 'SUCCESS']
+  ];
+  for (const [response, status, code] of checks) {
+    expect(response.status()).toBe(status);
+    const result = await response.json();
+    expect(Object.keys(result).sort()).toEqual(['code', 'data', 'details', 'message', 'requestId']);
+    expect(result.code).toBe(code);
+    expect(result.requestId).toBe(response.headers()['x-request-id']);
+    expect(result.details).toEqual([]);
+    if (status !== 200 || response.url().endsWith('/logout')) expect(result.data).toBeNull();
+    else expect(result.data.registration).toBe(true);
+  }
 });

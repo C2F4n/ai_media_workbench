@@ -2,6 +2,7 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="org.example.ai_media_workbench.mapper.UserMapper">
+    <!-- #{参数名} 使用预编译参数绑定，不把用户输入直接拼接为 SQL。 -->
     <sql id="columns">
         id, username, email, display_name, password_hash, email_verified,
         status, created_at, updated_at, deleted_at
@@ -13,6 +14,7 @@
         SELECT <include refid="columns"/> FROM app_user WHERE username = #{username}
     </select>
     <select id="findByIdForUpdate" resultType="org.example.ai_media_workbench.entity.UserEntity">
+        <!-- 事务内锁住目标用户行，供注销流程使用；锁在提交或回滚后释放。 -->
         SELECT <include refid="columns"/> FROM app_user WHERE id = #{id} FOR UPDATE
     </select>
     <insert id="insert">
@@ -31,7 +33,8 @@
         WHERE id = #{id} AND status = 'ACTIVE'
     </update>
     <update id="deleteAccount">
-        UPDATE app_user SET status = 'DELETED', password_hash = '!DELETED', email_verified = FALSE,
+        <!-- 保留账号行及唯一身份占用，但销毁原密码哈希；后续认证还会校验 ACTIVE 状态。 -->
+        UPDATE app_user SET status = 'DELETED', password_hash = '!DELETED',
             display_name = 'Deleted account', deleted_at = #{now}, updated_at = #{now}
         WHERE id = #{id} AND status = 'ACTIVE'
     </update>

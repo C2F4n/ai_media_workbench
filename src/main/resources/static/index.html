@@ -1,10 +1,10 @@
-<!doctype html>
+   <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>账户 · AI音视频工作台</title>
+  <title>AI音视频工作台</title>
   <link rel="icon" href="/assets/brand.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/styles.css">
   <script src="/assets/vendor/lucide.min.js" defer></script>
@@ -16,7 +16,8 @@
       <img src="/assets/brand.svg" width="34" height="34" alt="">
       <span>AI音视频工作台</span>
     </a>
-    <span class="header-label">账户</span>
+    <span id="header-location" class="header-label">工作台</span>
+    <button id="header-account" class="icon-button" type="button" title="账户设置" aria-label="账户设置" hidden><i data-lucide="settings" aria-hidden="true"></i></button>
     <button id="header-logout" class="button secondary compact" hidden>
       <i data-lucide="log-out" aria-hidden="true"></i>退出登录
     </button>
@@ -67,6 +68,7 @@
       </div>
 
       <div id="register-panel" role="tabpanel" aria-labelledby="register-tab" hidden>
+        <p id="register-unavailable" class="notice" role="status" hidden>当前暂未开放注册。</p>
         <form id="register-form">
           <label class="field">用户名
             <input id="register-username" name="username" autocomplete="username" required pattern="[a-zA-Z0-9_]{4,32}" placeholder="4–32位字母、数字或下划线">
@@ -74,12 +76,19 @@
           <label class="field">邮箱
             <input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" required placeholder="name@example.com">
           </label>
+          <div class="verification-row">
+            <label class="field">邮箱验证码
+              <input id="register-email-code" name="emailCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="6位验证码">
+            </label>
+            <button id="send-email-code" class="button secondary" type="button"><i data-lucide="mail" aria-hidden="true"></i><span>发送验证码</span></button>
+          </div>
+          <p id="email-code-notice" class="muted" role="status" hidden></p>
           <label class="field">昵称 <span class="optional">选填</span>
             <input id="register-name" name="displayName" autocomplete="nickname" placeholder="如何称呼你">
           </label>
           <label class="field">密码
             <span class="password-field">
-              <input id="register-password" name="password" type="password" autocomplete="new-password" required placeholder="15–128个字符">
+              <input id="register-password" name="password" type="password" autocomplete="new-password" required placeholder="6–16个字符">
               <button class="icon-button password-toggle" type="button" data-password-target="register-password" aria-label="显示密码" title="显示密码"><i data-lucide="eye" aria-hidden="true"></i></button>
             </span>
           </label>
@@ -93,6 +102,57 @@
     </section>
 
     <section id="account-view" class="account-shell" hidden>
+      <div id="account-notice" class="notice" role="status" hidden></div>
+      <div id="workbench-panel">
+        <div class="workbench-heading"><div><p class="eyebrow">个人工作台</p><h1>音视频工具</h1></div><span id="workspace-user" class="muted"></span></div>
+        <nav class="tool-list" aria-label="处理功能">
+          <button id="detect-tool" class="tool-choice active" type="button" aria-current="page"><i data-lucide="scan-line" aria-hidden="true"></i>视频检测</button>
+          <button id="convert-tool" class="tool-choice" type="button"><i data-lucide="file-video" aria-hidden="true"></i>视频转换</button>
+          <button id="compress-tool" class="tool-choice" type="button"><i data-lucide="minimize-2" aria-hidden="true"></i>视频压缩</button>
+          <button class="tool-choice" type="button" data-unavailable disabled title="尚未开放"><i data-lucide="audio-lines" aria-hidden="true"></i>提取音频</button>
+          <button class="tool-choice" type="button" data-unavailable disabled title="尚未开放"><i data-lucide="captions" aria-hidden="true"></i>字幕处理</button>
+        </nav>
+        <div class="processing-layout">
+          <section class="upload-section" aria-labelledby="upload-title">
+            <h2 id="upload-title">上传视频</h2>
+            <form id="upload-form">
+              <label class="file-picker" for="media-file"><i data-lucide="upload-cloud" aria-hidden="true"></i><span>选择视频</span><small>MP4 · MOV · MKV · WebM</small><input id="media-file" type="file" name="file" accept=".mp4,.mov,.mkv,.webm" required></label>
+              <div class="file-selection"><span id="selected-filename">未选择文件</span><span id="selected-size"></span></div>
+              <video id="selected-preview" controls preload="metadata" hidden></video>
+              <p id="upload-error" class="form-error" role="alert" hidden></p>
+              <div class="upload-actions"><button id="upload-submit" class="button primary" type="submit" disabled><i data-lucide="upload" aria-hidden="true"></i>上传并检测</button><span id="upload-state" class="muted" role="status"></span></div>
+            </form>
+          </section>
+          <section class="result-section" aria-labelledby="media-result-title">
+            <div class="section-heading"><h2 id="media-result-title">检测结果</h2><span id="media-status" class="media-status" hidden></span></div>
+            <p id="media-result-empty" class="empty-state">暂无检测结果</p>
+            <div id="media-result" hidden aria-live="polite"><p id="media-result-name" class="result-filename"></p><dl id="media-metadata" class="metadata-list"></dl><p id="media-error" class="form-error" hidden></p><button id="retry-probe" class="button secondary compact" type="button" hidden><i data-lucide="rotate-cw" aria-hidden="true"></i>重新检测</button></div>
+          </section>
+        </div>
+        <section id="conversion-section" class="conversion-section" hidden aria-labelledby="conversion-title">
+          <h2 id="conversion-title">视频转换</h2>
+          <div class="conversion-layout">
+            <form id="conversion-form">
+              <label class="field">当前素材<output id="conversion-source" class="conversion-source">未选择就绪素材</output></label>
+              <div class="conversion-fields"><label class="field">输出格式<output>MP4 · H.264</output></label><label class="field">分辨率<select id="conversion-resolution"><option value="source">原分辨率</option><option value="720p">720p</option></select></label><label class="field">音轨<output>保留音轨</output></label></div>
+              <label id="compression-target-field" class="field compression-target-field" hidden>目标体积（MB）<input id="compression-target" type="number" min="0.03125" step="any" inputmode="decimal"></label>
+              <p id="compression-small" class="form-error" role="status" hidden>当前素材体积过小，无法进行目标体积压缩。</p>
+              <p id="conversion-error" class="form-error" role="alert" hidden></p>
+              <button id="start-conversion" class="button primary" type="submit" disabled><i data-lucide="play" aria-hidden="true"></i><span id="start-processing-label">开始转换</span></button>
+            </form>
+            <div id="conversion-result" hidden aria-live="polite">
+              <div class="section-heading"><h2>处理结果</h2><span id="task-status" class="media-status"></span></div>
+              <p id="task-stage" class="muted"></p><p id="compression-stats" class="muted" hidden></p><p id="task-error" class="form-error" role="alert" hidden></p>
+              <video id="output-preview" controls preload="metadata" hidden></video>
+              <div class="conversion-actions"><button id="cancel-task" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消任务</button><a id="download-output" class="button primary compact" hidden><i data-lucide="download" aria-hidden="true"></i>下载 MP4</a></div>
+            </div>
+          </div>
+        </section>
+        <section class="recent-section" aria-labelledby="recent-title"><div class="section-heading"><h2 id="recent-title">最近素材</h2><button id="refresh-media" class="icon-button" type="button" title="刷新素材" aria-label="刷新素材"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div><p id="media-list-error" class="form-error" role="alert" hidden></p><p id="media-list-empty" class="empty-state">暂无素材</p><ul id="media-list" class="media-list"></ul><div class="pagination"><span id="media-total" class="muted">0 个素材</span><button id="media-prev" class="icon-button" type="button" title="上一页" aria-label="上一页" disabled><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="media-page">1</span><button id="media-next" class="icon-button" type="button" title="下一页" aria-label="下一页" disabled><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></section>
+        <section id="task-section" class="task-section" hidden aria-labelledby="task-list-title"><div class="section-heading"><h2 id="task-list-title">处理记录</h2><button id="refresh-tasks" class="icon-button" type="button" title="刷新任务" aria-label="刷新任务"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div><p id="task-list-error" class="form-error" role="alert" hidden></p><p id="task-list-empty" class="empty-state">暂无处理任务</p><ul id="task-list" class="media-list"></ul><div class="pagination"><span id="task-total" class="muted">0 个任务</span><button id="task-prev" class="icon-button" type="button" title="上一页任务" aria-label="上一页任务" disabled><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="task-page">1</span><button id="task-next" class="icon-button" type="button" title="下一页任务" aria-label="下一页任务" disabled><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></section>
+      </div>
+      <div id="account-panel" hidden>
+      <button id="back-workbench" class="button secondary compact back-workbench" type="button"><i data-lucide="arrow-left" aria-hidden="true"></i>返回工作台</button>
       <div class="account-heading">
         <div>
           <p class="eyebrow">我的账户</p>
@@ -100,7 +160,6 @@
         </div>
         <span class="status-badge"><span class="status-dot"></span>已登录</span>
       </div>
-      <div id="account-notice" class="notice" role="status" hidden></div>
       <div class="account-layout">
         <aside class="account-nav" aria-label="账户分区">
           <a href="#profile-section"><i data-lucide="user-round" aria-hidden="true"></i>账户资料</a>
@@ -125,7 +184,7 @@
             <h2>账户安全</h2>
             <form id="password-form">
               <label class="field">当前密码<input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required></label>
-              <label class="field">新密码<input id="new-password" name="newPassword" type="password" autocomplete="new-password" required placeholder="15–128个字符"></label>
+              <label class="field">新密码<input id="new-password" name="newPassword" type="password" autocomplete="new-password" required placeholder="6–16个字符"></label>
               <label class="field">确认新密码<input id="confirm-new-password" name="confirmNewPassword" type="password" autocomplete="new-password" required></label>
               <p id="password-error" class="form-error" role="alert" hidden></p>
               <button class="button secondary" type="submit"><i data-lucide="key-round" aria-hidden="true"></i>修改密码</button>
@@ -136,10 +195,11 @@
           </section>
           <section class="account-section danger-section">
             <h2>注销账号</h2>
-            <p class="muted">注销后无法恢复，所属项目和文件将被清理，用户名和邮箱将保留占用。</p>
+            <p class="muted">注销后无法恢复，素材和文件将被清理，用户名和邮箱将保留占用。</p>
             <button id="open-delete-dialog" class="button danger-outline"><i data-lucide="trash-2" aria-hidden="true"></i>注销账号</button>
           </section>
         </div>
+      </div>
       </div>
     </section>
   </main>
@@ -149,7 +209,7 @@
       <h2 id="delete-title">确认注销账号</h2>
       <button id="close-delete-dialog" class="icon-button" type="button" title="取消" aria-label="取消"><i data-lucide="x" aria-hidden="true"></i></button>
     </div>
-    <p id="delete-description" class="muted">所有设备将退出登录。账号与所属项目将无法访问，此操作不可恢复。</p>
+    <p id="delete-description" class="muted">所有设备将退出登录。账号与素材将无法访问，此操作不可恢复。</p>
     <form id="delete-form">
       <label class="field">当前密码<input id="delete-password" name="currentPassword" type="password" autocomplete="current-password" required></label>
       <label class="field">输入用户名以确认<input id="delete-username" name="confirmUsername" required autocomplete="off" spellcheck="false"></label>

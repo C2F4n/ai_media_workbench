@@ -10,6 +10,8 @@
     "lucide": "1.57.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.64.1"
+    "@playwright/test": "1.64.1",
+    "mailparser": "^3.9.40",
+    "smtp-server": "^3.19.23"
   }
 }

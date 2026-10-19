@@ -1,7 +1,7 @@
 package org.example.ai_media_workbench.service.impl;
 
-import org.example.ai_media_workbench.common.error.BusinessException;
-import org.example.ai_media_workbench.common.error.ErrorCode;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.user.ChangePasswordRequest;
 import org.example.ai_media_workbench.dto.user.UpdateUserRequest;
 import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
@@ -21,6 +21,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/** 账号资料、改密和注销业务；事务将同一次操作涉及的数据库修改作为一个整体提交或回滚。 */
 @Service
 public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
@@ -43,6 +44,7 @@ public class UserServiceImpl implements UserService {
         this.cleanupService = cleanupService;
     }
 
+    /** 查询有效用户，账号不可用时抛出未登录异常。 */
     @Override
     public UserEntity getActiveUser(String userId) {
         UserEntity user = userMapper.findById(userId);
@@ -52,6 +54,7 @@ public class UserServiceImpl implements UserService {
         return user;
     }
 
+    /** 修改昵称并返回更新后的用户资料。 */
     @Override
     @Transactional
     public UserEntity updateProfile(String userId, UpdateUserRequest request) {
@@ -65,6 +68,7 @@ public class UserServiceImpl implements UserService {
         return getActiveUser(userId);
     }
 
+    /** 核验旧密码、保存新密码哈希，并撤销所有登录会话和业务令牌。 */
     @Override
     @Transactional
     public void changePassword(String userId, ChangePasswordRequest request) {
@@ -79,17 +83,21 @@ public class UserServiceImpl implements UserService {
         if (userMapper.updatePassword(userId, passwordEncoder.encode(request.newPassword()), now()) != 1) {
             throw new BusinessException(ErrorCode.UNAUTHENTICATED);
         }
+        // auth_token 用于邮箱验证/重置密码等业务，不是登录会话；改密时两类凭证都需作废。
         tokenMapper.revokeAll(userId, now());
         sessionService.revokeAll(userId);
     }
 
+    /** 获取当前 UTC 时间，用于记录数据库更新时间。 */
     private LocalDateTime now() {
         return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 
+    /** 核验注销信息，逻辑删除账号及资源、撤销凭证，并创建文件清理任务。 */
     @Override
     @Transactional
     public void deleteAccount(String userId, DeleteUserRequest request) {
+        // 行锁配合事务，防止并发注销重复修改账号及创建清理任务。
         UserEntity user = userMapper.findByIdForUpdate(userId);
         if (user == null || user.getStatus() != UserStatus.ACTIVE) {
             throw new BusinessException(ErrorCode.UNAUTHENTICATED);
@@ -100,16 +108,19 @@ public class UserServiceImpl implements UserService {
         if (!user.getUsername().equals(request.confirmUsername().toLowerCase(Locale.ROOT))) {
             throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         }
+        // 先核验密码和确认用户名，再按账号归属逻辑删除资源、取消未完成任务。
         LocalDateTime timestamp = now();
         cleanupMapper.markTasksDeleted(userId, timestamp);
         cleanupMapper.markOutputsDeleted(userId, timestamp);
         cleanupMapper.markPlansDeleted(userId, timestamp);
         cleanupMapper.markMediaDeleted(userId, timestamp);
-        cleanupMapper.markWorkspaceDeleted(userId, timestamp);
+        cleanupMapper.markLegacyProjectsDeleted(userId, timestamp);
         if (userMapper.deleteAccount(userId, timestamp) != 1) {
             throw new BusinessException(ErrorCode.UNAUTHENTICATED);
         }
         tokenMapper.revokeAll(userId, timestamp);
+        // 文件删除无法随数据库事务回滚：这里只持久化清理任务，由后台提交后处理并支持重试。
+        // 账号记录保留，用户名和邮箱仍被占用；逻辑删除不等于物理删掉数据库行。
         cleanupService.enqueue(userId);
         sessionService.revokeAll(userId);
     }

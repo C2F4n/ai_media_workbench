@@ -3,9 +3,9 @@ package org.example.ai_media_workbench;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import org.example.ai_media_workbench.common.error.RateLimitException;
+import org.example.ai_media_workbench.common.exception.RateLimitException;
 import org.example.ai_media_workbench.common.security.AuthRateLimiter;
-import org.example.ai_media_workbench.config.AuthProperties;
+import org.example.ai_media_workbench.properties.AuthProperties;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

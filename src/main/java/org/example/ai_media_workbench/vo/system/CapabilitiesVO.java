@@ -6,4 +6,4 @@ public record CapabilitiesVO(
         boolean registration, boolean emailVerification, boolean passwordRecovery,
         boolean aiPlans, boolean asr, boolean semanticSearch, boolean clipRecommendations,
         boolean mediaTool, long maxUploadBytes, long maxDurationMs,
-        List<String> supportedOperations, String requestId) {}
+        List<String> supportedOperations) {}

@@ -9,6 +9,7 @@ public final class SessionPolicy {
 
     private SessionPolicy() {}
 
+    /** 读取会话的绝对过期时间，未设置时返回 null。 */
     public static Instant absoluteExpiry(HttpSession session) {
         Object value = session.getAttribute(ABSOLUTE_EXPIRY);
         return value instanceof Instant expiry ? expiry : null;

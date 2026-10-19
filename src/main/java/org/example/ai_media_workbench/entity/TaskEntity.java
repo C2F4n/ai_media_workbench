@@ -9,7 +9,7 @@ import org.example.ai_media_workbench.entity.enums.TaskStatus;
 @Data
 public class TaskEntity {
     private String id;
-    private String projectId;
+    private String userId;
     private String mediaId;
     private String planId;
     private Integer planVersion;
@@ -26,4 +26,6 @@ public class TaskEntity {
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
     private LocalDateTime deletedAt;
+    private String runToken;
+    private LocalDateTime leaseStartedAt;
 }

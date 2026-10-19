@@ -7,7 +7,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 @Data
 public class OutputEntity {
     private String id;
-    private String projectId;
+    private String userId;
     private String taskId;
     private String filename;
     @JsonIgnore
