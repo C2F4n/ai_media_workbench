@@ -8,6 +8,15 @@
   let capabilities = null;
   let cloudEntries = null, cloudOwner = null, cloudLoading = false, cloudRevision = 0;
   let busy = false;
+  const narrowNavigation = window.matchMedia('(max-width: 900px)');
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let navigationPreference = { pinned: true, open: true };
+  try {
+    const saved = JSON.parse(localStorage.getItem('amw-navigation') || 'null');
+    if (saved && typeof saved.pinned === 'boolean' && typeof saved.open === 'boolean') navigationPreference = saved;
+  } catch { /* 存储被禁用时，导航仍使用默认设置。 */ }
+  let navigationOpen = !narrowNavigation.matches && navigationPreference.open;
+  let activeTool = 'detect', toolAnimation = null, dependencySignature = '';
   let registrationChallenge = null;
   let activePanel = 'workbench';
   let mediaPage = 1;
@@ -20,6 +29,7 @@
   let taskPage = 1;
   let taskTotal = 0;
   let pendingPlan = null;
+  let exportPlan = null, exportDirty = false, exportRevision = 0;
   let outputId = null;
   let processingOperation = 'transcode';
   let compressionSourceId = null;
@@ -42,6 +52,7 @@
   let aiLoading = false;
   let aiPlanDirty = false;
   let aiGenerating = false;
+  let workflowMode = false, workflowSteps = [], workflowDirty = false;
   let findTranscript = null;
   let findMediaId = null;
   let findRevision = 0;
@@ -169,6 +180,7 @@
     }
     $('header-logout').hidden = view !== 'account-view';
     $('header-account').hidden = view !== 'account-view';
+    syncNavigation();
   }
 
   // 设置请求等待状态并禁用或恢复表单控件。
@@ -439,9 +451,13 @@
     $('account-panel').hidden = panel !== 'account';
     $('header-location').textContent = panel === 'workbench' ? '工作台' : '账户';
     $('header-account').setAttribute('aria-expanded', String(panel === 'account'));
+    syncNavigation();
   }
 
   function syncMediaControls() {
+    const combined = $('export-combine').checked && processingOperation !== 'extract_audio';
+    const needsTrim = processingOperation === 'trim' || combined && $('export-trim').checked;
+    const needsCompression = processingOperation === 'compress' || combined && $('export-compress').checked;
     $('upload-submit').disabled = busy || !currentUser || !capabilities?.mediaTool || !$('media-file').files.length;
     $('media-file').disabled = busy || !capabilities?.mediaTool;
     $('media-prev').disabled = busy || mediaPage <= 1;
@@ -458,29 +474,35 @@
       for (const id of ['trim-start', 'trim-end']) $(id).max = String(selectedMedia.metadata.durationMs / 1000);
     }
     for (const id of ['trim-start', 'trim-end']) {
-      $(id).disabled = busy || processingOperation !== 'trim'; $(id).required = processingOperation === 'trim';
+      $(id).disabled = busy || !needsTrim; $(id).required = needsTrim;
     }
-    const invalidTrim = processingOperation === 'trim' && !trimRange().valid;
-    $('trim-range-error').hidden = processingOperation !== 'trim' || selectedMedia?.status !== 'READY' || !invalidTrim;
-    $('compression-target').disabled = busy || processingOperation !== 'compress';
-    const invalidTarget = processingOperation === 'compress' && (!Number.isSafeInteger(target) || target < 32768 || target >= (selectedMedia?.sizeBytes || 0));
+    const invalidTrim = needsTrim && !trimRange().valid;
+    $('trim-range-error').hidden = !needsTrim || selectedMedia?.status !== 'READY' || !invalidTrim;
+    $('compression-target').disabled = busy || !needsCompression;
+    $('compression-target').required = needsCompression;
+    $('compression-target-field').hidden = !needsCompression;
+    $('trim-fields').hidden = !needsTrim;
+    const invalidTarget = needsCompression && (!Number.isSafeInteger(target) || target < 32768 || target >= (selectedMedia?.sizeBytes || 0));
     $('start-conversion').disabled = busy || selectedMedia?.status !== 'READY' || invalidTarget || invalidTrim
       || (processingOperation === 'extract_audio' && !selectedMedia.metadata?.hasAudio)
       || !capabilities?.supportedOperations?.includes(processingOperation)
       || (taskActive(selectedTask) && selectedTask.mediaId === selectedMedia?.id);
     $('compression-small').hidden = processingOperation !== 'compress' || selectedMedia?.status !== 'READY' || selectedMedia.sizeBytes > 32768;
-    $('conversion-resolution').disabled = busy || processingOperation === 'extract_audio' || processingOperation === 'trim';
+    $('conversion-resolution').disabled = busy || processingOperation === 'extract_audio' || processingOperation === 'trim' && !combined;
+    $('resolution-field').hidden = processingOperation === 'extract_audio' || processingOperation === 'trim' && !combined;
     $('audio-missing').hidden = processingOperation !== 'extract_audio' || selectedMedia?.status !== 'READY' || selectedMedia.metadata?.hasAudio;
     $('conversion-source').textContent = selectedMedia?.status === 'READY' ? selectedMedia.originalFilename : '未选择就绪素材';
     $('cancel-task').disabled = busy || !taskActive(selectedTask) || selectedTask?.status === 'CANCELLING';
     $('delete-output').disabled = busy || !outputId;
     $('task-prev').disabled = busy || taskPage <= 1;
     $('task-next').disabled = busy || taskPage * 10 >= taskTotal;
+    syncExportControls(needsCompression);
     syncSubtitleControls();
     syncAIControls();
     syncFindControls();
     syncJoinControls();
     syncCloudControls();
+    renderToolDependencies();
   }
 
   const cloudProviders = [
@@ -535,7 +557,7 @@
     mode.addEventListener('change', () => { fields.hidden = mode.value !== 'PERSONAL'; form.querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); state.textContent = '未保存'; });
     form.append(fields);
     const actions = document.createElement('div'); actions.className = 'cloud-provider-actions';
-    const save = document.createElement('button'); save.type = 'submit'; save.className = 'icon-button save-button'; save.title = '保存配置'; save.setAttribute('aria-label', '保存' + provider.name + '配置'); save.innerHTML = '<i data-lucide="save" aria-hidden="true"></i>'; actions.append(save);
+    const save = document.createElement('button'); save.type = 'button'; save.className = 'button primary'; save.title = '保存配置'; save.setAttribute('aria-label', '保存' + provider.name + '配置'); save.innerHTML = '<i data-lucide="save" aria-hidden="true"></i><span>保存</span>'; actions.append(save);
     const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'icon-button danger-outline'; remove.title = '删除个人凭据并停用'; remove.setAttribute('aria-label', '删除' + provider.name + '个人凭据'); remove.innerHTML = '<i data-lucide="trash-2" aria-hidden="true"></i>'; remove.hidden = !saved.personalStored; actions.append(remove);
     form.append(actions); article.append(form);
     const write = (method, body) => {
@@ -547,8 +569,10 @@
         renderCloudProvider(provider); syncCloudControls(); icons(); await refreshUserCapabilities();
       });
     };
-    form.addEventListener('submit', (event) => {
-      event.preventDefault(); if (busy || cloudLoading) return;
+    // 凭据只在激活保存按钮时提交，输入框回车产生的隐式submit不得写入。
+    form.addEventListener('submit', (event) => event.preventDefault());
+    save.addEventListener('click', () => {
+      if (busy || cloudLoading || !form.reportValidity()) return;
       const body = { expectedVersion: saved.version, mode: mode.value };
       if (mode.value === 'PERSONAL') {
         for (const input of fields.querySelectorAll('input')) if (!input.dataset.secret || input.value) body[input.name] = input.value;
@@ -576,6 +600,7 @@
   $('refresh-cloud').addEventListener('click', loadCloudCredentials);
 
   function resetWorkbench() {
+    clearExport();
     workspaceRevision++;
     clearAIPlan();
     clearFind();
@@ -612,6 +637,7 @@
   }
 
   function clearMediaResult() {
+    clearExport();
     clearFind();
     clearJoin();
     clearAIPlan();
@@ -683,7 +709,8 @@
   });
 
   function displayMedia(item) {
-    if (selectedMedia?.id !== item.id && (subtitleDirty || joinDirty) && !window.confirm('放弃未保存的字幕或未导出的拼接修改并切换素材？')) return;
+    if (selectedMedia && selectedMedia.id !== item.id && (subtitleDirty || joinDirty || exportDirty || workflowDirty) && !window.confirm('放弃未保存的修改并切换素材？')) return;
+    if (selectedMedia && selectedMedia.id !== item.id) clearExport();
     clearTimeout(probeTimer); probeTimer = null;
     if (selectedMedia?.id !== item.id) clearSubtitle();
     if (selectedMedia?.id !== item.id) clearAIPlan();
@@ -851,6 +878,8 @@
   $('media-next').addEventListener('click', () => { if (mediaPage * 10 < mediaTotal) { mediaPage++; loadMedia(); } });
 
   function selectTool(tool) {
+    const previousTool = activeTool;
+    activeTool = tool;
     const processing = tool !== 'detect' && tool !== 'subtitle' && tool !== 'ai' && tool !== 'find' && tool !== 'join';
     processingOperation = tool === 'mute' ? 'mute' : tool === 'trim' ? 'trim' : tool === 'audio' ? 'extract_audio' : tool === 'compress' ? 'compress' : 'transcode';
     for (const [id, active] of [['detect-tool', tool === 'detect'], ['convert-tool', tool === 'convert'], ['compress-tool', tool === 'compress'], ['audio-tool', tool === 'audio'], ['trim-tool', tool === 'trim'], ['mute-tool', tool === 'mute'], ['subtitle-tool', tool === 'subtitle'], ['ai-tool', tool === 'ai'], ['find-tool', tool === 'find'], ['join-tool', tool === 'join']]) {
@@ -883,6 +912,239 @@
     $('processing-audio-mode').textContent = tool === 'mute' ? '移除音轨' : tool === 'audio' ? '第一条音轨' : '保留音轨';
     notice('conversion-error', '');
     syncMediaControls();
+    updateToolIndicator();
+    if (previousTool !== tool) {
+      toolAnimation?.cancel();
+      if (!reducedMotion.matches && !$('workbench-panel').hidden && currentUser) {
+        const direction = toolOrder.indexOf(tool) > toolOrder.indexOf(previousTool) ? 1 : -1;
+        toolAnimation = $('tool-stage').animate([
+          { opacity: .45, transform: `translateY(${direction * 18}px)` },
+          { opacity: 1, transform: 'translateY(0)' }
+        ], { duration: 220, easing: 'cubic-bezier(.2,.7,.3,1)' });
+      }
+    }
+    if (navigationOpen && (!navigationPreference.pinned || narrowNavigation.matches)) setNavigationOpen(false);
+  }
+
+  const toolOrder = ['detect', 'convert', 'compress', 'audio', 'trim', 'join', 'mute', 'subtitle', 'ai', 'find'];
+  const toolNames = { detect: '视频检测', convert: '视频转换', compress: '视频压缩', audio: '提取音频', trim: '视频裁切', join: '片段拼接', mute: '视频静音', subtitle: '字幕处理', ai: 'AI 处理', find: '找片段' };
+
+  function rememberNavigation() {
+    try { localStorage.setItem('amw-navigation', JSON.stringify(navigationPreference)); } catch { /* 导航偏好不影响业务。 */ }
+  }
+  function syncNavigation() {
+    const visible = navigationOpen && !!currentUser && activePanel === 'workbench';
+    const drawer = !navigationPreference.pinned || narrowNavigation.matches;
+    $('workbench-layout').dataset.navOpen = String(visible);
+    $('workbench-layout').dataset.navPinned = String(navigationPreference.pinned);
+    $('tool-sidebar').inert = !visible;
+    $('tool-content').inert = visible && drawer;
+    $('tool-sidebar').setAttribute('role', visible && drawer ? 'dialog' : 'complementary');
+    if (visible && drawer) $('tool-sidebar').setAttribute('aria-modal', 'true'); else $('tool-sidebar').removeAttribute('aria-modal');
+    $('sidebar-backdrop').hidden = !visible || !drawer;
+    document.body.classList.toggle('nav-drawer-open', visible && drawer);
+    $('toggle-sidebar').setAttribute('aria-expanded', String(visible));
+    $('toggle-sidebar').title = visible ? '收起功能栏' : '展开功能栏';
+    $('toggle-sidebar').setAttribute('aria-label', $('toggle-sidebar').title);
+    $('pin-sidebar').setAttribute('aria-pressed', String(navigationPreference.pinned));
+    $('pin-sidebar').title = navigationPreference.pinned ? '取消固定功能栏' : '固定功能栏';
+    $('pin-sidebar').setAttribute('aria-label', $('pin-sidebar').title);
+    requestAnimationFrame(updateToolIndicator);
+  }
+  function setNavigationOpen(value, focus = true) {
+    navigationOpen = value;
+    if (!narrowNavigation.matches) { navigationPreference.open = value; rememberNavigation(); }
+    syncNavigation();
+    if (focus) {
+      if (value && (!navigationPreference.pinned || narrowNavigation.matches)) requestAnimationFrame(() => {
+        if (navigationOpen) $(`${activeTool}-tool`).focus({ preventScroll: true });
+      });
+      else if (!value) $('toggle-sidebar').focus({ preventScroll: true });
+    }
+  }
+  function updateToolIndicator() {
+    const button = $(`${activeTool}-tool`);
+    if (!button || !$('tool-navigation').getClientRects().length) return;
+    $('tool-indicator').style.transform = `translateY(${button.offsetTop}px)`;
+    $('tool-indicator').style.height = `${button.offsetHeight}px`;
+  }
+  $('toggle-sidebar').addEventListener('click', () => setNavigationOpen(!navigationOpen));
+  $('close-sidebar').addEventListener('click', () => setNavigationOpen(false));
+  $('sidebar-backdrop').addEventListener('click', () => setNavigationOpen(false));
+  $('pin-sidebar').addEventListener('click', () => {
+    navigationPreference.pinned = !navigationPreference.pinned;
+    navigationPreference.open = true; navigationOpen = true; rememberNavigation(); syncNavigation();
+  });
+  narrowNavigation.addEventListener('change', () => {
+    navigationOpen = !narrowNavigation.matches && navigationPreference.open;
+    syncNavigation();
+    if (document.activeElement?.closest('#tool-sidebar') && !navigationOpen) $('toggle-sidebar').focus({ preventScroll: true });
+  });
+  document.addEventListener('keydown', (event) => {
+    if (!navigationOpen || !currentUser || activePanel !== 'workbench' || navigationPreference.pinned && !narrowNavigation.matches) return;
+    if (event.key === 'Escape') { event.preventDefault(); setNavigationOpen(false); }
+    if (event.key === 'Tab') {
+      const controls = [...$('tool-sidebar').querySelectorAll('button:not(:disabled)')].filter((button) => button.getClientRects().length);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  });
+  window.addEventListener('resize', updateToolIndicator);
+  for (const tool of toolOrder) {
+    const button = $(`${tool}-tool`), name = document.createElement('span'), badge = document.createElement('small');
+    name.className = 'tool-name'; name.textContent = toolNames[tool];
+    for (const child of [...button.childNodes]) if (child.nodeType === Node.TEXT_NODE) child.remove();
+    const kind = ['subtitle', 'ai'].includes(tool) ? 'mixed' : tool === 'find' ? 'cloud' : 'local';
+    badge.className = 'tool-dependency'; badge.dataset.kind = kind; badge.textContent = { local: '本地', cloud: '云端', mixed: '混合' }[kind]; badge.setAttribute('aria-hidden', 'true');
+    button.append(name, badge); button.setAttribute('aria-label', toolNames[tool]);
+    button.title = toolNames[tool] + ' · ' + (tool === 'ai' ? '文字输入：DeepSeek / 分步填写：本地' : { local: '无需第三方 API', cloud: 'DeepSeek 文本 API', mixed: '语音识别 API / DeepSeek / 本地编辑' }[kind]);
+  }
+
+  function renderToolDependencies() {
+    const c = capabilities || {}, subtitleTool = activeTool === 'subtitle', cloudTool = ['ai', 'find'].includes(activeTool);
+    const provider = $('asr-provider').value, providers = c.asrProviders || [];
+    const signature = JSON.stringify([activeTool, workflowMode, provider, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, providers]);
+    if (dependencySignature === signature) return;
+    dependencySignature = signature;
+    const kind = activeTool === 'ai' && workflowMode ? 'local' : subtitleTool ? 'mixed' : cloudTool ? 'cloud' : 'local';
+    $('dependency-kind').dataset.kind = kind; $('dependency-kind').textContent = { local: '本地处理', cloud: '云端 API', mixed: '本地 + 云端' }[kind];
+    $('dependency-title').textContent = toolNames[activeTool];
+    $('dependency-settings').hidden = kind === 'local';
+    const rows = [];
+    let detail = '';
+    if (subtitleTool) {
+      rows.push(['语音转字幕', provider === 'aliyun' ? '阿里云百炼 · Paraformer 语音识别 API' : '腾讯云 · 录音极速版语音识别 API', providers.includes(provider) ? '已配置' : '未配置或工具未就绪', providers.includes(provider)]);
+      rows.push(['文字校对', 'DeepSeek · 文本对话 API', c.subtitleCorrection ? '已配置' : '未配置', !!c.subtitleCorrection]);
+      rows.push(['编辑 / SRT', '本站后端 · 无第三方 API', '本地', true]);
+      rows.push(['已有字幕烧录', '本机 FFmpeg / libass', c.supportedOperations?.includes('burn_subtitles') ? '工具已就绪' : '工具未就绪', !!c.supportedOperations?.includes('burn_subtitles')]);
+      detail = '识别会将音轨发送给选定供应商；校对只发送选中句子的文字。已有字幕可本地编辑和导出，云端服务可能计费。';
+    } else if (cloudTool) {
+      if (activeTool === 'ai') {
+        if (workflowMode) rows.push(['分步填写', '本站后端 · 无第三方 API', c.supportedOperations?.includes('workflow') ? '工具已就绪' : '工具未就绪', !!c.supportedOperations?.includes('workflow')]);
+        else rows.push(['指令理解', 'DeepSeek · 文本对话 API', c.aiPlans ? '已配置' : '未配置或工具未就绪', !!c.aiPlans]);
+        rows.push(['确认后执行', '本机 FFmpeg · 无第三方 API', '本地处理', true]);
+        detail = workflowMode ? '无第三方 API，不发送素材或处理参数。' : '仅发送处理要求和素材参数，不上传原视频。生成方案可能计费，确认后才执行本地处理。';
+      } else {
+        rows.push(['内容检索', 'DeepSeek · 文本对话 API', c.semanticSearch ? '已配置' : '未配置', !!c.semanticSearch]);
+        rows.push(['片段建议', 'DeepSeek · 文本对话 API', c.clipRecommendations ? '已配置' : '未配置', !!c.clipRecommendations]);
+        detail = '需要已保存的字幕。向 DeepSeek 发送字幕文本和查找要求，不发送原视频；云端调用可能计费。';
+      }
+    } else {
+      const operation = { convert: 'transcode', compress: 'compress', audio: 'extract_audio', trim: 'trim', join: 'join_clips', mute: 'mute' }[activeTool];
+      const ready = activeTool === 'detect' ? c.mediaTool : c.supportedOperations?.includes(operation);
+      rows.push(['处理引擎', activeTool === 'detect' ? '本机 ffprobe' : '本机 FFmpeg / ffprobe', ready ? '工具已就绪' : '工具未就绪', !!ready]);
+      rows.push(['第三方 API', '不需要 API Key', '无需云端 AI', true]);
+      detail = '通过本站后端处理，素材保存在部署服务器；不调用第三方 AI，也不会产生第三方 API 费用。';
+    }
+    $('dependency-services').replaceChildren(...rows.map(([label, service, state, ready]) => {
+      const row = document.createElement('div'), dt = document.createElement('dt'), dd = document.createElement('dd'), name = document.createElement('span'), status = document.createElement('span');
+      dt.textContent = label; name.textContent = service; status.textContent = state; status.className = 'dependency-state'; status.dataset.ready = String(ready);
+      dd.append(name, status); row.append(dt, dd); return row;
+    }));
+    $('dependency-detail').textContent = detail;
+  }
+  $('asr-provider').addEventListener('change', renderToolDependencies);
+  $('dependency-settings').addEventListener('click', () => {
+    setNavigationOpen(false, false); selectPanel('account');
+    $('cloud-section').scrollIntoView({ block: 'start', behavior: reducedMotion.matches ? 'instant' : 'smooth' });
+    $('refresh-cloud').focus({ preventScroll: true });
+  });
+
+  const exportCodecMatrix = { mp4: ['h264', 'hevc', 'av1'], mov: ['h264', 'hevc'], mkv: ['h264', 'hevc', 'vp9', 'av1'], webm: ['vp9', 'av1'] };
+  function clearExport() {
+    exportRevision++; exportPlan = null; exportDirty = false;
+    $('export-format').value = 'mp4'; $('export-codec').value = 'h264'; $('export-audio-format').value = 'mp3';
+    $('conversion-resolution').value = 'source';
+    for (const id of ['export-combine', 'export-trim', 'export-compress', 'export-mute', 'export-extract']) $(id).checked = false;
+    notice('export-plan-state', '');
+  }
+  function syncExportControls(compressing) {
+    const audio = processingOperation === 'extract_audio', combined = $('export-combine').checked && !audio;
+    const enabled = capabilities?.supportedOperations?.includes('export');
+    $('export-format-field').hidden = audio; $('export-codec-field').hidden = audio;
+    $('export-audio-format-field').hidden = !audio; $('export-combine-field').hidden = audio;
+    $('export-combination').hidden = !combined;
+    $('export-custom-fields').hidden = audio || processingOperation === 'trim' && !combined || $('conversion-resolution').value !== 'custom';
+    for (const id of ['export-format', 'export-audio-format']) {
+      for (const option of $(id).options) option.disabled = !capabilities?.exportFormats?.includes(option.value);
+      $(id).disabled = busy || !enabled;
+    }
+    const allowed = (exportCodecMatrix[$('export-format').value] || []).filter((codec) => capabilities?.exportVideoCodecs?.includes(codec) && (!compressing || ['h264', 'vp9'].includes(codec)));
+    for (const option of $('export-codec').options) option.disabled = !allowed.includes(option.value);
+    if (enabled && !allowed.includes($('export-codec').value)) $('export-codec').value = allowed[0] || '';
+    $('export-codec').disabled = busy || !enabled;
+    for (const id of ['export-combine', 'export-trim', 'export-compress', 'export-mute', 'export-extract', 'export-width', 'export-height']) $(id).disabled = busy || !enabled;
+    $('export-extract').disabled ||= !selectedMedia?.metadata?.hasAudio;
+    const unavailable = !enabled || !currentUser || selectedMedia?.status !== 'READY';
+    $('save-export-plan').disabled = busy || unavailable;
+    $('restore-export-plan').disabled = busy || unavailable;
+    if (combined || $('export-format').value !== 'mp4' || $('export-codec').value !== 'h264') $('start-processing-label').textContent = '导出';
+    if (enabled) {
+      const format = audio ? $('export-audio-format').value : $('export-format').value;
+      $('processing-format').textContent = format.toUpperCase() + (audio ? '' : ' · ' + $('export-codec').selectedOptions[0]?.textContent);
+    }
+    $('processing-audio-mode').textContent = audio ? '第一条音轨' : processingOperation === 'mute' || combined && $('export-mute').checked ? '移除音轨' : '保留音轨';
+  }
+  function exportParameters() {
+    const audio = processingOperation === 'extract_audio', combined = $('export-combine').checked && !audio;
+    const trim = processingOperation === 'trim' || combined && $('export-trim').checked;
+    const compress = processingOperation === 'compress' || combined && $('export-compress').checked;
+    const range = trimRange();
+    if (trim && !range.valid) throw new Error('区间需至少0.5秒，且不超过素材时长。');
+    const resolution = audio ? null : processingOperation === 'trim' && !combined ? 'source' : $('conversion-resolution').value;
+    const p = { operation: 'export', outputFormat: audio ? $('export-audio-format').value : $('export-format').value,
+      videoCodec: audio ? null : $('export-codec').value, resolutionPreset: resolution,
+      width: resolution === 'custom' ? Number($('export-width').value) : null, height: resolution === 'custom' ? Number($('export-height').value) : null,
+      audioMode: !audio && (processingOperation === 'mute' || combined && $('export-mute').checked) ? 'mute' : 'keep',
+      startMs: trim ? range.startMs : null, endMs: trim ? range.endMs : null,
+      targetSizeBytes: compress ? Math.floor(Number($('compression-target').value) * 1024 * 1024) : null,
+      extractAudio: combined && $('export-extract').checked };
+    if (p.targetSizeBytes !== null && (!Number.isSafeInteger(p.targetSizeBytes) || p.targetSizeBytes < 32768 || p.targetSizeBytes >= selectedMedia.sizeBytes)) throw new Error('目标体积需至少32 KB，并小于原文件。');
+    if (resolution === 'custom' && (![p.width, p.height].every((n) => Number.isInteger(n) && n >= 2 && n <= 4096) || p.width * p.height > 8847360)) throw new Error('自定义尺寸需为2至4096的整数，总像素不超过8847360。');
+    return p;
+  }
+  function usesExport() {
+    return $('export-combine').checked || (processingOperation === 'extract_audio' ? $('export-audio-format').value !== 'mp3'
+      : $('export-format').value !== 'mp4' || $('export-codec').value !== 'h264' || !['source', '720p'].includes($('conversion-resolution').value));
+  }
+  function sameParameters(a, b) { return Object.keys(b).every((key) => a?.[key] === b[key]); }
+  async function saveExportPlan(parameters) {
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = exportRevision, workspace = workspaceRevision;
+    if (!owner || !mediaId) throw new Error('请先选择就绪素材。');
+    const editable = exportPlan?.mediaId === mediaId && exportPlan.status === 'READY';
+    const plan = await request(editable ? `/api/operation-plans/${exportPlan.id}` : '/api/operation-plans', {
+      method: editable ? 'PATCH' : 'POST', body: editable ? { expectedVersion: exportPlan.version, parameters } : { mediaId, parameters } });
+    if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || exportRevision !== revision || workspaceRevision !== workspace) return null;
+    exportPlan = plan; exportDirty = false; notice('export-plan-state', `已保存 · v${plan.version}`); return plan;
+  }
+  $('save-export-plan').addEventListener('click', () => operation('conversion-error', async () => { await saveExportPlan(exportParameters()); }));
+  $('restore-export-plan').addEventListener('click', () => operation('conversion-error', async () => {
+    if (exportDirty && !window.confirm('放弃未保存的导出设置？')) return;
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = exportRevision, workspace = workspaceRevision;
+    let found = null, page = 1;
+    do {
+      const result = await request(`/api/operation-plans?mediaId=${mediaId}&page=${page}&pageSize=50`);
+      if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || exportRevision !== revision || workspaceRevision !== workspace) return;
+      found = result.items.find((plan) => plan.parameters?.operation === 'export');
+      if (found || page * 50 >= result.total) break;
+      page++;
+    } while (page <= 20);
+    if (!found) { notice('export-plan-state', '暂无已保存的导出方案'); return; }
+    const p = found.parameters; exportPlan = found; exportDirty = false;
+    selectTool(['mp3', 'm4a', 'wav', 'flac'].includes(p.outputFormat) ? 'audio' : 'convert');
+    if (p.videoCodec) { $('export-format').value = p.outputFormat; $('export-codec').value = p.videoCodec; }
+    else $('export-audio-format').value = p.outputFormat;
+    $('conversion-resolution').value = p.resolutionPreset || 'source';
+    if (p.width) $('export-width').value = p.width; if (p.height) $('export-height').value = p.height;
+    $('export-combine').checked = !!p.videoCodec; $('export-trim').checked = p.startMs !== null; $('export-compress').checked = p.targetSizeBytes !== null;
+    $('export-mute').checked = p.audioMode === 'mute'; $('export-extract').checked = p.extractAudio;
+    if (p.startMs !== null) { $('trim-start').value = p.startMs / 1000; $('trim-end').value = p.endMs / 1000; }
+    if (p.targetSizeBytes !== null) $('compression-target').value = Number((p.targetSizeBytes / 1024 / 1024).toFixed(6));
+    notice('export-plan-state', `已恢复 · v${found.version}`); syncMediaControls();
+  }));
+  for (const id of ['export-format', 'export-codec', 'export-audio-format', 'export-combine', 'export-trim', 'export-compress', 'export-mute', 'export-extract', 'export-width', 'export-height', 'conversion-resolution', 'compression-target', 'trim-start', 'trim-end']) {
+    $(id).addEventListener('input', () => { exportDirty = true; exportRevision++; notice('export-plan-state', '未保存'); syncMediaControls(); });
   }
   $('detect-tool').addEventListener('click', () => selectTool('detect'));
   $('convert-tool').addEventListener('click', () => {
@@ -1176,9 +1438,136 @@
     });
   });
 
+  function workflowChanged() {
+    workflowDirty = true; aiPlanDirty = true; aiRevision++; $('ai-plan').hidden = true; syncAIControls();
+  }
+  function workflowDefault(operation) {
+    const endMs = Math.min(5000, selectedMedia?.metadata?.durationMs || 5000);
+    return operation === 'trim' ? { operation, startMs: 0, endMs } : operation === 'resize' ? { operation, resolutionPreset: '360p', width: null, height: null }
+      : operation === 'join_clips' ? { operation, clips: [{ startMs: 0, endMs }] } : { operation: 'mute' };
+  }
+  function workflowIcon(icon, label, action, boundary = false) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'icon-button';
+    button.title = label; button.setAttribute('aria-label', label); button.dataset.boundary = String(boundary);
+    const image = document.createElement('i'); image.dataset.lucide = icon; image.setAttribute('aria-hidden', 'true'); button.append(image);
+    button.addEventListener('click', action); return button;
+  }
+  function workflowNumber(parent, label, value, change, minimum = 0, step = '0.001') {
+    const field = document.createElement('label'); field.className = 'field'; field.append(document.createTextNode(label));
+    const input = document.createElement('input'); input.type = 'number'; input.min = String(minimum); input.step = step; input.required = true;
+    if (minimum === 2) input.max = '4096';
+    input.value = value == null ? '' : String(value); input.addEventListener('input', () => { change(input.value === '' ? NaN : Number(input.value)); workflowChanged(); });
+    field.append(input); parent.append(field);
+  }
+  function renderWorkflowSteps() {
+    $('workflow-steps').replaceChildren(...workflowSteps.map((step, index) => {
+      const row = document.createElement('li'); row.className = 'workflow-step';
+      const head = document.createElement('div'); head.className = 'workflow-step-head';
+      const number = document.createElement('span'); number.textContent = String(index + 1);
+      const select = document.createElement('select'); select.setAttribute('aria-label', `步骤 ${index + 1} 操作`);
+      for (const [value, label] of Object.entries({ trim: '保留区间', join_clips: '选段拼接', resize: '缩放', mute: '静音' })) {
+        const option = document.createElement('option'); option.value = value; option.textContent = label; select.append(option);
+      }
+      select.value = step.operation;
+      select.addEventListener('change', () => { workflowSteps[index] = workflowDefault(select.value); workflowChanged(); renderWorkflowSteps(); });
+      const move = direction => { [workflowSteps[index], workflowSteps[index + direction]] = [workflowSteps[index + direction], workflowSteps[index]]; workflowChanged(); renderWorkflowSteps(); };
+      head.append(number, select,
+        workflowIcon('arrow-up', `上移步骤 ${index + 1}`, () => move(-1), index === 0),
+        workflowIcon('arrow-down', `下移步骤 ${index + 1}`, () => move(1), index === workflowSteps.length - 1),
+        workflowIcon('trash-2', `删除步骤 ${index + 1}`, () => { workflowSteps.splice(index, 1); workflowChanged(); renderWorkflowSteps(); }));
+      row.append(head);
+      if (step.operation === 'trim') {
+        const fields = document.createElement('div'); fields.className = 'conversion-fields';
+        workflowNumber(fields, '开始（上一步结果，秒）', step.startMs / 1000, value => { step.startMs = Math.round(value * 1000); });
+        workflowNumber(fields, '结束（秒）', step.endMs / 1000, value => { step.endMs = Math.round(value * 1000); }); row.append(fields);
+      } else if (step.operation === 'resize') {
+        const label = document.createElement('label'); label.className = 'field'; label.append(document.createTextNode('分辨率'));
+        const preset = document.createElement('select');
+        for (const value of ['source', '360p', '480p', '720p', '1080p', '1440p', '2160p', 'custom']) {
+          const option = document.createElement('option'); option.value = value; option.textContent = value === 'source' ? '当前分辨率' : value === 'custom' ? '自定义' : value; preset.append(option);
+        }
+        preset.value = step.resolutionPreset;
+        preset.addEventListener('change', () => { step.resolutionPreset = preset.value; step.width = preset.value === 'custom' ? 1920 : null; step.height = preset.value === 'custom' ? 1080 : null; workflowChanged(); renderWorkflowSteps(); });
+        label.append(preset); row.append(label);
+        if (step.resolutionPreset === 'custom') {
+          const fields = document.createElement('div'); fields.className = 'conversion-fields';
+          workflowNumber(fields, '最大宽度', step.width, value => { step.width = value; }, 2, '1');
+          workflowNumber(fields, '最大高度', step.height, value => { step.height = value; }, 2, '1'); row.append(fields);
+        }
+      } else if (step.operation === 'join_clips') {
+        step.clips.forEach((clip, clipIndex) => {
+          const fields = document.createElement('div'); fields.className = 'workflow-range';
+          workflowNumber(fields, `片段 ${clipIndex + 1} 开始（秒）`, clip.startMs / 1000, value => { clip.startMs = Math.round(value * 1000); });
+          workflowNumber(fields, '结束（秒）', clip.endMs / 1000, value => { clip.endMs = Math.round(value * 1000); });
+          fields.append(workflowIcon('x', `删除步骤 ${index + 1} 的片段 ${clipIndex + 1}`, () => { step.clips.splice(clipIndex, 1); workflowChanged(); renderWorkflowSteps(); }, step.clips.length === 1)); row.append(fields);
+        });
+        row.append(workflowIcon('plus', `步骤 ${index + 1} 添加区间`, () => { step.clips.push({ startMs: 0, endMs: Math.min(5000, selectedMedia?.metadata?.durationMs || 5000) }); workflowChanged(); renderWorkflowSteps(); }, step.clips.length >= 20));
+      }
+      return row;
+    }));
+    icons(); syncAIControls();
+  }
+  function fillWorkflow(parameters) {
+    workflowSteps = structuredClone(parameters.steps.slice(0, -1));
+    const last = parameters.steps.at(-1);
+    $('workflow-format').value = last.outputFormat; $('workflow-size').value = last.targetSizeBytes == null ? '' : last.targetSizeBytes / 1048576;
+    $('workflow-audio').checked = !!last.extractAudio; if (last.videoCodec) $('workflow-codec').value = last.videoCodec;
+    workflowDirty = false; renderWorkflowSteps();
+  }
+  function setWorkflowMode(manual) {
+    workflowMode = manual; aiRevision++; aiLoading = false;
+    $('ai-form').hidden = manual; $('workflow-form').hidden = !manual;
+    $('workflow-text-mode').setAttribute('aria-pressed', String(!manual)); $('workflow-step-mode').setAttribute('aria-pressed', String(manual));
+    renderToolDependencies(); syncAIControls();
+  }
+  $('workflow-text-mode').addEventListener('click', () => {
+    if (workflowMode && (!workflowDirty || window.confirm('放弃未保存的步骤？'))) { workflowDirty = false; setWorkflowMode(false); renderAIPlan(null); loadAIPlan(); }
+  });
+  $('workflow-step-mode').addEventListener('click', () => {
+    if (!workflowMode) { setWorkflowMode(true); renderAIPlan(null); loadAIPlan(); }
+  });
+  $('workflow-edit').addEventListener('click', () => {
+    if (aiPlan?.parameters?.operation !== 'workflow') return;
+    setWorkflowMode(true); fillWorkflow(aiPlan.parameters); renderAIPlan(aiPlan);
+  });
+  $('workflow-add').addEventListener('click', () => {
+    if (workflowSteps.length < 11) { workflowSteps.push(workflowDefault('trim')); workflowChanged(); renderWorkflowSteps(); }
+  });
+  for (const id of ['workflow-format', 'workflow-codec', 'workflow-size', 'workflow-audio']) $(id).addEventListener('input', workflowChanged);
+  $('workflow-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision, token = aiRevision;
+    if (busy || aiLoading || !mediaId) return;
+    operation('workflow-error', async () => {
+      let duration = selectedMedia.metadata.durationMs, muted = !selectedMedia.metadata.hasAudio;
+      for (const [index, step] of workflowSteps.entries()) {
+        if (step.operation === 'trim' || step.operation === 'join_clips') {
+          const clips = step.operation === 'trim' ? [step] : step.clips, minimum = step.operation === 'trim' ? 100 : 500;
+          if (clips.some(clip => !Number.isSafeInteger(clip.startMs) || !Number.isSafeInteger(clip.endMs) || clip.startMs < 0 || clip.endMs > duration || clip.endMs - clip.startMs < minimum))
+            throw new Error(`步骤 ${index + 1} 区间无效：当前结果长 ${(duration / 1000).toFixed(3)} 秒，区间至少 ${minimum / 1000} 秒。`);
+          duration = clips.reduce((sum, clip) => sum + clip.endMs - clip.startMs, 0);
+          if (duration > 900000) throw new Error('拼接结果不能超过15分钟。');
+        }
+        if (step.operation === 'mute') muted = true;
+      }
+      const format = $('workflow-format').value, audio = ['mp3', 'm4a', 'wav', 'flac'].includes(format);
+      if (audio && muted) throw new Error('当前步骤已无音轨，无法导出音频。');
+      const last = { operation: 'export', outputFormat: format, videoCodec: audio ? null : $('workflow-codec').value,
+        targetSizeBytes: audio || !$('workflow-size').value ? null : Math.round(Number($('workflow-size').value) * 1048576), extractAudio: !audio && $('workflow-audio').checked };
+      const parameters = { operation: 'workflow', outputFormat: format, steps: [...structuredClone(workflowSteps), last] };
+      const editable = aiPlan?.parameters?.operation === 'workflow' && aiPlan.status === 'READY' && aiPlan.mediaId === mediaId;
+      const plan = await request(editable ? `/api/operation-plans/${aiPlan.id}` : '/api/operation-plans', { method: editable ? 'PATCH' : 'POST',
+        body: editable ? { expectedVersion: aiPlan.version, parameters } : { mediaId, parameters } });
+      if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== token) return;
+      workflowDirty = false; renderAIPlan(plan);
+    });
+  });
+
   function clearAIPlan() {
     aiRevision++; aiPlan = null; aiSourceId = null; aiLoading = false; aiPlanDirty = false; aiGenerating = false;
     $('ai-plan').hidden = true; $('ai-instruction').value = ''; notice('ai-error', '');
+    workflowDirty = false; workflowSteps = []; renderWorkflowSteps(); notice('workflow-error', '');
+    $('workflow-format').value = 'mp4'; $('workflow-codec').value = 'h264'; $('workflow-size').value = ''; $('workflow-audio').checked = false;
   }
   function syncAIControls() {
     const ready = selectedMedia?.status === 'READY';
@@ -1190,6 +1579,21 @@
     $('ai-state').textContent = aiGenerating ? '正在生成方案…' : aiLoading ? '正在读取方案…' : !capabilities?.aiPlans ? 'AI 服务尚未配置。' : '';
     $('generate-ai-label').textContent = aiGenerating ? '生成中…' : '生成方案';
     $('ai-result-slot').hidden = !selectedTask || selectedTask.mediaId !== selectedMedia?.id || selectedTask.kind === 'TRANSCRIPTION';
+    $('workflow-source').textContent = ready ? selectedMedia.originalFilename : '未选择就绪素材';
+    const workflowUnavailable = busy || aiLoading || !ready || !capabilities?.supportedOperations?.includes('workflow');
+    for (const element of $('workflow-form').querySelectorAll('input, select, button')) element.disabled = workflowUnavailable;
+    $('workflow-add').disabled ||= workflowSteps.length >= 11;
+    $('workflow-text-mode').disabled = busy || aiLoading; $('workflow-step-mode').disabled = busy || aiLoading;
+    const format = $('workflow-format').value, audio = ['mp3', 'm4a', 'wav', 'flac'].includes(format);
+    $('workflow-codec-field').hidden = audio; $('workflow-size-field').hidden = audio; $('workflow-audio-field').hidden = audio;
+    for (const option of $('workflow-format').options) option.disabled = !capabilities?.exportFormats?.includes(option.value);
+    const codecs = (exportCodecMatrix[format] || []).filter(codec => capabilities?.exportVideoCodecs?.includes(codec)
+      && (!$('workflow-size').value || ['h264', 'vp9'].includes(codec)));
+    for (const option of $('workflow-codec').options) option.disabled = !codecs.includes(option.value);
+    if (!audio && codecs.length && !codecs.includes($('workflow-codec').value)) $('workflow-codec').value = codecs[0];
+    $('workflow-audio').disabled ||= !selectedMedia?.metadata?.hasAudio;
+    $('workflow-state').textContent = !capabilities?.supportedOperations?.includes('workflow') ? '顺序处理工具暂不可用。' : workflowDirty ? '未保存' : '';
+    for (const button of $('workflow-steps').querySelectorAll('[data-boundary="true"]')) button.disabled = true;
   }
   function renderAIPlan(plan) {
     aiPlan = plan; aiPlanDirty = false; $('ai-plan').hidden = !plan;
@@ -1199,11 +1603,25 @@
     $('ai-plan-summary').textContent = plan.summary;
     const values = [], p = plan.parameters;
     if (p) {
-      values.push(['操作', taskVerb(p.operation)], ['格式', p.outputFormat.toUpperCase()]);
-      if (p.resolutionPreset) values.push(['分辨率', p.resolutionPreset === 'source' ? '原分辨率' : '720p']);
-      if (p.operation === 'compress') values.push(['目标体积', sizeText(p.targetSizeBytes)]);
-      if (p.operation === 'trim') values.push(['保留区间', `${(p.startMs / 1000).toFixed(3)} 至 ${(p.endMs / 1000).toFixed(3)} 秒`]);
-      values.push(['音轨', p.operation === 'mute' ? '全部移除' : p.operation === 'extract_audio' ? '提取第一条音轨' : '保留']);
+      const rangeText = (start, end) => `${(start / 1000).toFixed(3)} 至 ${(end / 1000).toFixed(3)} 秒`;
+      values.push(['操作', p.operation === 'export' ? '组合导出' : taskVerb(p.operation)], ['格式', p.outputFormat.toUpperCase()]);
+      if (p.operation === 'join_clips') {
+        p.clips.forEach((clip, index) => values.push([`第 ${index + 1} 段`, rangeText(clip.startMs, clip.endMs)]));
+        values.push(['拼接总时长', (p.clips.reduce((sum, clip) => sum + clip.endMs - clip.startMs, 0) / 1000).toFixed(3) + ' 秒'], ['分辨率', '原分辨率']);
+      }
+      if (p.operation === 'workflow') p.steps.forEach((step, index) => {
+        let detail = step.operation === 'trim' ? '保留 ' + rangeText(step.startMs, step.endMs)
+          : step.operation === 'join_clips' ? '选段拼接：' + step.clips.map(clip => rangeText(clip.startMs, clip.endMs)).join(' → ')
+          : step.operation === 'resize' ? '缩放 ' + (step.resolutionPreset === 'custom' ? `${step.width} x ${step.height} 最大边界` : step.resolutionPreset)
+          : step.operation === 'mute' ? '静音' : `导出 ${step.outputFormat.toUpperCase()}${step.videoCodec ? ' / ' + step.videoCodec : ''}${step.targetSizeBytes ? ' / 最多 ' + sizeText(step.targetSizeBytes) : ''}${step.extractAudio ? ' / 另存完整原始音轨 MP3' : ''}`;
+        values.push([`步骤 ${index + 1}`, detail]);
+      });
+      if (p.resolutionPreset) values.push(['分辨率', p.resolutionPreset === 'source' ? '原分辨率' : p.resolutionPreset === 'custom' ? `${p.width} x ${p.height} 最大边界` : p.resolutionPreset]);
+      if (p.videoCodec) values.push(['视频编码', ({ h264: 'H.264', hevc: 'H.265 / HEVC', vp9: 'VP9', av1: 'AV1' })[p.videoCodec] || p.videoCodec]);
+      if (p.targetSizeBytes != null) values.push(['目标体积', sizeText(p.targetSizeBytes)]);
+      if (p.startMs != null && p.endMs != null) values.push(['保留区间', rangeText(p.startMs, p.endMs)]);
+      values.push(['音轨', p.operation === 'mute' || p.audioMode === 'mute' || p.steps?.some(step => step.operation === 'mute') ? '全部移除' : p.operation === 'extract_audio' || ['mp3', 'm4a', 'wav', 'flac'].includes(p.outputFormat) ? '提取第一条音轨' : '保留']);
+      if (p.extractAudio) values.push(['附加文件', '完整原始音轨 MP3（不受裁切影响）']);
     }
     $('ai-plan-parameters').replaceChildren(...values.map(([key, value]) => {
       const row = document.createElement('div'), label = document.createElement('dt'), detail = document.createElement('dd');
@@ -1212,6 +1630,7 @@
     $('ai-plan-questions').replaceChildren(...plan.questions.map((question) => {
       const row = document.createElement('li'); row.textContent = question.message; return row;
     }));
+    $('workflow-edit').hidden = p?.operation !== 'workflow' || workflowMode;
     syncAIControls();
   }
   async function loadAIPlan() {
@@ -1221,7 +1640,8 @@
     try {
       const result = await request(`/api/operation-plans?mediaId=${mediaId}&page=1&pageSize=10`);
       if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== token) return;
-      const plan = result.items.find((item) => item.instruction);
+      const plan = result.items.find((item) => workflowMode ? item.parameters?.operation === 'workflow' : item.instruction);
+      if (workflowMode && plan) fillWorkflow(plan.parameters);
       $('ai-instruction').value = plan?.instruction || ''; renderAIPlan(plan || null); notice('ai-error', '');
       if (plan?.taskId) {
         const task = await request(`/api/tasks/${plan.taskId}`);
@@ -1234,7 +1654,7 @@
   }
   $('ai-tool').addEventListener('click', () => selectTool('ai'));
   $('refresh-ai-plan').addEventListener('click', () => {
-    if (!$('ai-instruction').value || window.confirm('恢复最近保存的方案并放弃当前输入？')) loadAIPlan();
+    if (!(workflowMode ? workflowDirty : $('ai-instruction').value) || window.confirm('恢复最近保存的方案并放弃当前输入？')) { workflowDirty = false; loadAIPlan(); }
   });
   $('ai-instruction').addEventListener('input', () => { aiRevision++; aiPlanDirty = true; $('ai-plan').hidden = true; syncAIControls(); });
   $('ai-form').addEventListener('submit', (event) => {
@@ -1252,6 +1672,7 @@
           method: aiPlan && aiPlan.status !== 'EXECUTED' ? 'PATCH' : 'POST', body
         });
         if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== token) return;
+        $('ai-instruction').value = plan.instruction || instruction;
         renderAIPlan(plan);
       } finally { aiGenerating = false; syncAIControls(); }
     });
@@ -1434,21 +1855,23 @@
       notice('subtitle-error', '');
     });
   });
-  window.addEventListener('beforeunload', (event) => { if (subtitleDirty || joinDirty) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('beforeunload', (event) => { if (subtitleDirty || joinDirty || exportDirty || workflowDirty) { event.preventDefault(); event.returnValue = ''; } });
 
   function taskActive(task) { return task && ['QUEUED', 'RUNNING', 'CANCELLING'].includes(task.status); }
   function taskStatus(status, operation) {
     const verb = taskVerb(operation);
     return ({ QUEUED: '排队中', RUNNING: verb + '中', CANCELLING: '取消中', CANCELLED: '已取消', SUCCEEDED: '已完成', FAILED: verb + '失败' })[status] || status;
   }
-  function taskVerb(operation) { return operation === 'join_clips' ? '拼接' : operation === 'burn_subtitles' ? '字幕烧录' : operation === 'transcribe' ? '识别' : operation === 'mute' ? '静音' : operation === 'trim' ? '裁切' : operation === 'extract_audio' ? '提取' : operation === 'compress' ? '压缩' : '转换'; }
+  function taskVerb(operation) { return operation === 'workflow' ? '顺序处理' : operation === 'export' ? '导出' : operation === 'join_clips' ? '拼接' : operation === 'burn_subtitles' ? '字幕烧录' : operation === 'transcribe' ? '识别' : operation === 'mute' ? '静音' : operation === 'trim' ? '裁切' : operation === 'extract_audio' ? '提取' : operation === 'compress' ? '压缩' : '转换'; }
   function taskFormat(parameters) {
+    if (parameters?.operation === 'workflow') return `${parameters.outputFormat.toUpperCase()} · ${parameters.steps.length} 步`;
+    if (parameters?.operation === 'export') return `${parameters.outputFormat.toUpperCase()}${parameters.videoCodec ? ' · ' + parameters.videoCodec : ''}${parameters.startMs !== null ? ' · 裁切' : ''}${parameters.targetSizeBytes !== null ? ' · 压缩' : ''}${parameters.audioMode === 'mute' ? ' · 静音' : ''}`;
     if (parameters?.operation === 'join_clips') return `MP4 · ${parameters.clips.length}段 · ${(parameters.clips.reduce((sum, clip) => sum + clip.endMs - clip.startMs, 0) / 1000).toFixed(3)} 秒`;
     if (parameters?.operation === 'burn_subtitles') return `MP4 · 字幕 v${parameters.transcriptVersion}`;
     if (parameters?.operation === 'trim') return `MP4 · ${(parameters.startMs / 1000).toFixed(3)}-${(parameters.endMs / 1000).toFixed(3)} 秒`;
     return parameters?.operation === 'extract_audio' ? 'MP3' : `MP4 · ${parameters?.resolutionPreset === '720p' ? '720p' : '原分辨率'}`;
   }
-  function displayTask(task) {
+  function displayTask(task, preferredOutputId = outputId) {
     selectedTask = task;
     if (task.kind === 'TRANSCRIPTION') {
       $('conversion-result').hidden = true;
@@ -1465,9 +1888,12 @@
     $('task-stage').textContent = `${task.id.slice(0, 8)} · ${taskFormat(task.parameters)} · ${stage}`;
     notice('task-error', task.error?.message || '', true);
     $('cancel-task').hidden = !taskActive(task);
-    const result = task.status === 'SUCCEEDED' ? task.outputs[0] : null;
+    const result = task.status === 'SUCCEEDED' ? task.outputs.find((item) => item.id === preferredOutputId) || task.outputs[0] : null;
+    $('output-selector-field').hidden = task.outputs.length < 2;
+    $('output-selector').replaceChildren(...task.outputs.map((item) => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.filename; return option; }));
+    if (result) $('output-selector').value = result.id;
     $('output-empty').hidden = task.status !== 'SUCCEEDED' || !!result;
-    const audioResult = result?.contentType === 'audio/mpeg';
+    const audioResult = result?.contentType?.startsWith('audio/');
     $('compression-stats').hidden = !result || task.parameters?.operation !== 'compress';
     $('compression-stats').textContent = result && task.parameters?.operation === 'compress'
       ? `目标 ${sizeText(task.parameters.targetSizeBytes)} · 实际 ${sizeText(result.sizeBytes)}` : '';
@@ -1476,20 +1902,28 @@
       $('output-audio').pause();
       $('output-preview').removeAttribute('src'); $('output-preview').load();
       $('output-audio').removeAttribute('src'); $('output-audio').load();
-      if (result) $(audioResult ? 'output-audio' : 'output-preview').src = result.previewUrl;
+      if (result?.previewUrl) $(audioResult ? 'output-audio' : 'output-preview').src = result.previewUrl;
       outputId = result?.id || null;
     }
-    $('output-preview').hidden = !result || audioResult;
-    $('output-audio').hidden = !audioResult;
+    $('output-preview').hidden = !result?.previewUrl || audioResult;
+    $('output-audio').hidden = !result?.previewUrl || !audioResult;
+    notice('output-preview-status', result && !result.previewUrl ? '当前格式请下载后播放。' : '');
     $('audio-stats').hidden = !audioResult;
     $('audio-stats').textContent = audioResult ? `${(result.metadata.durationMs / 1000).toFixed(2)} 秒 · ${sizeText(result.sizeBytes)}` : '';
-    $('download-label').textContent = audioResult ? '下载 MP3' : '下载 MP4';
+    $('download-label').textContent = '下载 ' + (result?.filename?.split('.').pop()?.toUpperCase() || '文件');
     $('download-output').hidden = !result;
     $('delete-output').hidden = !result;
     if (result) { $('download-output').href = result.downloadUrl; $('download-output').setAttribute('download', result.filename); }
     else $('download-output').removeAttribute('href');
     syncMediaControls();
   }
+  $('output-selector').addEventListener('change', () => {
+    const id = $('output-selector').value;
+    if (selectedTask) displayTask(selectedTask, id);
+  });
+  for (const id of ['output-preview', 'output-audio']) $(id).addEventListener('error', () => {
+    if (outputId && $(id).error) notice('output-preview-status', '浏览器无法播放此编码，请下载后播放。');
+  });
 
   async function loadTasks() {
     clearTimeout(taskTimer); taskTimer = null;
@@ -1516,13 +1950,17 @@
         const size = document.createElement('span'); size.className = 'file-size'; size.textContent = task.outputs[0] ? sizeText(task.outputs[0].sizeBytes) : '';
         const status = document.createElement('span'); status.className = 'media-status ' + (task.status === 'SUCCEEDED' ? 'ready' : task.status === 'FAILED' ? 'failed' : ''); status.textContent = taskStatus(task.status, task.kind === 'TRANSCRIPTION' ? 'transcribe' : task.parameters?.operation);
         button.append(icon, name, size, status); button.addEventListener('click', () => {
-          if (task.kind === 'TRANSCRIPTION' || task.parameters?.operation === 'burn_subtitles' || task.parameters?.operation === 'join_clips') {
+          if (task.kind === 'TRANSCRIPTION' || ['burn_subtitles', 'join_clips', 'workflow'].includes(task.parameters?.operation)) {
             operation('task-list-error', async () => {
               const source = await request(`/api/media/${task.mediaId}`);
               if (currentUser?.id !== owner || workspaceRevision !== revision) return;
               displayMedia(source);
               if (selectedMedia?.id !== source.id) return;
-              if (task.parameters?.operation === 'join_clips') {
+              if (task.parameters?.operation === 'workflow') {
+                selectTool('ai'); setWorkflowMode(true); fillWorkflow(task.parameters);
+                renderAIPlan({ id: task.planId, mediaId: task.mediaId, version: task.planVersion, status: 'EXECUTED', parameters: task.parameters,
+                  summary: taskFormat(task.parameters), questions: [], warnings: [], taskId: task.id });
+              } else if (task.parameters?.operation === 'join_clips') {
                 selectTool('join'); joinRevision++; joinLoading = false; joinSourceId = task.mediaId;
                 joinRows = task.parameters.clips.map((clip) => joinRow(clip.startMs, clip.endMs)); joinDirty = false; pendingJoinPlan = null; renderJoin();
               } else selectTool('subtitle');
@@ -1564,7 +2002,7 @@
       const resolution = $('conversion-resolution').value;
       const range = trimRange();
       if (processingOperation === 'trim' && !range.valid) throw new Error('区间需至少0.5秒，且不超过素材时长。');
-      const parameters = processingOperation === 'trim' ? { operation: 'trim', outputFormat: 'mp4', startMs: range.startMs, endMs: range.endMs, audioMode: 'keep' }
+      let parameters = processingOperation === 'trim' ? { operation: 'trim', outputFormat: 'mp4', startMs: range.startMs, endMs: range.endMs, audioMode: 'keep' }
         : processingOperation === 'extract_audio' ? { operation: 'extract_audio', outputFormat: 'mp3' }
         : processingOperation === 'mute' ? { operation: 'mute', outputFormat: 'mp4', resolutionPreset: resolution }
         : { operation: processingOperation, outputFormat: 'mp4', resolutionPreset: resolution, audioMode: 'keep' };
@@ -1574,14 +2012,19 @@
         if (!Number.isSafeInteger(parameters.targetSizeBytes) || parameters.targetSizeBytes < 32768 || parameters.targetSizeBytes >= selectedMedia.sizeBytes)
           throw new Error('目标体积需至少32 KB，并小于原文件。');
       }
+      if (usesExport()) parameters = exportParameters();
+      const owner = currentUser?.id, revision = workspaceRevision;
       // Retain the plan on an uncertain execute response so another click cannot enqueue a duplicate task.
-      if (!pendingPlan || pendingPlan.mediaId !== mediaId || pendingPlan.parameters.resolutionPreset !== parameters.resolutionPreset
-          || pendingPlan.parameters.operation !== parameters.operation || pendingPlan.parameters.targetSizeBytes !== parameters.targetSizeBytes
-          || pendingPlan.parameters.startMs !== parameters.startMs || pendingPlan.parameters.endMs !== parameters.endMs) {
-        pendingPlan = await request('/api/operation-plans', { method: 'POST', body: { mediaId,
-          parameters } });
+      if (!pendingPlan || pendingPlan.mediaId !== mediaId || !sameParameters(pendingPlan.parameters, parameters)) {
+        const plan = parameters.operation === 'export' ? await saveExportPlan(parameters)
+          : await request('/api/operation-plans', { method: 'POST', body: { mediaId, parameters } });
+        if (!plan || currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision) return;
+        pendingPlan = plan;
       }
       const task = await request(`/api/operation-plans/${pendingPlan.id}/execute`, { method: 'POST', body: { expectedVersion: pendingPlan.version } });
+      if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision) return;
+      if (exportPlan?.id === pendingPlan.id) exportPlan = { ...exportPlan, status: 'EXECUTED' };
+      exportDirty = false;
       displayTask(task); pendingPlan = null; taskPage = 1; await loadTasks();
     });
   });
@@ -1591,7 +2034,7 @@
   }));
   function closeOutputDelete() { $('delete-output-dialog').close(); deletingOutput = null; }
   $('delete-output').addEventListener('click', () => {
-    const result = selectedTask?.outputs[0];
+    const result = selectedTask?.outputs.find((item) => item.id === outputId);
     if (busy || !result) return;
     deletingOutput = { id: result.id, owner: currentUser.id };
     $('delete-output-name').textContent = result.filename; notice('delete-output-error', '');

@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -65,7 +66,7 @@ async function fixture(page, { enabled = true, existing = true, preview = true, 
 
 async function open(page) {
   await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
-  await page.locator('#find-tool').click(); await expect(page.locator('#find-state')).toHaveText('字幕 v1');
+  await selectTool(page, 'find'); await expect(page.locator('#find-state')).toHaveText('字幕 v1');
   await page.locator('#find-query').fill('产品限制');
   await page.locator('#find-submit').click(); await expect(page.locator('#find-results > li')).toHaveCount(1);
 }
@@ -124,10 +125,10 @@ test('finding a clip adds its checked range to the ordered join editor without e
 
 test('missing credentials or subtitles close analysis and incompatible originals close only preview', async ({ page }) => {
   await fixture(page, { enabled: false }); await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
-  await page.locator('#find-tool').click(); await expect(page.locator('#find-state')).toHaveText('AI 服务尚未配置。');
+  await selectTool(page, 'find'); await expect(page.locator('#find-state')).toHaveText('AI 服务尚未配置。');
   await expect(page.locator('#find-submit')).toBeDisabled();
   await page.unroute('**/api/**'); await fixture(page, { existing: false }); await page.reload();
-  await expect(page.locator('#media-status')).toHaveText('已就绪'); await page.locator('#find-tool').click();
+  await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'find');
   await expect(page.locator('#find-state')).toHaveText('当前素材暂无字幕。'); await expect(page.locator('#find-submit')).toBeDisabled();
   await page.unroute('**/api/**'); await fixture(page, { preview: false }); await open(page);
   await expect(page.getByRole('button', { name: '预览片段 1', exact: true })).toBeDisabled();

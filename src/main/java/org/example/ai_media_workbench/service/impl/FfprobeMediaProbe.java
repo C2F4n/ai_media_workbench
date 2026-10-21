@@ -48,7 +48,7 @@ public class FfprobeMediaProbe implements MediaProbe {
         var readers=Executors.newVirtualThreadPerTaskExecutor();
         try {
             process=new ProcessBuilder(List.of(properties.ffprobe(),"-v","error","-protocol_whitelist","file",
-                    "-format_whitelist",audioOnly ? "mov,matroska,webm,mp3" : "mov,matroska,webm","-show_entries",
+                    "-format_whitelist",audioOnly ? "mov,matroska,webm,mp3,wav,flac" : "mov,matroska,webm","-show_entries",
                     "format=format_name,duration:stream=codec_type,codec_name,width,height,duration:stream_tags=rotate,DURATION:stream_side_data=rotation",
                     "-of","json","-i",file.toAbsolutePath().toString()))
                     .redirectError(ProcessBuilder.Redirect.DISCARD).start();

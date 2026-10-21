@@ -101,7 +101,7 @@ class CloudAiTests {
         var planner=new DeepSeekOperationPlanner(client,json);
         String content="{\"parameters\":{\"operation\":\"mute\",\"outputFormat\":\"mp4\",\"resolutionPreset\":\"source\"}}";
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content",content))))));
-        var context=new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mp4",5000,160,90,"h264",true,"aac"),12345,List.of("mute"),null);
+        var context=new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mp4",5000,160,90,"h264",true,"aac"),12345,List.of("mute"),null,null,List.of(),List.of(),1073741824L);
         var proposal=planner.propose("静音",context,USER);
         assertThat(proposal.parameters().path("operation").asText()).isEqualTo("mute"); assertThat(proposal.questions()).isEmpty();
         var request=ArgumentCaptor.forClass(HttpRequest.class); verify(transport).post(request.capture(),anyLong(),any(),eq(ErrorCode.AI_PLAN_FAILED));
@@ -127,6 +127,28 @@ class CloudAiTests {
                 "{\"questions\":[\"OPERATION_REQUIRED\",\"OPERATION_REQUIRED\"]}","{\"command\":\"do anything\"}"))
             assertThatThrownBy(()->DeepSeekOperationPlanner.parse(json.readTree(content)))
                     .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.AI_PLAN_FAILED));
+    }
+
+    @Test void plannerPromptSupportsBoundedCompositeExportsOrderedJoinsAndClarificationContext() {
+        var client=mock(DeepSeekJsonClient.class); var planner=new DeepSeekOperationPlanner(client,json);
+        var parameters=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","360p",null,null,"keep",0L,5000L,null,false);
+        when(client.complete(anyString(),anyString(),eq(3072),eq(ErrorCode.AI_PLAN_FAILED),eq(USER)))
+                .thenReturn(json.valueToTree(Map.of("parameters",parameters)));
+        var context=new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mov",20000,1920,1080,"h264",true,"aac"),1000000,
+                List.of("export","join_clips"),parameters,"保留前5秒转成360p",List.of("mp4","webm"),List.of("h264","vp9"),1073741824L);
+        assertThat(planner.propose("再静音，其他不变",context,USER).parameters().path("resolutionPreset").asText()).isEqualTo("360p");
+        var prompt=ArgumentCaptor.forClass(String.class); var content=ArgumentCaptor.forClass(String.class);
+        verify(client).complete(prompt.capture(),content.capture(),eq(3072),eq(ErrorCode.AI_PLAN_FAILED),eq(USER));
+        assertThat(prompt.getValue()).contains("operation=export","operation=join_clips","CLIP_RANGES_REQUIRED","压缩至360p/720p","不能只做其中一步","保留/删除歧义",
+                "operation=workflow", "每一步都消费上一步结果", "不能在导出后继续处理", "拼接后缩放");
+        assertThat(prompt.getValue()).doesNotContain("只允许context.supportedOperations中的单步操作");
+        var sent=json.readTree(content.getValue()).path("context");
+        assertThat(sent.path("previousInstruction").asText()).isEqualTo("保留前5秒转成360p");
+        assertThat(sent.path("previousParameters").path("endMs").asLong()).isEqualTo(5000);
+        assertThat(sent.path("exportFormats").size()).isEqualTo(2); assertThat(sent.path("maxOutputBytes").asLong()).isEqualTo(1073741824L);
+        assertThat(sent.toString()).doesNotContain("storageKey","userId","secret","apiKey");
+        assertThat(DeepSeekOperationPlanner.parse(json.readTree("{\"questions\":[\"CLIP_RANGES_REQUIRED\"]}")).questions())
+                .containsExactly(OperationPlanner.Question.CLIP_RANGES_REQUIRED);
     }
 
     @Test void transcriptAnalyzerUsesSharedBoundedJsonClientAndSendsOnlySavedSegments() throws Exception {

@@ -44,6 +44,7 @@ public class OutputController {
     public ResponseEntity<StreamingResponseBody> preview(@AuthenticationPrincipal AccountPrincipal user, @PathVariable UUID id,
                                       @RequestHeader(value = "Range", required = false) String header) {
         var file = outputs.file(user.userId(), id.toString());
+        if (file.info().previewUrl() == null) throw new org.example.ai_media_workbench.common.exception.BusinessException(org.example.ai_media_workbench.common.exception.ErrorCode.MEDIA_PREVIEW_UNAVAILABLE);
         return MediaStreams.preview(file.path(), file.info().sizeBytes(), file.info().contentType(), file.info().filename(), header);
     }
 }

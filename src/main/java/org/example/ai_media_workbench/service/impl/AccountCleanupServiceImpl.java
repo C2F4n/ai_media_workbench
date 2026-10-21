@@ -116,7 +116,7 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
                 for (String key : keys) {
                     deleteControlledFile(key);
                     // 运行中注销或进程中断可能留下未发布的输出和两遍编码缓存。
-                    if (key.matches("[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36}-[0-9a-fA-F-]{36}\\.mp4"))
+                    if (key.matches("[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36}-[0-9a-fA-F-]{36}\\.(mp4|mp3|mkv|mov|webm|m4a|wav|flac)"))
                         for (String suffix : LocalMediaStorage.OUTPUT_AUXILIARY_SUFFIXES) deleteControlledFile(key + suffix);
                 }
                 mapper.complete(job.getId(), now());

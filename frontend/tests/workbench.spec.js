@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -9,6 +10,7 @@ const password = 'Workbench-2026!';
 let directory;
 let video;
 let joinVideo;
+let exportVideo;
 
 test.beforeAll(() => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'amw-media-e2e-'));
@@ -16,6 +18,8 @@ test.beforeAll(() => {
   execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=10:d=0.4',
     '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', video], { timeout: 15000, stdio: 'ignore' });
   joinVideo = path.join(directory, 'join-colors.mp4');
+  exportVideo = path.join(directory, 'export-source.mkv');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=15:d=3', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3', '-c:v', 'mpeg4', '-c:a', 'pcm_s16le', '-y', exportVideo], { timeout: 15000, stdio: 'ignore' });
   execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i',
     'color=c=red:s=160x90:r=30:d=1[r];color=c=lime:s=160x90:r=30:d=1[g];color=c=blue:s=160x90:r=30:d=1[b];[r][g][b]concat=n=3:v=1:a=0',
     '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=0.8', '-c:v', 'libx264', '-c:a', 'aac', '-pix_fmt', 'yuv420p', '-y', joinVideo], { timeout: 15000, stdio: 'ignore' });
@@ -64,6 +68,75 @@ async function removeAccount(context, account) {
   expect(response.status()).toBe(200);
 }
 
+test('composite export saves and restores settings, compresses trimmed silent WebM and preserves original MP3', async ({ page, context }, testInfo) => {
+  test.setTimeout(60000);
+  const account = await registerAndLogin(page, context), errors = [];
+  page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
+  try {
+    await page.locator('#media-file').setInputFiles(exportVideo); await page.locator('#upload-submit').click();
+    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 12000 });
+    await selectTool(page, 'convert'); await page.locator('#export-format').selectOption('webm');
+    await expect(page.locator('#export-codec')).toHaveValue('vp9');
+    await page.locator('#export-combine').check();
+    for (const id of ['export-trim', 'export-compress', 'export-mute', 'export-extract']) await page.locator('#' + id).check();
+    await page.locator('#trim-start').fill('0.5'); await page.locator('#trim-end').fill('2.5'); await page.locator('#compression-target').fill('0.09');
+    await page.locator('#conversion-resolution').selectOption('custom'); await page.locator('#export-width').fill('320'); await page.locator('#export-height').fill('200');
+    await page.locator('#save-export-plan').click(); await expect(page.locator('#export-plan-state')).toContainText('已保存');
+    const tasks = await (await context.request.get('/api/tasks')).json(); expect(tasks.data.total).toBe(0);
+    await page.reload(); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'convert');
+    await page.locator('#restore-export-plan').click(); await expect(page.locator('#export-plan-state')).toContainText('已恢复');
+    await expect(page.locator('#export-format')).toHaveValue('webm'); await expect(page.locator('#export-extract')).toBeChecked();
+    await expect(page.locator('#trim-start')).toHaveValue('0.5'); await expect(page.locator('#export-width')).toHaveValue('320');
+    await selectTool(page, 'mute'); await selectTool(page, 'convert');
+    await expect(page.locator('#export-format')).toHaveValue('webm');
+    for (const viewport of [{ width: 1365, height: 1000 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport); expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: testInfo.outputPath('export-settings-' + viewport.width + '.png'), fullPage: true });
+    }
+    await page.locator('#start-conversion').click(); await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 20000 });
+    await expect(page.locator('#output-selector option')).toHaveCount(2);
+    const result = (await (await context.request.get('/api/tasks')).json()).data.items[0];
+    expect(result.parameters.operation).toBe('export'); expect(result.parameters.audioMode).toBe('mute');
+    const videoResult = result.outputs.find((o) => o.contentType === 'video/webm'), audioResult = result.outputs.find((o) => o.contentType === 'audio/mpeg');
+    expect(videoResult.metadata.width).toBe(320); expect(videoResult.metadata.height).toBe(180); expect(videoResult.metadata.hasAudio).toBe(false);
+    expect(videoResult.sizeBytes).toBeLessThanOrEqual(Math.floor(.09 * 1024 * 1024)); expect(audioResult.metadata.durationMs).toBeGreaterThan(2900);
+    await page.locator('#output-selector').selectOption(audioResult.id); await expect(page.locator('#output-audio')).toBeVisible(); await expect(page.locator('#download-label')).toHaveText('下载 MP3');
+    await page.locator('#output-selector').selectOption(videoResult.id); await expect(page.locator('#output-preview')).toBeVisible(); await expect(page.locator('#download-label')).toHaveText('下载 WEBM');
+    expect((await context.request.get(videoResult.downloadUrl)).status()).toBe(200);
+    expect(errors).toEqual([]);
+  } finally { await removeAccount(context, account); }
+});
+
+test('audio format exports use audio players while HEVC remains download-only', async ({ page, context }) => {
+  test.setTimeout(60000);
+  const account = await registerAndLogin(page, context), errors = [];
+  page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
+  try {
+    await page.locator('#media-file').setInputFiles(joinVideo); await page.locator('#upload-submit').click();
+    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 12000 });
+    await selectTool(page, 'audio');
+    for (const [format, mime] of [['m4a', 'audio/mp4'], ['wav', 'audio/wav'], ['flac', 'audio/flac']]) {
+      await page.locator('#export-audio-format').selectOption(format);
+      const queued = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/execute'));
+      await page.locator('#start-conversion').click(); expect((await queued).status()).toBe(202);
+      await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 15000 });
+      await expect(page.locator('#output-audio')).toBeVisible(); await expect(page.locator('#output-preview')).toBeHidden();
+      await expect(page.locator('#download-label')).toHaveText('下载 ' + format.toUpperCase());
+      const task = (await (await context.request.get('/api/tasks')).json()).data.items[0]; expect(task.outputs[0].contentType).toBe(mime);
+      expect(task.outputs[0].metadata.durationMs).toBeLessThan(1100); expect(task.outputs[0].metadata.videoCodec).toBeNull();
+    }
+    await selectTool(page, 'convert'); await page.locator('#export-codec').selectOption('hevc');
+    const queued = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/execute'));
+    await page.locator('#start-conversion').click(); expect((await queued).status()).toBe(202);
+    await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 15000 });
+    await expect(page.locator('#output-preview')).toBeHidden(); await expect(page.locator('#output-preview-status')).toContainText('下载');
+    const task = (await (await context.request.get('/api/tasks')).json()).data.items[0], output = task.outputs[0];
+    expect(output.metadata.videoCodec).toBe('hevc'); expect(output.previewUrl).toBeNull();
+    expect((await context.request.get('/api/outputs/' + output.id + '/preview')).status()).toBe(409);
+    expect((await context.request.get(output.downloadUrl)).status()).toBe(200); expect(errors).toEqual([]);
+  } finally { await removeAccount(context, account); }
+});
+
 test('ordered repeated clip export runs real FFmpeg, retries one task and restores private playback/download', async ({ page, context }, testInfo) => {
   const account = await registerAndLogin(page, context), errors = [], writes = [];
   page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
@@ -71,7 +144,7 @@ test('ordered repeated clip export runs real FFmpeg, retries one task and restor
   try {
     await page.locator('#media-file').setInputFiles(joinVideo); await page.locator('#upload-submit').click();
     await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 12000 });
-    await page.locator('#join-tool').click(); await expect(page.locator('#join-clips > li')).toHaveCount(1);
+    await selectTool(page, 'join'); await expect(page.locator('#join-clips > li')).toHaveCount(1);
     await expect(page.locator('#join-clips input').first()).toBeEnabled();
     const row = (n) => page.locator('#join-clips > li').nth(n);
     await row(0).locator('input').nth(0).fill('2'); await row(0).locator('input').nth(1).fill('3');
@@ -90,8 +163,7 @@ test('ordered repeated clip export runs real FFmpeg, retries one task and restor
     for (const viewport of [{ width: 1365, height: 1000 }, { width: 1001, height: 1000 }, { width: 800, height: 1000 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       expect(await page.locator('.tool-choice').evaluateAll((buttons) => buttons.every((button) => {
-        const text = [...button.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
-        const range = document.createRange(); range.selectNodeContents(text); const label = range.getBoundingClientRect(), box = button.getBoundingClientRect();
+        const label = button.querySelector('.tool-name').getBoundingClientRect(), box = button.getBoundingClientRect();
         return label.left >= box.left && label.right <= box.right;
       }))).toBe(true);
       await page.screenshot({ path: testInfo.outputPath('join-' + viewport.width + '.png'), fullPage: true });
@@ -115,7 +187,7 @@ test('ordered repeated clip export runs real FFmpeg, retries one task and restor
       expect(frame[seconds === 1.5 ? 0 : 2]).toBeGreaterThan(150);
     }
     const preview = await context.request.get(await page.locator('#source-preview').getAttribute('src')); expect(await preview.body()).toEqual(fs.readFileSync(joinVideo));
-    await page.reload(); await expect(page.locator('#media-status')).toHaveText('已就绪'); await page.locator('#join-tool').click();
+    await page.reload(); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'join');
     await expect(page.locator('#join-clips > li')).toHaveCount(3); await expect(row(0).locator('input').first()).toHaveValue('2');
     await expect(page.locator('#join-result-slot #conversion-result')).toBeVisible(); expect(errors).toEqual([]);
   } finally { await removeAccount(context, account); }
@@ -135,13 +207,13 @@ test('login opens a project-free workspace and a real video is detected on deskt
     await expect(page.locator('#media-metadata')).toContainText('160 × 90');
     await expect(page.locator('#media-metadata')).toContainText('h264');
     await expect(page.locator('#media-total')).toHaveText('1 个素材');
-    await page.getByRole('button', { name: '提取音频', exact: true }).click();
+    await selectTool(page, 'audio');
     await expect(page.locator('#audio-missing')).toBeVisible();
     await expect(page.getByRole('button', { name: '开始提取', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: '视频裁切', exact: true }).click();
+    await selectTool(page, 'trim');
     await expect(page.getByRole('button', { name: '开始裁切', exact: true })).toBeDisabled();
     await expect(page.locator('#trim-range-error')).toBeVisible();
-    await page.getByRole('button', { name: '视频检测', exact: true }).click();
+    await selectTool(page, 'detect');
     for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -242,7 +314,7 @@ test('native conversion survives reload and provides a playable authenticated do
   page.on('pageerror', (error) => errors.push(error.message));
   const account = await registerAndLogin(page, context);
   try {
-    await page.getByRole('button', { name: '视频转换', exact: true }).click();
+    await selectTool(page, 'convert');
     await expect(page.locator('#start-conversion')).toBeDisabled();
     await page.locator('#media-file').setInputFiles(video);
     await page.getByRole('button', { name: '上传并检测', exact: true }).click();
@@ -273,7 +345,7 @@ test('native conversion survives reload and provides a playable authenticated do
     expect(metadata.streams[0]).toMatchObject({ codec_name: 'h264', width: 160, height: 90 });
     await page.reload();
     await expect(page.locator('#workbench-panel')).toBeVisible();
-    await page.getByRole('button', { name: '视频转换', exact: true }).click();
+    await selectTool(page, 'convert');
     await expect(page.locator('#task-status')).toHaveText('已完成');
     await expect(page.locator('#download-output')).toHaveAttribute('href', href);
     for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
@@ -294,7 +366,7 @@ test('target-size compression produces a complete smaller video and persists its
   page.on('pageerror', (error) => errors.push(error.message));
   const account = await registerAndLogin(page, context);
   try {
-    await page.getByRole('button', { name: '视频压缩', exact: true }).click();
+    await selectTool(page, 'compress');
     await page.locator('#media-file').setInputFiles(compressionVideo);
     await page.getByRole('button', { name: '上传并检测', exact: true }).click();
     await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
@@ -322,7 +394,7 @@ test('target-size compression produces a complete smaller video and persists its
     expect(Number(metadata.format.duration)).toBeGreaterThanOrEqual(2.9);
     expect(Number(metadata.format.duration)).toBeLessThanOrEqual(3.25);
     await page.reload();
-    await page.getByRole('button', { name: '视频压缩', exact: true }).click();
+    await selectTool(page, 'compress');
     await expect(page.locator('#task-status')).toHaveText('已完成');
     await expect(page.locator('#download-output')).toHaveAttribute('href', output.downloadUrl);
     for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
@@ -343,7 +415,7 @@ test('audio extraction provides playable private MP3 and restores after reload',
   page.on('pageerror', (error) => errors.push(error.message));
   const account = await registerAndLogin(page, context);
   try {
-    await page.getByRole('button', { name: '提取音频', exact: true }).click();
+    await selectTool(page, 'audio');
     await expect(page.locator('#resolution-field')).toBeHidden();
     await expect(page.locator('#compression-target-field')).toBeHidden();
     await page.locator('#media-file').setInputFiles(source);
@@ -377,7 +449,7 @@ test('audio extraction provides playable private MP3 and restores after reload',
     expect(metadata.streams).toHaveLength(1); expect(metadata.streams[0]).toMatchObject({ codec_name: 'mp3', codec_type: 'audio' });
     expect(Number(metadata.format.duration)).toBeGreaterThanOrEqual(1.8); expect(Number(metadata.format.duration)).toBeLessThanOrEqual(2.3);
     await page.reload();
-    await page.getByRole('button', { name: '提取音频', exact: true }).click();
+    await selectTool(page, 'audio');
     await expect(page.locator('#task-status')).toHaveText('已完成');
     await expect(page.locator('#download-output')).toHaveAttribute('href', output.downloadUrl);
     for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
@@ -396,7 +468,7 @@ test('deleting media confirms, retries safely and revokes results without restor
   const account = await registerAndLogin(page, context);
   let releaseOld = () => {};
   try {
-    await page.getByRole('button', { name: '视频转换', exact: true }).click();
+    await selectTool(page, 'convert');
     await page.locator('#media-file').setInputFiles(video);
     await page.getByRole('button', { name: '上传并检测', exact: true }).click();
     await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
@@ -468,7 +540,7 @@ test('deleting media confirms, retries safely and revokes results without restor
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.locator('#media-total')).toHaveText('0 个素材');
     await expect(page.locator('#media-result')).toBeHidden();
-    await page.getByRole('button', { name: '视频转换', exact: true }).click();
+    await selectTool(page, 'convert');
     await expect(page.getByRole('button', { name: '开始转换', exact: true })).toBeDisabled();
     expect(errors).toEqual([]);
   } finally { releaseOld(); await removeAccount(context, account); }
@@ -485,13 +557,13 @@ test('individual MP3 and MP4 deletion preserves originals, history and the abili
   const account = await registerAndLogin(page, context);
   let releaseOld = () => {};
   try {
-    await page.getByRole('button', { name: '视频转换', exact: true }).click();
+    await selectTool(page, 'convert');
     await page.locator('#media-file').setInputFiles(source);
     await page.getByRole('button', { name: '上传并检测', exact: true }).click();
     await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
     await page.getByRole('button', { name: '开始转换', exact: true }).click();
     await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 20000 });
-    await page.getByRole('button', { name: '提取音频', exact: true }).click();
+    await selectTool(page, 'audio');
     await page.getByRole('button', { name: '开始提取', exact: true }).click();
     await expect(page.locator('#task-total')).toHaveText('2 个任务');
     await expect(page.locator('#download-output')).toHaveText('下载 MP3', { timeout: 15000 });
@@ -550,7 +622,7 @@ test('individual MP3 and MP4 deletion preserves originals, history and the abili
     expect(deletedTask.status).toBe('SUCCEEDED'); expect(deletedTask.outputs).toEqual([]);
     expect((await (await context.request.get('/api/media/' + audioTask.mediaId)).json()).data.status).toBe('READY');
     await page.reload();
-    await page.getByRole('button', { name: '提取音频', exact: true }).click();
+    await selectTool(page, 'audio');
     await expect(page.locator('#output-empty')).toBeVisible();
     await page.locator('#task-list .task-row').filter({ hasText: videoTask.id.slice(0, 8) }).getByRole('button').click();
     await expect(page.locator('#download-output')).toHaveAttribute('href', converted.downloadUrl);
@@ -586,7 +658,7 @@ test('video mute removes all audio and preserves the source with private playbac
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   const account = await registerAndLogin(page, context);
   try {
-    await page.getByRole('button', { name: '视频静音', exact: true }).click();
+    await selectTool(page, 'mute');
     await expect(page.locator('#processing-audio-mode')).toHaveText('移除音轨');
     await expect(page.locator('#trim-fields')).toBeHidden();
     await expect(page.locator('#compression-target-field')).toBeHidden();
@@ -625,7 +697,7 @@ test('video mute removes all audio and preserves the source with private playbac
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath('mute-' + viewport.width + '.png'), fullPage: true });
     }
-    await page.reload(); await page.getByRole('button', { name: '视频静音', exact: true }).click();
+    await page.reload(); await selectTool(page, 'mute');
     await page.getByRole('button', { name: '静音 MP4 · 720p' }).click();
     await expect(page.locator('#conversion-title')).toHaveText('视频静音');
     await expect(page.locator('#download-output')).toHaveAttribute('href', output.downloadUrl);
@@ -643,7 +715,7 @@ test('video trim validates its range, retries one task and downloads the selecte
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   const account = await registerAndLogin(page, context);
   try {
-    await page.getByRole('button', { name: '视频裁切', exact: true }).click();
+    await selectTool(page, 'trim');
     await expect(page.locator('#resolution-field')).toBeHidden();
     await expect(page.locator('#compression-target-field')).toBeHidden();
     await page.locator('#media-file').setInputFiles(source);
@@ -698,7 +770,7 @@ test('video trim validates its range, retries one task and downloads the selecte
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath('trim-' + viewport.width + '.png'), fullPage: true });
     }
-    await page.reload(); await page.getByRole('button', { name: '视频裁切', exact: true }).click();
+    await page.reload(); await selectTool(page, 'trim');
     await expect(page.locator('#download-output')).toHaveAttribute('href', output.downloadUrl);
     await expect(page.locator('#task-stage')).toContainText('1.250-2.250 秒');
     expect(errors).toEqual([]);

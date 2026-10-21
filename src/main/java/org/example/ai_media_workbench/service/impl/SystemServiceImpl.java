@@ -46,9 +46,12 @@ public class SystemServiceImpl implements SystemService {
         if (probe.isAvailable() && transcoder.isAvailable()) operations.addAll(List.of("transcode", "compress", "trim", "mute", "join_clips"));
         if (probe.isAvailable() && transcoder.isAudioExtractionAvailable()) operations.add("extract_audio");
         if (probe.isAvailable() && transcoder.isSubtitleBurnAvailable()) operations.add("burn_subtitles");
+        if (probe.isAvailable() && !transcoder.exportFormats().isEmpty()) operations.add("export");
+        if (probe.isAvailable() && transcoder.isWorkflowAvailable()) operations.add("workflow");
         var providers = probe.isAvailable() && transcoder.isAudioExtractionAvailable() ? recognizer.providers(userId) : List.<String>of();
         return new CapabilitiesVO(registration, registration, false, planner.isAvailable(userId) && !operations.isEmpty(), !providers.isEmpty(), analyzer.isAvailable(userId),
                 analyzer.isAvailable(userId), probe.isAvailable(), media.maxUploadSize().toBytes(), media.maxDuration().toMillis(),
-                List.copyOf(operations), providers, corrector.isAvailable(userId));
+                List.copyOf(operations), providers, corrector.isAvailable(userId),
+                probe.isAvailable() ? transcoder.exportFormats() : List.of(), probe.isAvailable() ? transcoder.exportVideoCodecs() : List.of());
     }
 }

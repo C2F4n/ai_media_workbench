@@ -23,7 +23,7 @@ public enum ErrorCode {
     EMAIL_DELIVERY_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "验证邮件暂时无法发送，请稍后重试"),
     EMAIL_VERIFICATION_INVALID(HttpStatus.UNPROCESSABLE_CONTENT, "邮箱验证码无效、已过期或尝试次数已用尽，请重新获取"),
     MEDIA_TOOL_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "视频检测工具暂不可用"),
-    MEDIA_PREVIEW_UNAVAILABLE(HttpStatus.CONFLICT, "原素材未就绪、不支持直接预览或文件不可用"),
+    MEDIA_PREVIEW_UNAVAILABLE(HttpStatus.CONFLICT, "媒体未就绪、不支持直接预览或文件不可用"),
     FILE_TOO_LARGE(HttpStatus.CONTENT_TOO_LARGE, "上传文件超过大小限制"),
     STORAGE_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "文件存储暂不可用"),
     MEDIA_PROBE_FAILED(HttpStatus.UNPROCESSABLE_CONTENT, "无法读取有效的视频信息"),

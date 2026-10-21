@@ -614,6 +614,169 @@ class ProcessingIntegrationTests {
         verify(planner,times(1)).propose(anyString(),any(),anyString());
     }
 
+    @Test void orderedAiAndManualWorkflowsShareValidationFrozenExecutionAndOutputVerification() throws Exception {
+        var owner = login(); String mediaId = source(owner, 2_000_000);
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?", json.writeValueAsString(new MediaMetadataVO("mov", 20000, 1920, 1080, "h264", true, "aac")), mediaId);
+        when(transcoder.isWorkflowAvailable()).thenReturn(true);
+        when(transcoder.exportFormats()).thenReturn(List.of("mp4", "mp3")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264"));
+        var parameters = json.readTree("""
+                {"operation":"workflow","outputFormat":"mp4","steps":[
+                {"operation":"join_clips","clips":[{"startMs":15000,"endMs":20000},{"startMs":0,"endMs":5000}]},
+                {"operation":"trim","startMs":3000,"endMs":7000},
+                {"operation":"resize","resolutionPreset":"360p"},{"operation":"mute"},
+                {"operation":"export","outputFormat":"mp4","videoCodec":"h264","extractAudio":true}]}
+                """);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(planner.propose(anyString(), any(), anyString())).thenAnswer(call -> {
+            assertThat(call.getArgument(1, OperationPlanner.Context.class).supportedOperations()).contains("workflow");
+            return new OperationPlanner.Proposal(parameters, List.of());
+        });
+        var ai = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), null, "先取尾5秒和头5秒拼接，保留拼接结果第3到7秒，360p静音，另存原始音轨"));
+        var manual = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), parameters, null));
+        assertThat(ai.parameters()).isEqualTo(manual.parameters()); assertThat(mapper.activeCount()).isZero();
+        verify(planner, times(1)).propose(anyString(), any(), anyString());
+        var task = processing.execute(owner.id(), manual.id(), 1);
+        assertThat(processing.execute(owner.id(), manual.id(), 1).id()).isEqualTo(task.id());
+        doAnswer(call -> {
+            assertThat(call.getArgument(4, org.example.ai_media_workbench.dto.processing.WorkflowParameters.class)).isEqualTo(manual.parameters());
+            Files.write(call.getArgument(1, Path.class), OUTPUT); Files.write(call.getArgument(2, Path.class), OUTPUT);
+            Files.writeString(Path.of(call.getArgument(1, Path.class) + ".workflow-0.mkv"), "private-cache"); return null;
+        }).when(transcoder).workflow(any(), any(), any(), any(), any(), any());
+        when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov,mp4", 4000, 640, 360, "h264", false, null));
+        doReturn(new MediaMetadataVO("mp3", 20000, null, null, null, true, "mp3")).when(probe).inspectAudio(any());
+        worker.runOne(); var done = processing.task(owner.id(), task.id());
+        assertThat(done.status().name()).isEqualTo("SUCCEEDED"); assertThat(done.outputs()).hasSize(2);
+        assertThat(done.outputs()).extracting(o -> o.filename()).anyMatch(name -> name.endsWith("-workflow.mp4")).anyMatch(name -> name.endsWith("-original-audio.mp3"));
+        var current = mapper.task(owner.id(), task.id());
+        assertThat(current.getRunToken()).isNull();
+        try (var files = Files.walk(root)) { assertThat(files.noneMatch(path -> path.toString().contains(".workflow-"))).isTrue(); }
+    }
+
+    @Test void workflowRejectsUnsupportedTransitionsModelSettingsAndUnavailableToolsBeforeQueueing() throws Exception {
+        var owner = login(); String mediaId = source(owner);
+        when(transcoder.isWorkflowAvailable()).thenReturn(true); when(transcoder.exportFormats()).thenReturn(List.of("mp4")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264"));
+        var valid = json.readTree("{\"operation\":\"workflow\",\"outputFormat\":\"mp4\",\"steps\":[{\"operation\":\"trim\",\"startMs\":0,\"endMs\":600},{\"operation\":\"export\",\"outputFormat\":\"mp4\"}]}");
+        var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), valid, null));
+        when(transcoder.isWorkflowAvailable()).thenReturn(false);
+        assertThatThrownBy(() -> processing.execute(owner.id(), plan.id(), 1)).isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.code()).isEqualTo(ErrorCode.TRANSCODE_UNAVAILABLE));
+        when(transcoder.isWorkflowAvailable()).thenReturn(true); when(planner.isAvailable(anyString())).thenReturn(true);
+        var badCodec = json.readTree(valid.toString().replace("\"outputFormat\":\"mp4\"}]", "\"outputFormat\":\"mp4\",\"videoCodec\":\"hevc\"}]"));
+        when(planner.propose(anyString(), any(), anyString())).thenReturn(new OperationPlanner.Proposal(badCodec, List.of()));
+        assertThatThrownBy(() -> processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), null, "转成HEVC")))
+                .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.code()).isEqualTo(ErrorCode.AI_PLAN_FAILED));
+        var invalid = json.readTree(valid.toString().replace("\"endMs\":600}", "\"endMs\":600},{\"operation\":\"trim\",\"startMs\":0,\"endMs\":900}"));
+        mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("mediaId", mediaId, "parameters", invalid))))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("INVALID_PARAMETERS"));
+        assertThat(mapper.activeCount()).isZero(); assertThat(mapper.countPlans(owner.id(), mediaId)).isEqualTo(1);
+    }
+
+    @Test void workflowBadOutputAndCancellationNeverPublishCachesOrPartialOutputs() throws Exception {
+        var owner = login(); String mediaId = source(owner);
+        when(transcoder.isWorkflowAvailable()).thenReturn(true); when(transcoder.exportFormats()).thenReturn(List.of("mp4")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264"));
+        var parameters = json.readTree("{\"operation\":\"workflow\",\"outputFormat\":\"mp4\",\"steps\":[{\"operation\":\"trim\",\"startMs\":0,\"endMs\":600},{\"operation\":\"export\",\"outputFormat\":\"mp4\"}]}");
+        for (boolean cancelled : List.of(false, true)) {
+            var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), parameters, null));
+            var task = processing.execute(owner.id(), plan.id(), 1);
+            doAnswer(call -> {
+                Files.write(call.getArgument(1, Path.class), OUTPUT);
+                Files.writeString(Path.of(call.getArgument(1, Path.class) + ".workflow-0.mkv"), "private");
+                if (cancelled) { processing.cancel(owner.id(), task.id()); throw new BusinessException(ErrorCode.TASK_CANCELLED); }
+                return null;
+            }).when(transcoder).workflow(any(), any(), isNull(), any(), any(), any());
+            worker.runOne(); var done = processing.task(owner.id(), task.id());
+            assertThat(done.status().name()).isEqualTo(cancelled ? "CANCELLED" : "FAILED"); assertThat(done.outputs()).isEmpty();
+        }
+        try (var files = Files.walk(root)) { assertThat(files.noneMatch(path -> path.toString().contains(".workflow-"))).isTrue(); }
+    }
+
+    @Test void aiCompositeExportKeepsAllSettingsAcrossEditsAndPublishesOnlyAfterConfirmation() throws Exception {
+        var owner=login(); String mediaId=source(owner,2_000_000);
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",10000,640,360,"h264",true,"aac")),mediaId);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(transcoder.exportFormats()).thenReturn(List.of("mp4","webm","mp3")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264","vp9"));
+        var first=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","360p",null,null,"mute",0L,5000L,120000L,false);
+        var edited=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","480p",null,null,"mute",0L,5000L,120000L,false);
+        when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
+            var context=call.getArgument(1,OperationPlanner.Context.class);
+            assertThat(context.supportedOperations()).contains("export","join_clips");
+            assertThat(context.exportFormats()).containsExactly("mp4","webm","mp3"); assertThat(context.exportVideoCodecs()).contains("h264","vp9");
+            assertThat(context.maxOutputBytes()).isPositive();
+            if(context.previousParameters()==null) return new OperationPlanner.Proposal(json.valueToTree(first),List.of());
+            assertThat(context.previousParameters()).isEqualTo(first); assertThat(context.previousInstruction()).contains("360p");
+            return new OperationPlanner.Proposal(json.valueToTree(edited),List.of());
+        });
+        var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"保留前5秒，压缩至360p，静音并压到120000字节，发回来"));
+        assertThat(plan.parameters()).isEqualTo(first); assertThat(mapper.activeCount()).isZero();
+        var updated=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"分辨率改成480p，其他不变"));
+        assertThat(updated.parameters()).isEqualTo(edited); assertThat(updated.version()).isEqualTo(2); assertThat(mapper.activeCount()).isZero();
+        var task=processing.execute(owner.id(),plan.id(),2); assertThat(processing.execute(owner.id(),plan.id(),2).id()).isEqualTo(task.id());
+        when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov,mp4",5000,640,360,"h264",false,null));
+        doAnswer(call->{ assertThat(call.getArgument(4,org.example.ai_media_workbench.dto.processing.ExportParameters.class)).isEqualTo(edited); Files.write(call.getArgument(1,Path.class),OUTPUT); return null; })
+                .when(transcoder).export(any(),any(),isNull(),any(),any(),any());
+        worker.runOne(); var done=processing.task(owner.id(),task.id()); assertThat(done.status().name()).isEqualTo("SUCCEEDED");
+        assertThat(done.outputs()).hasSize(1); assertThat(done.outputs().getFirst().metadata().hasAudio()).isFalse();
+    }
+
+    @Test void aiCanResolveAndExecuteOrderedHeadAndTailClipsWithoutInventingADraft() throws Exception {
+        var owner=login(); String mediaId=source(owner);
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",20000,160,90,"h264",false,null)),mediaId);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        var ranges=List.of(new ClipRange(0,5000),new ClipRange(15000,20000));
+        when(planner.propose(anyString(),any(),anyString())).thenReturn(new OperationPlanner.Proposal(json.valueToTree(new JoinClipsParameters("join_clips","mp4",ranges,"keep")),List.of()));
+        var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"取前5秒和最后5秒，按这个顺序拼接后发回来"));
+        assertThat(plan.status().name()).isEqualTo("READY"); assertThat(mapper.taskForPlan(owner.id(),plan.id())).isNull();
+        var task=processing.execute(owner.id(),plan.id(),1); assertThat(((JoinClipsParameters)task.parameters()).clips()).containsExactlyElementsOf(ranges);
+        when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov,mp4",10000,160,90,"h264",false,null));
+        worker.runOne(); assertThat(processing.task(owner.id(),task.id()).status().name()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test void ambiguousJoinFollowupRetainsTheOriginalInstructionAndCanBeRestored() throws Exception {
+        var owner=login(); String mediaId=source(owner);
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",20000,160,90,"h264",false,null)),mediaId);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        String original="剪切视频5秒和后五秒，拼接后发回来";
+        when(planner.propose(eq(original),any(),anyString())).thenReturn(new OperationPlanner.Proposal(null,List.of(OperationPlanner.Question.CLIP_RANGES_REQUIRED)));
+        var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,original));
+        assertThat(plan.status().name()).isEqualTo("NEEDS_INPUT"); assertThat(plan.questions().getFirst().code()).isEqualTo("CLIP_RANGES_REQUIRED");
+        when(planner.propose(contains("补充："),any(),anyString())).thenAnswer(call->{
+            assertThat(call.getArgument(0,String.class)).contains(original,"第一段保留前5秒");
+            var context=call.getArgument(1,OperationPlanner.Context.class); assertThat(context.previousInstruction()).isEqualTo(original); assertThat(context.previousParameters()).isNull();
+            return new OperationPlanner.Proposal(json.valueToTree(new JoinClipsParameters("join_clips","mp4",List.of(new ClipRange(0,5000),new ClipRange(15000,20000)),"keep")),List.of());
+        });
+        var ready=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"第一段保留前5秒，最后5秒放后面"));
+        assertThat(ready.version()).isEqualTo(2); assertThat(ready.status().name()).isEqualTo("READY");
+        assertThat(processing.plan(owner.id(),plan.id()).instruction()).contains(original,"补充：","第一段保留前5秒");
+        assertThat(mapper.activeCount()).isZero();
+    }
+
+    @Test void aiCompositeAndJoinRejectInvalidOrUnavailableSettingsWithoutPartialTasks() throws Exception {
+        var owner=login(); String mediaId=source(owner);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(transcoder.exportFormats()).thenReturn(List.of("mp4")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264"));
+        for(String value:List.of(
+                "{\"operation\":\"export\",\"outputFormat\":\"mp4\",\"startMs\":0,\"endMs\":5000}",
+                "{\"operation\":\"export\",\"outputFormat\":\"mov\",\"videoCodec\":\"h264\"}",
+                "{\"operation\":\"export\",\"outputFormat\":\"mp4\",\"videoCodec\":\"hevc\"}",
+                "{\"operation\":\"export\",\"outputFormat\":\"mp4\",\"ffmpegArgs\":\"anything\"}",
+                "{\"operation\":\"join_clips\",\"outputFormat\":\"mp4\",\"audioMode\":\"keep\",\"clips\":[{\"startMs\":-5000,\"endMs\":0}]}",
+                "{\"operation\":\"join_clips\",\"outputFormat\":\"mp4\",\"audioMode\":\"keep\",\"clips\":[{\"startMs\":0,\"endMs\":1000}],\"resolutionPreset\":\"360p\"}")) {
+            when(planner.propose(anyString(),any(),anyString())).thenReturn(new OperationPlanner.Proposal(json.readTree(value),List.of()));
+            assertThatThrownBy(()->processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"处理")))
+                    .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.AI_PLAN_FAILED));
+        }
+        assertThat(mapper.countPlans(owner.id(),mediaId)).isZero(); assertThat(mapper.activeCount()).isZero();
+    }
+
+    @Test void accumulatedClarificationIsBoundedBeforeAnotherPaidCall() throws Exception {
+        var owner=login(); String mediaId=source(owner); when(planner.isAvailable(anyString())).thenReturn(true);
+        when(planner.propose(anyString(),any(),anyString())).thenReturn(new OperationPlanner.Proposal(null,List.of(OperationPlanner.Question.TRIM_RANGE_REQUIRED)));
+        var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"a".repeat(1990)));
+        assertThatThrownBy(()->processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"b".repeat(20))))
+                .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.INVALID_PARAMETERS));
+        verify(planner,times(1)).propose(anyString(),any(),anyString()); assertThat(processing.plan(owner.id(),plan.id()).version()).isEqualTo(1);
+    }
+
     @Test void ambiguousRequestsPersistFixedQuestionsAndCanBeCompletedWithoutCallingAiAgain() throws Exception {
         Browser owner=login(); String mediaId=source(owner);
         when(planner.isAvailable(anyString())).thenReturn(true);
@@ -770,6 +933,44 @@ class ProcessingIntegrationTests {
 
     private CreatePlanRequest joinInput(String mediaId,List<ClipRange> clips) {
         return new CreatePlanRequest(UUID.fromString(mediaId),json.valueToTree(new JoinClipsParameters("join_clips","mp4",clips,"keep")),null);
+    }
+
+    @Test void compositeExportPublishesBothFilesAtomicallyWithOwnershipAndDownloadOnlyForHevc() throws Exception {
+        var owner = login(); var other = login(); String mediaId = audioSource(owner);
+        when(transcoder.exportFormats()).thenReturn(List.of("mp4", "webm", "flac")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264", "hevc", "vp9"));
+        var p = new org.example.ai_media_workbench.dto.processing.ExportParameters("export", "mp4", "hevc", "source", null, null, "mute", 200L, 1000L, null, true);
+        var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(p), null));
+        var task = processing.execute(owner.id(), plan.id(), 1);
+        when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov,mp4", 800, 160, 90, "hevc", false, null));
+        doAnswer(call -> { Files.write(call.getArgument(1, Path.class), OUTPUT); Files.write(call.getArgument(2, Path.class), OUTPUT); return null; })
+                .when(transcoder).export(any(), any(), any(), any(), any(), any());
+        worker.runOne(); var done = processing.task(owner.id(), task.id());
+        assertThat(done.status().name()).isEqualTo("SUCCEEDED"); assertThat(done.outputs()).hasSize(2);
+        var video = done.outputs().stream().filter(o -> o.contentType().equals("video/mp4")).findFirst().orElseThrow();
+        var audio = done.outputs().stream().filter(o -> o.contentType().equals("audio/mpeg")).findFirst().orElseThrow();
+        assertThat(video.previewUrl()).isNull(); assertThat(audio.previewUrl()).isNotNull();
+        mvc.perform(get("/api/outputs/" + video.id() + "/preview").cookie(owner.cookie())).andExpect(status().isConflict()).andExpect(jsonPath("code").value("MEDIA_PREVIEW_UNAVAILABLE"));
+        mvc.perform(get(audio.downloadUrl()).cookie(other.cookie())).andExpect(status().isNotFound());
+        assertThat(processing.execute(owner.id(), plan.id(), 1).id()).isEqualTo(task.id());
+        assertThat(mapper.taskOutputs(owner.id(), task.id())).hasSize(2);
+    }
+
+    @Test void failedOrCancelledCompanionExportPublishesNothingAndRemovesAllFiles() throws Exception {
+        var owner = login(); String mediaId = audioSource(owner);
+        when(transcoder.exportFormats()).thenReturn(List.of("mp4")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264"));
+        var p = new org.example.ai_media_workbench.dto.processing.ExportParameters("export", "mp4", "h264", "source", null, null, "mute", null, null, null, true);
+        var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(p), null));
+        var first = processing.execute(owner.id(), plan.id(), 1);
+        doAnswer(call -> { Files.write(call.getArgument(1, Path.class), OUTPUT); Files.write(call.getArgument(2, Path.class), OUTPUT); throw new BusinessException(ErrorCode.TRANSCODE_FAILED); })
+                .when(transcoder).export(any(), any(), any(), any(), any(), any());
+        worker.runOne(); assertThat(processing.task(owner.id(), first.id()).status().name()).isEqualTo("FAILED");
+        var secondPlan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(p), null));
+        var second = processing.execute(owner.id(), secondPlan.id(), 1);
+        doAnswer(call -> { Files.write(call.getArgument(1, Path.class), OUTPUT); Files.write(call.getArgument(2, Path.class), OUTPUT); processing.cancel(owner.id(), second.id()); return null; })
+                .when(transcoder).export(any(), any(), any(), any(), any(), any());
+        worker.runOne(); assertThat(processing.task(owner.id(), second.id()).status().name()).isEqualTo("CANCELLED");
+        assertThat(mapper.taskOutputs(owner.id(), first.id())).isEmpty(); assertThat(mapper.taskOutputs(owner.id(), second.id())).isEmpty();
+        try (var files = Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
     }
 
     private CreatePlanRequest trimInput(String mediaId,long start,long end) {

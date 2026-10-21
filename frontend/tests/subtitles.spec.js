@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 
 // Isolated browser contract fixture, not evidence of real cloud recognition or billing.
@@ -70,7 +71,7 @@ test('cloud subtitle workflow supports editing, versions, safe correction sugges
   page.on('dialog', (dialog) => dialog.accept());
   const state = await fixture(page);
   await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
-  await page.locator('#subtitle-tool').click(); await expect(page.locator('#subtitle-state')).toHaveText('暂无字幕');
+  await selectTool(page, 'subtitle'); await expect(page.locator('#subtitle-state')).toHaveText('暂无字幕');
   await page.locator('#asr-provider').selectOption('aliyun'); await page.locator('#start-transcription').click();
   await expect(page.locator('#subtitle-editor')).toBeVisible({ timeout: 12000 });
   await expect(page.locator('#subtitle-segments textarea')).toHaveCount(2);
@@ -110,7 +111,7 @@ test('cloud subtitle workflow supports editing, versions, safe correction sugges
 test('missing cloud credentials disable new recognition but retain existing subtitle editing/export', async ({ page }) => {
   await fixture(page, false, true);
   await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
-  await page.locator('#subtitle-tool').click();
+  await selectTool(page, 'subtitle');
   await expect(page.locator('#subtitle-editor')).toBeVisible();
   await expect(page.locator('#subtitle-state')).toHaveText('语音识别服务尚未配置。');
   await expect(page.locator('#start-transcription')).toBeDisabled();

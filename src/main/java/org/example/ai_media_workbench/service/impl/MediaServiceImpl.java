@@ -91,7 +91,7 @@ public class MediaServiceImpl implements MediaService {
             var path = storage.resolve(item.getStorageKey());
             if (item.getSizeBytes() <= 0 || Files.size(path) != item.getSizeBytes() || !Files.isReadable(path))
                 throw new IOException("Source file unavailable");
-            return new MediaFile(path, item.getSizeBytes(), item.getOriginalFilename(), "video/mp4");
+            return new MediaFile(path, item.getSizeBytes(), item.getOriginalFilename(), org.example.ai_media_workbench.common.web.MediaPreview.videoType(metadata));
         } catch (IOException exception) {
             // 在发送响应头前统一文件不可用错误；不返回磁盘路径，也不修改检测状态。
             throw new BusinessException(ErrorCode.MEDIA_PREVIEW_UNAVAILABLE);
@@ -146,11 +146,9 @@ public class MediaServiceImpl implements MediaService {
     }
 
     private boolean previewable(MediaEntity item, MediaMetadataVO metadata) {
-        // ffprobe对MP4/MOV族返回同一组format_name；只开放已检测的H.264及AAC/无音轨，不信任扩展名。
+        // 根据实际检测的容器与编码决定预览，不信任文件扩展名。
         return item.getStatus() == MediaStatus.READY && item.getKind() == MediaKind.VIDEO && metadata != null
-                && metadata.container() != null && java.util.Arrays.stream(metadata.container().split(","))
-                        .anyMatch(format -> format.equals("mov") || format.equals("mp4"))
-                && "h264".equals(metadata.videoCodec()) && (!metadata.hasAudio() || "aac".equals(metadata.audioCodec()));
+                && org.example.ai_media_workbench.common.web.MediaPreview.supported(metadata);
     }
 
     private String displayName(String input) {

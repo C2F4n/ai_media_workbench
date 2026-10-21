@@ -11,8 +11,10 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
         @JsonSubTypes.Type(value = MuteParameters.class, name = "mute"),
         @JsonSubTypes.Type(value = BurnSubtitleParameters.class, name = "burn_subtitles"),
         @JsonSubTypes.Type(value = JoinClipsParameters.class, name = "join_clips"),
-        @JsonSubTypes.Type(value = ExtractAudioParameters.class, name = "extract_audio")})
-public sealed interface OperationParameters permits VideoParameters, ExtractAudioParameters {
+        @JsonSubTypes.Type(value = ExtractAudioParameters.class, name = "extract_audio"),
+        @JsonSubTypes.Type(value = ExportParameters.class, name = "export"),
+        @JsonSubTypes.Type(value = WorkflowParameters.class, name = "workflow")})
+public sealed interface OperationParameters permits VideoParameters, ExtractAudioParameters, ExportParameters, WorkflowParameters {
     String operation();
     String outputFormat();
 }

@@ -85,6 +85,19 @@ class PropertiesBindingTests {
         }
     }
 
+    @Test
+    void databasePasswordAndPortUsePrivateFallbackButExplicitEnvironmentNamesWin() {
+        contextRunner.withPropertyValues("local.database.password=local-test-value", "local.server.port=18081").run(context -> {
+            assertThat(context.getEnvironment().getProperty("spring.datasource.password")).isEqualTo("local-test-value");
+            assertThat(context.getEnvironment().getProperty("server.port")).isEqualTo("18081");
+        });
+        contextRunner.withPropertyValues("local.database.password=local-test-value", "local.server.port=18081",
+                "DB_PASSWORD=explicit-test-value", "SERVER_PORT=18082").run(context -> {
+            assertThat(context.getEnvironment().getProperty("spring.datasource.password")).isEqualTo("explicit-test-value");
+            assertThat(context.getEnvironment().getProperty("server.port")).isEqualTo("18082");
+        });
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     @PropertySource("classpath:application.properties")
     @EnableConfigurationProperties({AuthProperties.class, StorageProperties.class,

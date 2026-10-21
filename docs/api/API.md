@@ -1,6 +1,6 @@
 # AI音视频工作台：轻量版接口契约
 
-版本：2.14.0。日期：2026-10-20。
+版本：2.17.0。日期：2026-10-21。
 
 Apifox选择OpenAPI/Swagger，导入同目录[openapi.json](./openapi.json)。本文与OpenAPI是一套契约，共55个接口；是否可用以x-implementation-status为准。2.0移除项目、分类和projectId：登录后直接选择功能、上传素材、处理并下载，不创建隐式默认项目。
 
@@ -71,7 +71,7 @@ metadata包含container/durationMs/width/height/videoCodec/hasAudio/audioCodec�
 
 查询FAILED素材仍返回200，错误位于data.error；前端按状态轮询。FAILED可重试，PROBING幂等202，READY为409。素材不返回storageKey或userId。账号注销后旧素材ID不可访问。
 
-原视频预览只开放检测为READY且kind=VIDEO、容器属于MP4/MOV族、视频H.264、音轨AAC或无音轨的素材；依据实际检测结果，不依赖扩展名或上传MIME。符合条件的详情/列表previewUrl为/api/media/{mediaId}/preview，其他情况为null。该地址仅声明编码兼容，端点仍核验归属、状态、受控路径、可读性和磁盘大小；非本人/已删除404，未就绪、不兼容、文件丢失或大小变化409 MEDIA_PREVIEW_UNAVAILABLE。不会即时转码，不新增任务、文件或迁移，不承诺所有设备均支持原编码。当前不开放MKV/WebM、其他视频编码或音频原素材的直接预览。
+原视频预览开放READY视频中MP4/MOV族的H.264配AAC/无音轨，以及Matroska/WebM的VP8/VP9/AV1配Opus/Vorbis/无音轨；按实际容器及编码判断，不信任扩展名或上传MIME。符合条件时previewUrl非null，分别以video/mp4或video/webm发送原字节；最终播放能力取决于浏览器。HEVC等其他编码返回null，不即时转码。端点仍检查归属、状态、受控路径、可读性及大小；他人/已删除404，未就绪、不兼容、文件丢失或大小变化409 MEDIA_PREVIEW_UNAVAILABLE。
 
 预览成功原样返回video/mp4文件流、inline文件名及Cache-Control:no-store，支持单段Range（开放结尾/后缀）、200/206；无效语法或多段Range忽略返回完整200，越界416附Content-Range及Result错误。原素材与输出共用MediaStreams，输出下载仍忽略Range并完整200。页面刷新/选择历史素材可恢复播放，刷新同一素材列表不重置播放位置；失败显示重新加载按钮，切换、删除或退出会清空对应播放器。撤销访问只能阻止后续请求，已发送/缓冲的数据不能追回。
 
@@ -95,15 +95,15 @@ DELETE /api/media/{mediaId}需要登录及CSRF，不需要密码或请求体。P
 | GET | /api/outputs/{outputId}/preview | 预览文件流 |
 | GET | /api/outputs/{outputId}/download | 下载文件流 |
 
-创建方案提供mediaId，parameters/instruction恰好一个。明确参数支持transcode、compress、trim、mute、extract_audio、burn_subtitles、join_clips；自然语言目前只支持前五种，不自动挑选字幕或片段顺序。转换/压缩为outputFormat=mp4、resolutionPreset=source或720p、audioMode=keep；compress额外要求targetSizeBytes。裁切只接受operation=trim、outputFormat=mp4、startMs、endMs、audioMode=keep五字段。静音只接受operation=mute、outputFormat=mp4、resolutionPreset三字段。音频提取只接受operation=extract_audio、outputFormat=mp3两字段。拼接四字段、烧录六字段见下文。未开放操作或额外参数422。状态NEEDS_INPUT/READY/EXECUTED，修改和执行使用expectedVersion，执行后冻结，重复确认复用同一任务。明确参数页面直接创建并确认，无须管理方案列表；旧四字段快照保持兼容。
+创建方案提供mediaId，parameters/instruction恰好一个。明确参数支持transcode、compress、trim、mute、extract_audio、burn_subtitles、join_clips、export和workflow；自然语言支持除burn_subtitles以外的操作，2.17优先用workflow表示连续处理，不自动挑选字幕。旧转换/压缩为outputFormat=mp4、resolutionPreset=source或720p、audioMode=keep；compress额外要求targetSizeBytes。旧裁切只接受operation=trim、outputFormat=mp4、startMs、endMs、audioMode=keep五字段。静音三字段，音频提取只接受operation=extract_audio、outputFormat=mp3两字段。拼接四字段、烧录六字段和组合导出见下文。未开放操作或额外参数422。状态NEEDS_INPUT/READY/EXECUTED，修改和执行使用expectedVersion，执行后冻结，重复确认复用同一任务。旧调用契约保持兼容。
 
-自然语言示例：`{"mediaId":"素材UUID","instruction":"截取前10秒"}`，仍使用POST /api/operation-plans并返回201 Result，不新增接口。仅向DeepSeek发送要求、受控元信息、字节数、当前工具支持列表；修改时额外发送当前参数。不会发送原视频、音轨、文件名、存储路径或凭据。单次35秒，默认每用户5分钟20次；校对和方案共用单实例最多2个云端文字请求，繁忙503 AI_BUSY，未配置503 AI_UNAVAILABLE，不自动重试付费调用。
+自然语言示例：`{"mediaId":"素材UUID","instruction":"保留前5秒，转成360p，静音后导出"}`，仍使用POST /api/operation-plans并返回201 Result，不新增接口。2.17模型优先生成workflow的trim→resize→mute→export步骤；“取前5秒和最后5秒，顺序拼接再缩放”生成join_clips→resize→export步骤。360p表示分辨率，不索要目标体积；“发回来”表示生成本站结果下载链接。仅向DeepSeek发送要求/上文、受控元信息、字节数、工具支持列表、导出格式/编码与输出大小限制；修改时额外发送当前完整参数。不会发送原视频、音轨、文件名、存储路径或凭据。单次35秒、最多3072输出token，默认每用户5分钟20次；文字调用共用最多2个并发请求，不自动付费重试。
 
-只接受模型单步参数或固定问题代码。参数经过同一白名单、字段类型、时长/体积、音轨与工具校验；不允许命令/路径/URL/未开放操作。非法模型返回422 AI_PLAN_FAILED，不创建方案或任务。要求不足返回NEEDS_INPUT、parameters=null及questions的code/message固定服务端文案；代码仅OPERATION_REQUIRED、TARGET_SIZE_REQUIRED、TRIM_RANGE_REQUIRED、UNSUPPORTED_REQUEST、CONFLICTING_REQUIREMENTS。用户可补充instruction或直接PATCH明确参数，成功版本+1；失败不改旧方案。NEEDS_INPUT不可执行。
+只接受一份完整参数对象或固定问题代码；有序数组仅允许出现在workflow.steps中，不接受任意命令、路径、URL。参数经过操作及导出格式/编码白名单、类型、每步当前时长/体积、音轨与工具校验；非法模型返回422 AI_PLAN_FAILED，不创建方案或任务。要求不足返回NEEDS_INPUT、parameters=null及固定questions：OPERATION_REQUIRED、TARGET_SIZE_REQUIRED、TRIM_RANGE_REQUIRED、CLIP_RANGES_REQUIRED、UNSUPPORTED_REQUEST、CONFLICTING_REQUIREMENTS。“剪切5秒”未明确保留/删除或片段顺序应追问。NEEDS_INPUT的PATCH回答与原要求合并保存，累计最多2000码点，超限在云端调用前422 INVALID_PARAMETERS；已含完整原文不重复拼接。READY更新携带旧完整参数。成功版本+1，失败保留原版，NEEDS_INPUT不可执行。
 
 生成方案不会入队，必须用户检查参数后显式POST execute。AI 处理页可补充要求、查看方案、确认执行及恢复最近10条方案中的最新自然语言方案；修改输入后旧确认失效。执行响应丢失可重试同一方案/版本，不重复任务。生成/修改的云端等待不持有数据库事务或账号锁，落库前重新核验账号、素材和方案版本；等待期间删除/注销或版本变更会拒绝迟到结果。模型理解仍可能有误，参数合法不代表意图必然正确。
 
-压缩目标为整数字节数，至少32768字节、小于原文件且不超过服务端输出上限。按时长预留容器和音轨预算，以H.264两遍编码和AAC 96kbps执行；无音轨不生成声音。预算不足在入队前422 COMPRESSION_TARGET_UNREACHABLE；完成后再次检查时长、尺寸、编码、音轨和实际大小，结果须不超过目标且小于原文件，否则任务FAILED且不发布输出。两遍共享总超时，编码日志受大小限制，并在成功、失败、取消、租约回收及账号清理时删除。不以目标大小截断视频。页面目标体积以MB展示，1MB按1048576字节换算。
+以下为旧单功能参数的执行规则；新增格式与组合参数见5.1，旧调用不受影响。压缩目标为整数字节数，至少32768字节、小于原文件且不超过服务端输出上限。按时长预留容器和音轨预算，以H.264两遍编码和AAC 96kbps执行；无音轨不生成声音。预算不足在入队前422 COMPRESSION_TARGET_UNREACHABLE；完成后再次检查时长、尺寸、编码、音轨和实际大小，结果须不超过目标且小于原文件，否则任务FAILED且不发布输出。两遍共享总超时，编码日志受大小限制，并在成功、失败、取消、租约回收及账号清理时删除。不以目标大小截断视频。页面目标体积以MB展示，1MB按1048576字节换算。
 
 720p限制短边最多720、保持比例、不放大小视频，尺寸向下取偶数。转换/压缩输出H.264/yuv420p、AAC，无音轨不生成声音，应用旋转并清理源元数据；实际转码后用ffprobe验证编码、尺寸、音轨与时长。工具参数固定，不经过shell，不接受路径、URL或任意命令。任务保存参数快照，不跟随后续编辑变化。
 
@@ -120,6 +120,61 @@ MP4与MP3结果预览均需鉴权并支持单段Range/206/Content-Range，含后
 DELETE /api/outputs/{outputId}需要登录及CSRF，无请求体。事务内逻辑删除结果并保存持久化清理任务，返回200 Result.success()；本人重复请求仍200，包含此前随原素材删除的结果。他人或不存在ID统一404，磁盘文件已经丢失也可以删除。提交后结果详情、预览、下载404，结果列表及Task.outputs不再包含该文件；任务仍为SUCCEEDED，原素材、方案、参数和其他结果保留。不会隐式重新运行任务，执行旧方案仍复用原任务；重新生成需创建新方案，页面正常点击开始处理会新建方案。
 
 结果物理文件在后台清理，使用同一队列的独立OUTPUT范围，可与素材/账号清理安全重叠，重复删文件幂等。失败有界重试且可回收过期清理租约；清理禁用时等待重新启用。200不表示文件已物理删除，已下载或已发送到浏览器的数据无法追回。页面提供确认、取消和失败重试；删除后停止对应播放器，保留处理记录，并拒绝删除前轮询返回的旧文件链接。
+
+### 5.1 组合导出（2.15）
+
+沿用方案创建、PATCH、查询及execute，不新增表或项目。`operation=export`在2.15开放明确参数、2.16开放自然语言，原有参数契约不变。页面保留功能栏，输出格式/编码和分辨率可选，勾选组合处理后可同时裁切、目标体积压缩、静音、另存原始音轨。保存方案不执行，不产生输出；恢复时可继续编辑，最终导出才生成任务。AI确认页展示全部裁切/分辨率/编码/体积/音轨设置；拼接按播放顺序列出每段区间与总时长。素材和结果保存在部署服务器的受控磁盘，不是第三方云盘或任意滤镜时间线。
+
+```json
+{"mediaId":"素材UUID","parameters":{"operation":"export","outputFormat":"webm","videoCodec":"vp9","resolutionPreset":"custom","width":1280,"height":720,"audioMode":"mute","startMs":1000,"endMs":11000,"targetSizeBytes":1048576,"extractAudio":true}}
+```
+
+| 字段 | 规则 |
+| --- | --- |
+| outputFormat | mp4、mov、mkv、webm、mp3、m4a、wav、flac，必填 |
+| videoCodec | MP4支持h264/hevc/av1；MOV支持h264/hevc；MKV支持四种；WebM支持vp9/av1。视频默认h264，WebM需显式指定；音频为null |
+| resolutionPreset | source（默认）、360p、480p、720p、1080p、1440p、2160p、custom；音频为null |
+| width / height | 仅custom必填，2至4096整数，定义最大边界框；保持比例、不放大、向下取偶数，全部视频限制长边4096、总像素8847360 |
+| audioMode | keep（默认）或mute；静音移除全部音轨，不仅播放器关闭声音 |
+| startMs / endMs | 同时省略/null表示全长，或成对整数，至少100ms且不超源时长；音频导出按第一条音轨的实际时长再校验。页面最短0.5秒 |
+| targetSizeBytes | 可选，至少32768、小于源文件且不超输出限制；只开放h264/vp9两遍模式，按裁切时长和静音预算验收。HEVC/AV1仅质量模式 |
+| extractAudio | 默认false，仅视频。另存完整原始第一条音轨为192kbps MP3，不受本次裁切/静音影响；无音轨拒绝 |
+
+音频导出不允许视频字段、静音、目标大小或extractAudio；MP3为libmp3lame、M4A为AAC（均192kbps），WAV为PCM s16le、FLAC为flac，44.1kHz双声道。这里的无损格式不会恢复源素材已损失的音质。
+
+响应将省略字段规范化为默认值或null。capabilities新增exportFormats/exportVideoCodecs，按本机编码器报告；supportedOperations有export时可使用。所有命令来自白名单，不接收用户命令、路径或URL。多个输出共享原任务时间预算，每文件受1GiB上限约束，逐个探测验收后原子发布；任一失败/取消不发布任何结果。Task.outputs可能含视频和原始MP3，不保证顺序，使用id/contentType/filename选择；可以分别下载或删除。所有格式均纳入失败、租约回收、素材删除和账号清理。
+
+Output.previewUrl可为null。MP4/MOV的H.264/AAC、WebM的VP8/VP9/AV1加Opus/Vorbis以及MP3/M4A/WAV/FLAC提供预览；MKV和HEVC输出只下载。不支持预览时直接请求preview返回409 MEDIA_PREVIEW_UNAVAILABLE，下载仍可用；支持的预览沿用鉴权和Range。浏览器无解码器时提示下载，不声称所有设备支持。
+
+### 5.2 有序步骤（2.17）
+
+AI文字输入与“分步填写”共用workflow参数，手动生成不调用任何第三方API，不需配置DeepSeek。表单可增删、上下移动步骤，填写选段区间、分辨率与最终导出设置；AI生成的workflow也可切到步骤编辑。保存后显示步骤和参数，必须确认才入队；修改禁用旧确认，刷新可恢复最近10条方案中的最新workflow。沿用已有版本、幂等、鉴权和清理机制，无新增接口/表。
+
+```json
+{"mediaId":"素材UUID","parameters":{"operation":"workflow","outputFormat":"mp4","steps":[
+  {"operation":"join_clips","clips":[{"startMs":15000,"endMs":20000},{"startMs":0,"endMs":5000}]},
+  {"operation":"trim","startMs":3000,"endMs":7000},
+  {"operation":"resize","resolutionPreset":"360p"},
+  {"operation":"mute"},
+  {"operation":"export","outputFormat":"mp4","videoCodec":"h264","targetSizeBytes":1048576,"extractAudio":true}
+]}}
+```
+
+该例要求源素材至少20秒：先尾段再头段拼接成10秒，再保留当前结果第3到7秒，最终4秒。每个步骤消费上一步的结果，所有时间以当前时间轴为准；重复裁切会映射回源区间，不能把两个startMs当成同一源坐标。缩放逐步保持比例、不放大，先360p再720p不会恢复成720p。
+
+| 步骤 | 字段和限制 |
+| --- | --- |
+| trim | operation/startMs/endMs，至少100ms，范围不超当前结果 |
+| join_clips | operation/clips；每段至少500ms，顺序、重复、倒序保留；最多20段且映射回原文件后也最多20段 |
+| resize | operation/resolutionPreset，可选width/height仅用于custom；规则同5.1，基于当前尺寸 |
+| mute | 仅operation，移除音轨；后续不能恢复声音或导出纯音频，但可另存原始音轨旁路 |
+| export | 最后且只能一次；operation/outputFormat，可选videoCodec/targetSizeBytes/extractAudio；不可含裁切、分辨率或audioMode。视频默认h264，WebM默认vp9，音频为null；格式编码矩阵同5.1 |
+
+最多12步（含导出），允许重复操作，最终时长最多15分钟。顶层outputFormat必须与最后一步一致。无改动可只含export。纯音频输出使用最终mp3/m4a/wav/flac格式，不需要额外extract_audio步骤；流程以视频时间轴为准，已有首条音轨提前结束时补静音保持同步，源无音轨不凭空创建声音。目标体积按最终时长、静音状态计算，仍须小于原文件。另存MP3始终读取完整原始首条音轨，不受前面裁切或静音影响、不补成视频时长，两个文件原子发布。
+
+执行器将步骤编译成源区间和有序滤镜链，不穷举组合，不通过HTTP调用自己的Controller。单区间的裁切/多次缩放/静音融合到一次最终导出。多区间依次解码为受预算限制的FFV1/PCM Matroska无损缓存，再最终编码一次（目标体积模式仍有分析遍）；避免split分支倒序选段时积压整段高清帧，也避免每一步反复有损转码。多区间统一30fps；缓存总大小和最终文件分别不超输出上限，磁盘峰值约两倍，加原始音轨输出；无损缓存可能比源文件大而提前触发OUTPUT_TOO_LARGE，缩小分辨率/缩短区间可降低用量。全部进程共享任务超时、取消检查和资源限制，缓存不对外发布，失败/取消/租约/删除均清理。
+
+capabilities.supportedOperations包含workflow才开放，要求ffprobe和本机H.264/AAC、FFV1、PCM编码器可用，最终编码仍按exportFormats/exportVideoCodecs检查。暂不包含跨素材、调速、任意滤镜、字幕识别/烧录/重映射等步骤；不支持的请求明确拒绝，不执行部分动作。
 
 ## 6. 字幕与文字校对
 
@@ -159,7 +214,7 @@ PUT必填expectedVersion（非负整数）和mode（SERVER/PERSONAL/OFF）。PER
 
 ### 同源多段拼接
 
-复用POST /api/operation-plans及execute，不新增草稿表、管理页或接口。parameters仅四字段：`{"operation":"join_clips","outputFormat":"mp4","clips":[{"startMs":2000,"endMs":3000},{"startMs":0,"endMs":1000}],"audioMode":"keep"}`。1至20段，每段为整数long毫秒、至少500ms，范围在本人就绪素材内，所有段时长之和最多900000ms。数组顺序就是输出顺序，允许倒序、重复和重叠；非法类型/额外字段/超时长422 INVALID_PARAMETERS。不接受路径、URL、跨素材ID或字幕参数；自然语言目前不生成拼接方案。
+复用POST /api/operation-plans及execute，不新增草稿表、管理页或接口。旧parameters仅四字段：`{"operation":"join_clips","outputFormat":"mp4","clips":[{"startMs":2000,"endMs":3000},{"startMs":0,"endMs":1000}],"audioMode":"keep"}`。1至20段，每段为整数long毫秒、至少500ms，范围在本人就绪素材内，所有段时长之和最多900000ms。数组顺序就是输出顺序，允许倒序、重复和重叠；非法类型/额外字段/超时长422 INVALID_PARAMETERS。2.16允许自然语言生成同源有序区间；2.17拼接后附加缩放/静音/体积设置请使用5.2的workflow，不向旧join_clips对象追加字段。不接受路径、URL、跨素材ID或字幕参数；未定义操作应返回UNSUPPORTED_REQUEST，不得只做部分动作。
 
 输出原展示尺寸取偶数、30fps、H.264/yuv420p MP4，首条音轨AAC 48kHz双声道；有音轨素材在缺失音频的区间补静音，避免拼接后声音错位；原素材无音轨时结果也无音轨。不覆盖源视频，结果名-joined.mp4。先顺序生成临时片段，再按受控ffconcat清单拼接重编码，避免倒序/重复取段时大量高清帧滞留内存。所有阶段共享默认5分钟超时、7分钟租约；临时分段合计和最终结果分别不超过输出上限（默认各1GiB，编码期间峰值磁盘约两倍）。按帧对齐，最终时长与所选总时长差不超过max(250ms,总时长/1000)；不合格FAILED/CLIP_JOIN_FAILED且无结果。
 

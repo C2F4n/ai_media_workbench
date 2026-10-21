@@ -48,7 +48,9 @@ public class ProcessingViews {
     public OutputVO output(OutputEntity o) {
         return new OutputVO(o.getId(), o.getTaskId(), o.getFilename(), o.getContentType(), o.getSizeBytes(),
                 o.getMetadataJson() == null ? null : json.readValue(o.getMetadataJson(), MediaMetadataVO.class),
-                "/api/outputs/" + o.getId() + "/preview", "/api/outputs/" + o.getId() + "/download", instant(o.getCreatedAt()));
+                o.getMetadataJson() != null && org.example.ai_media_workbench.common.web.MediaPreview.supported(json.readValue(o.getMetadataJson(), MediaMetadataVO.class))
+                        && !"video/x-matroska".equals(o.getContentType()) ? "/api/outputs/" + o.getId() + "/preview" : null,
+                "/api/outputs/" + o.getId() + "/download", instant(o.getCreatedAt()));
     }
 
     private OperationParameters parameters(String value) {

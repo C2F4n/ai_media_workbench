@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI音视频工作台接口文档",
-    "version": "2.14.0",
-    "description": "轻量版契约，共55个接口，41个已实现。登录后直接使用功能，不创建项目或分类；素材直接归属用户。所有业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly AMW_SESSION会话Cookie，不是JWT，写请求校验CSRF。支持账号/注册邮箱验证、素材检测预览删除、转换压缩裁切静音MP3提取、明确参数或自然语言版本方案、持久化任务与结果管理、云端字幕编辑/SRT/单句校对。2.12新增明确参数字幕烧录，生成带字幕的H.264/AAC MP4，不新增接口或表；绑定当前字幕ID/版本，入队后使用不可变历史稿。支持字幕检索和片段建议，同源多段剪辑已在2.13通过join_clips明确参数方案实现，无新增接口或表。跨素材、拼接字幕重映射和clip-drafts管理仍为规划。云端配置不代表真实效果或费用已验收。 2.14新增按用户加密保存的腾讯/百炼/DeepSeek凭据（个人/站点/停用），不回显秘密，调用失败不回退公共额度；capabilities按登录用户计算。"
+    "version": "2.17.0",
+    "description": "轻量版契约，共55个接口，41个已实现。登录后直接使用，不创建项目或分类；素材归属用户。业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly AMW_SESSION会话Cookie，不是JWT，写请求校验CSRF。支持账号、注册邮箱验证、素材检测预览删除、转换压缩裁切静音音轨提取、持久化版本方案/任务/结果、云端字幕编辑/SRT/单句校对、字幕检索和片段建议、明确参数字幕烧录。个人腾讯/百炼/DeepSeek凭据加密保存，不回显秘密，失败不回退公共额度。2.17新增workflow有序步骤：AI理解和手动表单共享方案，支持同源选段拼接、连续裁切、缩放、静音及最终格式/编码/体积设置。按上一步时间轴校验，兼容步骤编译为滤镜与源区间；单区间融合执行，多区间采用有预算的无损缓存和一次最终有损编码。人工确认后才执行，多结果原子发布，失败/取消不发布半成品。沿用方案/任务接口，无新表，旧参数兼容。跨素材、拼接字幕重映射、任意滤镜和clip-drafts管理仍为规划。云端配置与本地替身测试不代表真实模型效果或费用已验收。"
   },
   "servers": [
     {
@@ -590,7 +590,7 @@
         ],
         "operationId": "previewMedia",
         "summary": "预览可播放的原素材",
-        "description": "已实现。只预览本人READY视频，检测容器为MP4/MOV族、视频H.264、音轨AAC或无音轨；不按扩展名判断，不即时转码。当前不开放MKV/WebM、其他编码或音频原素材。鉴权成功后检查归属、状态、受控路径及文件字节数；非本人/已删除404，未就绪、不兼容、文件丢失或大小变化409 MEDIA_PREVIEW_UNAVAILABLE。成功video/mp4原字节流，Cache-Control:no-store、inline文件名，支持单段Range（含开放结尾/后缀），非法语法或多段Range忽略返回200，越界416及Result。刷新/选择历史素材可播放；列表刷新不重置同一地址的播放位置，失败可重新加载。已发送的数据不能追回。",
+        "description": "只预览本人READY视频。检测为MP4/MOV族H.264配AAC/无音轨，或Matroska/WebM的VP8/VP9/AV1配Opus/Vorbis/无音轨。返回video/mp4或video/webm的原字节，不即时转码，不保证浏览器拥有解码器。检查归属、状态、受控路径和文件大小；他人/已删除404，不兼容或文件不可用409 MEDIA_PREVIEW_UNAVAILABLE。支持鉴权及单段Range，越界416 Result。",
         "parameters": [
           {
             "name": "mediaId",
@@ -645,6 +645,12 @@
                   "type": "string",
                   "format": "binary"
                 }
+              },
+              "video/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
               }
             }
           },
@@ -684,6 +690,12 @@
             },
             "content": {
               "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/webm": {
                 "schema": {
                   "type": "string",
                   "format": "binary"
@@ -1412,7 +1424,7 @@
         ],
         "operationId": "previewOutput",
         "summary": "预览已完成的转换结果",
-        "description": "支持鉴权后的H.264/AAC MP4或MP3，MP3以audio/mpeg供音频播放器试听。支持单段Range（含开放结尾/后缀），非法语法或多段Range忽略返回200；越界416并返回Result与Content-Range。",
+        "description": "鉴权后预览兼容的MP4/MOV H.264、WebM VP8/VP9/AV1（音轨须匹配）和MP3/M4A/WAV/FLAC。Output.previewUrl为null时409 MEDIA_PREVIEW_UNAVAILABLE，MKV/HEVC等仍可下载。实际解码能力取决于浏览器。支持单段Range/206及后缀/开放结尾，非法或多段Range忽略返回200，越界416 Result与Content-Range。",
         "parameters": [
           {
             "name": "outputId",
@@ -1473,6 +1485,36 @@
                   "type": "string",
                   "format": "binary"
                 }
+              },
+              "video/quicktime": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/flac": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
               }
             }
           },
@@ -1522,6 +1564,36 @@
                   "type": "string",
                   "format": "binary"
                 }
+              },
+              "video/quicktime": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/flac": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
               }
             }
           },
@@ -1556,8 +1628,8 @@
           "文件"
         ],
         "operationId": "downloadOutput",
-        "summary": "下载已验证的真实MP4",
-        "description": "返回真实完整MP4或MP3，attachment；忽略Range返回完整200。中文名使用UTF-8 filename*并提供ASCII回退；文件丢失410 OUTPUT_UNAVAILABLE。",
+        "summary": "下载已验证的媒体结果",
+        "description": "返回完整媒体文件（MP4/MOV/MKV/WebM/MP3/M4A/WAV/FLAC），attachment，忽略Range返回完整200。中文名使用UTF-8 filename*并提供ASCII回退；文件丢失410 OUTPUT_UNAVAILABLE。",
         "parameters": [
           {
             "name": "outputId",
@@ -1571,7 +1643,7 @@
         ],
         "responses": {
           "200": {
-            "description": "可下载的完整MP4。",
+            "description": "完整媒体结果。",
             "headers": {
               "Content-Length": {
                 "required": true,
@@ -1602,6 +1674,42 @@
                 }
               },
               "application/x-subrip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/quicktime": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/flac": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "video/x-matroska": {
                 "schema": {
                   "type": "string",
                   "format": "binary"
@@ -5363,7 +5471,7 @@
         ],
         "operationId": "createOperationPlan",
         "summary": "按明确参数或自然语言创建方案",
-        "description": "已实现明确参数或DeepSeek自然语言生成方案，parameters/instruction恰好一个。仅支持transcode、compress、trim、mute、extract_audio单步操作；参数格式与素材边界同对应参数Schema。自然语言只发送要求、元信息/字节数/工具列表，不发送视频、音轨、文件名或路径。模型输出再经白名单、类型、时长/体积/音轨校验；非法结果422 AI_PLAN_FAILED且不落库。信息不足返回NEEDS_INPUT、parameters=null及固定questions，不入队。READY方案也不会自动执行，须用户检查参数后调用execute。默认每用户5分钟20次生成、与校对共用最多2个云端文字请求、35秒超时，不自动重试。AI未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY；明确参数不依赖云端。云端等待不持有数据库事务/锁，落库前重新检查账号、素材，删除/注销后不保存迟到结果。 明确parameters另支持burn_subtitles六字段，按BurnSubtitleParameters校验；要求本人素材最新字幕ID/版本，跨素材或非本人404，改稿/重识别409 TRANSCRIPT_VERSION_CONFLICT，工具缺少503 SUBTITLE_BURN_UNAVAILABLE。入队后字幕版本冻结，重复execute仍复用任务。 明确参数支持join_clips四字段，1至20段，每段至少500ms，所有区间在源素材内，总时长不超过900000ms；数组顺序即输出顺序。无草稿资源，参数在入队后冻结；不接收跨素材或字幕参数。",
+        "description": "已实现明确参数或DeepSeek自然语言生成方案，parameters/instruction恰好一个。2.17自然语言优先生成workflow有序步骤，支持裁切、从上一步结果选段拼接、缩放、静音及最终导出；明确参数和手动步骤不依赖云端。旧transcode/compress/trim/mute/extract_audio/export/join_clips保持兼容；burn_subtitles仅明确参数，绑定本人素材最新字幕ID/版本。参数Schema、当前时间轴、类型、体积、音轨、工具能力逐步校验；非法模型结果422 AI_PLAN_FAILED且不落库。未知命令、路径、URL、跨素材或未定义步骤拒绝，不丢弃部分要求。信息不足返回NEEDS_INPUT、parameters=null及固定questions，不入队；补充回答合并原要求，累计最多2000码点。READY也不自动执行，须确认execute，入队参数冻结，重复execute复用任务。AI仅发送要求及上文、元信息/字节数/旧参数/工具和导出能力，不发送视频、音轨、文件名或路径。默认每用户5分钟20次、与校对共用最多2个云端请求、35秒超时，不自动付费重试。AI未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY。云端等待不持有数据库事务/锁，落库前重新检查账号、素材和版本，删除/注销后不接受迟到结果。",
         "parameters": [
           {
             "name": "X-CSRF-Token",
@@ -5397,7 +5505,7 @@
                 "instruction": {
                   "value": {
                     "mediaId": "22222222-2222-4222-8222-222222222222",
-                    "instruction": "转成MP4，分辨率改成720p"
+                    "instruction": "保留前5秒，转成360p，静音后导出"
                   }
                 },
                 "compression": {
@@ -5440,6 +5548,22 @@
                       "startMs": 1250,
                       "endMs": 2250,
                       "audioMode": "keep"
+                    }
+                  }
+                },
+                "compositeExport": {
+                  "value": {
+                    "mediaId": "22222222-2222-4222-8222-222222222222",
+                    "parameters": {
+                      "operation": "export",
+                      "outputFormat": "webm",
+                      "videoCodec": "vp9",
+                      "resolutionPreset": "1080p",
+                      "audioMode": "mute",
+                      "startMs": 1000,
+                      "endMs": 11000,
+                      "targetSizeBytes": 1048576,
+                      "extractAudio": true
                     }
                   }
                 }
@@ -6414,6 +6538,178 @@
           }
         }
       },
+      "ExportParameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "outputFormat"
+        ],
+        "description": "2.15同源组合导出，不修改原素材。省略的字段按默认值规范化，响应返回全部字段。MP4:h264/hevc/av1；MOV:h264/hevc；MKV:全部；WebM:vp9/av1。音频禁止视频字段、静音、目标大小与另存音轨。所有输出共享任务超时，每文件1GiB上限，任意文件失败不发布结果。",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "export"
+            ]
+          },
+          "outputFormat": {
+            "type": "string",
+            "enum": [
+              "mp4",
+              "mkv",
+              "mov",
+              "webm",
+              "mp3",
+              "m4a",
+              "wav",
+              "flac"
+            ]
+          },
+          "videoCodec": {
+            "type": "string",
+            "enum": [
+              "h264",
+              "hevc",
+              "vp9",
+              "av1"
+            ],
+            "nullable": true,
+            "description": "视频默认h264；WebM需明确vp9/av1。音频为null。"
+          },
+          "resolutionPreset": {
+            "type": "string",
+            "enum": [
+              "source",
+              "360p",
+              "480p",
+              "720p",
+              "1080p",
+              "1440p",
+              "2160p",
+              "custom"
+            ],
+            "nullable": true,
+            "description": "视频默认source。预设限制短边，保持比例、不放大、向下取偶数；所有视频另限制长边4096和8847360像素。"
+          },
+          "width": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 2,
+            "maximum": 4096,
+            "description": "仅custom必填，和height定义最大边界框，不拉伸。"
+          },
+          "height": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 2,
+            "maximum": 4096
+          },
+          "audioMode": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "mute"
+            ],
+            "default": "keep"
+          },
+          "startMs": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0,
+            "description": "和endMs成对，整毫秒，区间至少100ms且不超源时长；音频按第一音轨时长验收。"
+          },
+          "endMs": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 1
+          },
+          "targetSizeBytes": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 32768,
+            "description": "仅h264/vp9两遍模式。小于源文件且不超输出上限，按裁切后时长和静音预算，实际结果不超目标且小于源文件。"
+          },
+          "extractAudio": {
+            "type": "boolean",
+            "default": false,
+            "description": "仅视频：另存完整原始第一音轨为192kbps MP3，不受裁切或静音影响；两个Output原子发布，不保证数组顺序。"
+          }
+        }
+      },
+      "WorkflowParameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation", "outputFormat", "steps"],
+        "description": "2.17有序同源流程。所有区间相对于上一步结果；最多12步，必须且只能在最后包含一个export，顶层格式与其一致。独立操作顺序编译，不枚举组合。展开最多20个源区间，最终最多900000ms。未知操作/额外字段/无音轨转音频/不支持的编码或资源预算拒绝，不降级丢弃步骤。",
+        "properties": {
+          "operation": { "type": "string", "enum": ["workflow"] },
+          "outputFormat": { "type": "string", "enum": ["mp4", "mov", "mkv", "webm", "mp3", "m4a", "wav", "flac"] },
+          "steps": { "type": "array", "minItems": 1, "maxItems": 12, "items": { "$ref": "#/components/schemas/WorkflowStep" } }
+        }
+      },
+      "WorkflowStep": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/WorkflowTrim" },
+          { "$ref": "#/components/schemas/WorkflowResize" },
+          { "$ref": "#/components/schemas/WorkflowJoin" },
+          { "$ref": "#/components/schemas/WorkflowMute" },
+          { "$ref": "#/components/schemas/WorkflowExport" }
+        ]
+      },
+      "WorkflowTrim": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation", "startMs", "endMs"],
+        "description": "保留上一步结果的区间，至少100ms，不能超过当前时长。连续裁切不是重复针对原视频。",
+        "properties": {
+          "operation": { "type": "string", "enum": ["trim"] },
+          "startMs": { "type": "integer", "format": "int64", "minimum": 0 },
+          "endMs": { "type": "integer", "format": "int64", "minimum": 100 }
+        }
+      },
+      "WorkflowResize": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation", "resolutionPreset"],
+        "description": "基于当前尺寸保持比例、不放大、向下取偶数。仅custom必须提供width/height，其他为null或省略；长边4096，总像素8847360。连续缩放保持顺序，不用最后一个预设覆盖前面步骤。",
+        "properties": {
+          "operation": { "type": "string", "enum": ["resize"] },
+          "resolutionPreset": { "type": "string", "enum": ["source", "360p", "480p", "720p", "1080p", "1440p", "2160p", "custom"] },
+          "width": { "type": "integer", "minimum": 2, "maximum": 4096, "nullable": true },
+          "height": { "type": "integer", "minimum": 2, "maximum": 4096, "nullable": true }
+        }
+      },
+      "WorkflowJoin": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation", "clips"],
+        "description": "从上一步结果选区并按数组顺序拼接，允许重复、重叠和倒序。每段至少500ms，合计最多900000ms；映射回源文件后最多20段。",
+        "properties": {
+          "operation": { "type": "string", "enum": ["join_clips"] },
+          "clips": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/JoinClipRange" } }
+        }
+      },
+      "WorkflowMute": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation"],
+        "description": "移除全部音轨，后续不能恢复为有声结果或导出纯音频；另存原始音轨旁路不受影响。",
+        "properties": { "operation": { "type": "string", "enum": ["mute"] } }
+      },
+      "WorkflowExport": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation", "outputFormat"],
+        "description": "只能放在最后一次；不包含分辨率/裁切/audioMode。格式编码矩阵同ExportParameters。视频默认h264，WebM默认vp9；音频编码为null。targetSizeBytes仅h264/vp9，至少32768、小于源文件且不超输出上限；按最终时长/音轨预算。音频禁止体积目标和另存原始音轨。",
+        "properties": {
+          "operation": { "type": "string", "enum": ["export"] },
+          "outputFormat": { "type": "string", "enum": ["mp4", "mov", "mkv", "webm", "mp3", "m4a", "wav", "flac"] },
+          "videoCodec": { "type": "string", "enum": ["h264", "hevc", "vp9", "av1"], "nullable": true },
+          "targetSizeBytes": { "type": "integer", "format": "int64", "minimum": 32768, "nullable": true },
+          "extractAudio": { "type": "boolean", "default": false, "description": "仅视频，可另存完整原始首条音轨为MP3，和主结果原子发布。" }
+        }
+      },
       "OperationParameters": {
         "oneOf": [
           {
@@ -6436,9 +6732,15 @@
           },
           {
             "$ref": "#/components/schemas/JoinClipsParameters"
+          },
+          {
+            "$ref": "#/components/schemas/ExportParameters"
+          },
+          {
+            "$ref": "#/components/schemas/WorkflowParameters"
           }
         ],
-        "description": "明确参数支持transcode、compress、extract_audio、trim、mute、burn_subtitles、join_clips；自然语言仅支持前五种。join_clips无需字幕或草稿资源，不新增表。"
+        "description": "明确参数支持transcode、compress、extract_audio、trim、mute、burn_subtitles、join_clips、export、workflow；2.17自然语言优先生成workflow步骤，手动步骤复用同一契约。原单功能接口兼容。不接收任意命令或顶层操作数组，不新增表。"
       },
       "CreatePlanWithParameters": {
         "type": "object",
@@ -6619,6 +6921,12 @@
                 "enum": [
                   null
                 ]
+              },
+              {
+                "$ref": "#/components/schemas/ExportParameters"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowParameters"
               }
             ]
           },
@@ -6630,7 +6938,7 @@
             "items": {
               "$ref": "#/components/schemas/Notice"
             },
-            "description": "NEEDS_INPUT时为服务端固定问题文案。代码限OPERATION_REQUIRED、TARGET_SIZE_REQUIRED、TRIM_RANGE_REQUIRED、UNSUPPORTED_REQUEST、CONFLICTING_REQUIREMENTS；不直接展示模型任意提问。"
+            "description": "NEEDS_INPUT时为服务端固定问题文案。代码限OPERATION_REQUIRED、TARGET_SIZE_REQUIRED、TRIM_RANGE_REQUIRED、CLIP_RANGES_REQUIRED、UNSUPPORTED_REQUEST、CONFLICTING_REQUIREMENTS；不直接展示模型任意提问。"
           },
           "warnings": {
             "type": "array",
@@ -6684,7 +6992,13 @@
             "enum": [
               "video/mp4",
               "audio/mpeg",
-              "application/x-subrip"
+              "application/x-subrip",
+              "video/quicktime",
+              "video/webm",
+              "video/x-matroska",
+              "audio/mp4",
+              "audio/wav",
+              "audio/flac"
             ]
           },
           "sizeBytes": {
@@ -6708,7 +7022,8 @@
           },
           "previewUrl": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "支持H.264/AAC MP4/MOV、VP8/VP9/AV1配Opus/Vorbis的WebM和MP3/M4A/WAV/FLAC。MKV/HEVC等返回null，只下载；最终播放能力取决于浏览器。"
           },
           "downloadUrl": {
             "type": "string"
@@ -6789,6 +7104,12 @@
                 "enum": [
                   null
                 ]
+              },
+              {
+                "$ref": "#/components/schemas/ExportParameters"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowParameters"
               }
             ]
           },
@@ -7253,7 +7574,9 @@
           "maxDurationMs",
           "supportedOperations",
           "asrProviders",
-          "subtitleCorrection"
+          "subtitleCorrection",
+          "exportFormats",
+          "exportVideoCodecs"
         ],
         "properties": {
           "registration": {
@@ -7299,7 +7622,7 @@
             "items": {
               "type": "string"
             },
-            "description": "ffprobe可用时，H.264/AAC编码器可用则包含transcode、compress、trim、mute；额外具备libass的ass过滤器时包含burn_subtitles；libmp3lame可用时独立包含extract_audio。烧录已有字幕不依赖云端凭据。 同一H.264/AAC工具可用时包含join_clips；不代表clip-drafts管理或拼接字幕重映射开放。"
+            "description": "ffprobe可用时，H.264/AAC编码器可用则包含transcode、compress、trim、mute；额外具备libass的ass过滤器时包含burn_subtitles；libmp3lame可用时独立包含extract_audio。烧录已有字幕不依赖云端凭据。 同一H.264/AAC工具可用时包含join_clips；不代表clip-drafts管理或拼接字幕重映射开放。 新增export；具体格式/编码见exportFormats/exportVideoCodecs。"
           },
           "asrProviders": {
             "type": "array",
@@ -7315,6 +7638,35 @@
           "subtitleCorrection": {
             "type": "boolean",
             "description": "DeepSeek密钥和模型已配置，可生成单句文字建议；自然语言方案和内容检索分别检查对应能力字段。"
+          },
+          "exportFormats": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "mp4",
+                "mkv",
+                "mov",
+                "webm",
+                "mp3",
+                "m4a",
+                "wav",
+                "flac"
+              ]
+            },
+            "description": "按本机FFmpeg编码器声明；结合容器编码白名单使用，缺失工具为空。"
+          },
+          "exportVideoCodecs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "h264",
+                "hevc",
+                "vp9",
+                "av1"
+              ]
+            }
           }
         }
       },
