@@ -28,7 +28,7 @@ class LightweightMigrationTests {
             jdbc.update("INSERT INTO media_task(id,project_id,media_id,plan_id,plan_version,kind,source_id,status,stage,created_at) VALUES(?,?,?,?,1,'MEDIA_PROCESSING',?,'SUCCEEDED','DONE',CURRENT_TIMESTAMP)",task,project,media,plan,plan);
             jdbc.update("INSERT INTO output_file(id,project_id,task_id,filename,storage_key,content_type,size_bytes,created_at) VALUES(?,?,?,?,?,'video/mp4',1,CURRENT_TIMESTAMP)",output,project,task,"output.mp4","output.mp4");
             jdbc.update("INSERT INTO account_cleanup_job(id,user_id,status,next_attempt_at,created_at,updated_at) VALUES(?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),user);
-            Flyway.configure().dataSource(source).load().migrate();
+            Flyway.configure().dataSource(source).target("7").load().migrate();
             for(String table:new String[]{"media","operation_plan","media_task","output_file"}) {
                 assertThat(jdbc.queryForObject("SELECT user_id FROM "+table,String.class)).isEqualTo(user);
                 assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_name=? AND column_name='project_id'",Integer.class,table)).isZero();
@@ -41,6 +41,20 @@ class LightweightMigrationTests {
                     .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
             jdbc.update("INSERT INTO account_cleanup_job(id,user_id,media_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),user,media,media);
             assertThatThrownBy(()->jdbc.update("INSERT INTO account_cleanup_job(id,user_id,media_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),other,media,media))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            Flyway.configure().dataSource(source).load().migrate();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_cleanup_job WHERE output_id IS NULL",Integer.class)).isEqualTo(2);
+            jdbc.update("INSERT INTO account_cleanup_job(id,user_id,output_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),user,output,"OUTPUT:"+output);
+            assertThatThrownBy(()->jdbc.update("INSERT INTO account_cleanup_job(id,user_id,output_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),other,output,"OUTPUT:"+output))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            assertThatThrownBy(()->jdbc.update("UPDATE account_cleanup_job SET media_id=? WHERE output_id=?",media,output))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            String transcript=UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO transcript(id,user_id,media_id,source_task_id,version,language,original_segments_json,created_at,updated_at) VALUES(?,?,?,?,1,'zh-CN','[]',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",transcript,user,media,task);
+            jdbc.update("INSERT INTO transcript_revision(user_id,transcript_id,version,segments_json,created_at) VALUES(?,?,1,'[]',CURRENT_TIMESTAMP)",user,transcript);
+            assertThatThrownBy(()->jdbc.update("UPDATE transcript SET user_id=? WHERE id=?",other,transcript))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            assertThatThrownBy(()->jdbc.update("INSERT INTO transcript_revision(user_id,transcript_id,version,segments_json,created_at) VALUES(?,?,2,'[]',CURRENT_TIMESTAMP)",other,transcript))
                     .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         } finally { source.close(); }
     }

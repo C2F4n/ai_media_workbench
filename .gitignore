@@ -37,6 +37,7 @@ out/
 .vscode/
 
 ### Local configuration and secrets ###
+.local/
 .env
 .env.*
 !.env.example

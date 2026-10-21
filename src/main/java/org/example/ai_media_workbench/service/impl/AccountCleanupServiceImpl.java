@@ -22,7 +22,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 复用持久化队列清理已注销账号或单个已删除素材；业务事务只入队，磁盘清理失败可重试。 */
+/** 持久化清理队列支持已注销账号、单个已删除素材或结果；业务事务只入队，磁盘清理失败可重试。 */
 @Service
 public class AccountCleanupServiceImpl implements AccountCleanupService {
     private static final Logger log = LoggerFactory.getLogger(AccountCleanupServiceImpl.class);
@@ -48,7 +48,7 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
     @Override
     @Transactional
     public void enqueue(String userId) {
-        enqueue(userId, null, now());
+        enqueue(userId, null, null, now());
     }
 
     @Override
@@ -60,15 +60,22 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
         // 逻辑删除阻止后续执行/发布；等旧进程的租约结束，避免过早删除后旧工具再写入文件。
         if (probing != null && probing.plus(mediaTool.lease()).isAfter(ready)) ready = probing.plus(mediaTool.lease());
         if (running != null && running.plus(transcode.lease()).isAfter(ready)) ready = running.plus(transcode.lease());
-        enqueue(userId, mediaId, ready);
+        enqueue(userId, mediaId, null, ready);
     }
 
-    private void enqueue(String userId, String mediaId, LocalDateTime ready) {
+    @Override
+    @Transactional
+    public void enqueueOutput(String userId, String outputId) {
+        enqueue(userId, null, outputId, now());
+    }
+
+    private void enqueue(String userId, String mediaId, String outputId, LocalDateTime ready) {
         var job = new AccountCleanupJobEntity();
         job.setId(UUID.randomUUID().toString());
         job.setUserId(userId);
         job.setMediaId(mediaId);
-        job.setScopeKey(mediaId == null ? "ACCOUNT" : mediaId);
+        job.setOutputId(outputId);
+        job.setScopeKey(outputId != null ? "OUTPUT:" + outputId : mediaId == null ? "ACCOUNT" : mediaId);
         job.setStatus("QUEUED");
         job.setCreatedAt(now());
         job.setUpdatedAt(now());
@@ -92,17 +99,25 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
             // 条件更新抢占任务；只有成功把待处理状态改为 RUNNING 的执行者才处理本轮任务。
             if (mapper.claim(job.getId(), now()) != 1) continue;
             try {
-                boolean account = job.getMediaId() == null;
-                if ((account ? mapper.isDeletedAccount(job.getUserId())
-                        : mapper.isDeletedMedia(job.getUserId(), job.getMediaId())) != 1)
+                int deleted;
+                java.util.List<String> keys;
+                if (job.getOutputId() != null) {
+                    deleted = mapper.isDeletedOutput(job.getUserId(), job.getOutputId());
+                    keys = mapper.findOutputStorageKeys(job.getUserId(), job.getOutputId());
+                } else if (job.getMediaId() != null) {
+                    deleted = mapper.isDeletedMedia(job.getUserId(), job.getMediaId());
+                    keys = mapper.findMediaStorageKeys(job.getUserId(), job.getMediaId());
+                } else {
+                    deleted = mapper.isDeletedAccount(job.getUserId());
+                    keys = mapper.findStorageKeys(job.getUserId());
+                }
+                if (deleted != 1)
                     throw new IOException("Cleanup scope is not deleted");
-                var keys = account ? mapper.findStorageKeys(job.getUserId())
-                        : mapper.findMediaStorageKeys(job.getUserId(), job.getMediaId());
                 for (String key : keys) {
                     deleteControlledFile(key);
                     // 运行中注销或进程中断可能留下未发布的输出和两遍编码缓存。
                     if (key.matches("[0-9a-fA-F-]{36}/[0-9a-fA-F-]{36}-[0-9a-fA-F-]{36}\\.mp4"))
-                        for (String suffix : LocalMediaStorage.ENCODING_LOG_SUFFIXES) deleteControlledFile(key + suffix);
+                        for (String suffix : LocalMediaStorage.OUTPUT_AUXILIARY_SUFFIXES) deleteControlledFile(key + suffix);
                 }
                 mapper.complete(job.getId(), now());
                 completed++;

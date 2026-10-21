@@ -1,6 +1,8 @@
 package org.example.ai_media_workbench.service.impl;
 
 import java.time.Clock;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
@@ -11,6 +13,7 @@ import org.example.ai_media_workbench.dto.common.PageQuery;
 import org.example.ai_media_workbench.entity.MediaEntity;
 import org.example.ai_media_workbench.entity.UserStatus;
 import org.example.ai_media_workbench.entity.enums.MediaStatus;
+import org.example.ai_media_workbench.entity.enums.MediaKind;
 import org.example.ai_media_workbench.mapper.MediaMapper;
 import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.service.MediaProbe;
@@ -80,6 +83,22 @@ public class MediaServiceImpl implements MediaService {
     public MediaVO get(String userId, String id) { return view(owned(userId,id)); }
 
     @Override
+    public MediaFile preview(String userId, String id) {
+        var item = owned(userId, id);
+        var metadata = item.getMetadataJson() == null ? null : json.readValue(item.getMetadataJson(), MediaMetadataVO.class);
+        if (!previewable(item, metadata)) throw new BusinessException(ErrorCode.MEDIA_PREVIEW_UNAVAILABLE);
+        try {
+            var path = storage.resolve(item.getStorageKey());
+            if (item.getSizeBytes() <= 0 || Files.size(path) != item.getSizeBytes() || !Files.isReadable(path))
+                throw new IOException("Source file unavailable");
+            return new MediaFile(path, item.getSizeBytes(), item.getOriginalFilename(), "video/mp4");
+        } catch (IOException exception) {
+            // 在发送响应头前统一文件不可用错误；不返回磁盘路径，也不修改检测状态。
+            throw new BusinessException(ErrorCode.MEDIA_PREVIEW_UNAVAILABLE);
+        }
+    }
+
+    @Override
     public MediaVO retryProbe(String userId, String id) {
         var media=owned(userId,id);
         if(media.getStatus()==MediaStatus.PROBING) return view(media);
@@ -122,7 +141,16 @@ public class MediaServiceImpl implements MediaService {
         MediaMetadataVO metadata=media.getMetadataJson()==null ? null : json.readValue(media.getMetadataJson(),MediaMetadataVO.class);
         var error=media.getErrorCode()==null ? null : new MediaVO.ResourceError(media.getErrorCode(),media.getErrorMessage());
         return new MediaVO(media.getId(),media.getOriginalFilename(),media.getSizeBytes(),media.getKind(),media.getStatus(),
-                metadata,null,error,media.getCreatedAt().toInstant(ZoneOffset.UTC),media.getUpdatedAt().toInstant(ZoneOffset.UTC));
+                metadata,previewable(media, metadata) ? "/api/media/" + media.getId() + "/preview" : null,
+                error,media.getCreatedAt().toInstant(ZoneOffset.UTC),media.getUpdatedAt().toInstant(ZoneOffset.UTC));
+    }
+
+    private boolean previewable(MediaEntity item, MediaMetadataVO metadata) {
+        // ffprobe对MP4/MOV族返回同一组format_name；只开放已检测的H.264及AAC/无音轨，不信任扩展名。
+        return item.getStatus() == MediaStatus.READY && item.getKind() == MediaKind.VIDEO && metadata != null
+                && metadata.container() != null && java.util.Arrays.stream(metadata.container().split(","))
+                        .anyMatch(format -> format.equals("mov") || format.equals("mp4"))
+                && "h264".equals(metadata.videoCodec()) && (!metadata.hasAudio() || "aac".equals(metadata.audioCodec()));
     }
 
     private String displayName(String input) {

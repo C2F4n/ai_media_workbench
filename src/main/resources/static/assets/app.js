@@ -6,6 +6,7 @@
   let currentUser = null;
   let csrfToken = null;
   let capabilities = null;
+  let cloudEntries = null, cloudOwner = null, cloudLoading = false, cloudRevision = 0;
   let busy = false;
   let registrationChallenge = null;
   let activePanel = 'workbench';
@@ -22,8 +23,32 @@
   let outputId = null;
   let processingOperation = 'transcode';
   let compressionSourceId = null;
+  let trimSourceId = null;
   let deletingMedia = null;
+  let deletingOutput = null;
   let workspaceRevision = 0;
+  let subtitle = null;
+  let subtitleMediaId = null;
+  let subtitleRevision = 0;
+  let subtitleLatestVersion = 0;
+  let subtitleDirty = false;
+  let subtitleLoading = false;
+  let subtitleTaskLoaded = null;
+  let pendingSubtitlePlan = null;
+  let joinRows = [], joinSourceId = null, joinRevision = 0, joinLoading = false, joinDirty = false, pendingJoinPlan = null, joinPreviewRange = null;
+  let aiPlan = null;
+  let aiSourceId = null;
+  let aiRevision = 0;
+  let aiLoading = false;
+  let aiPlanDirty = false;
+  let aiGenerating = false;
+  let findTranscript = null;
+  let findMediaId = null;
+  let findRevision = 0;
+  let findLoading = false;
+  let findRunning = false;
+  let findResult = null;
+  let findPreviewRange = null;
   const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('amw-account') : null;
 
   const messages = {
@@ -40,14 +65,32 @@
     EMAIL_DELIVERY_UNAVAILABLE: '验证邮件暂时无法发送，请稍后重试。',
     EMAIL_VERIFICATION_INVALID: '验证码无效、已过期或尝试次数已用尽，请重新获取。',
     MEDIA_TOOL_UNAVAILABLE: '视频检测工具暂不可用。',
+    MEDIA_PREVIEW_UNAVAILABLE: '原素材暂时无法直接预览。',
     TRANSCODE_UNAVAILABLE: '视频转换工具暂不可用。',
     COMPRESSION_TARGET_UNREACHABLE: '目标体积无法达成，请增大目标或降低分辨率。',
     SOURCE_HAS_NO_AUDIO: '素材没有可提取的音轨。',
     AUDIO_EXTRACTION_UNAVAILABLE: 'MP3编码工具暂不可用。',
     AUDIO_EXTRACTION_FAILED: '提取音频失败，请检查素材后重试。',
-    AI_UNAVAILABLE: '自然语言处理尚未开放。',
+    TRIM_FAILED: '视频裁切失败，请调整区间或更换素材。',
+    MUTE_FAILED: '视频静音失败，请检查素材后重试。',
+    AI_UNAVAILABLE: 'AI 服务尚未配置或暂不可用。',
+    AI_BUSY: 'AI 服务繁忙，请稍后重试。',
+    AI_PLAN_FAILED: '未生成有效方案，请修改处理要求后重试。',
+    AI_ANALYSIS_FAILED: '未得到有效的字幕分析结果，请修改目标或稍后重试。',
+    TRANSCRIPT_ANALYSIS_TOO_LARGE: '字幕超过本次分析上限，请使用较短素材。',
+    AI_FAILED: '文字校对失败，请稍后重试或手动修改。',
+    ASR_UNAVAILABLE: '所选语音识别服务尚未配置或暂不可用。',
+    ASR_FAILED: '语音识别失败，请检查服务配置或稍后重试。',
+    ASR_NO_SPEECH: '没有识别到有效语音。',
+    TRANSCRIPT_ALREADY_EXISTS: '素材已有字幕，请刷新后确认是否重新识别。',
+    TRANSCRIPT_VERSION_CONFLICT: '字幕已变更，请刷新字幕后重试。',
+    SUBTITLE_BURN_UNAVAILABLE: '字幕烧录工具暂不可用。',
+    SUBTITLE_BURN_FAILED: '字幕烧录失败，未生成可用结果。',
+    CLIP_JOIN_FAILED: '片段拼接失败，未生成可用结果。',
+    CLOUD_CREDENTIALS_UNAVAILABLE: '个人云端凭据暂不可读取，请检查加密密钥或重新配置。',
+    CLOUD_CREDENTIALS_CONFLICT: '云端配置已被修改，请刷新后重试。',
     QUEUE_FULL: '处理队列已满，请稍后重试。',
-    PLAN_VERSION_CONFLICT: '转换参数已变化，请重新提交。',
+    PLAN_VERSION_CONFLICT: '方案版本已变化，请刷新后重试。',
     TASK_NOT_CANCELLABLE: '任务已经结束，无法取消。',
     OUTPUT_UNAVAILABLE: '结果文件已丢失或不可用。',
     FILE_TOO_LARGE: '文件超过上传大小限制。',
@@ -173,6 +216,8 @@
   // 清除页面中的用户状态并显示登录界面。
   function showAuth(message = '') {
     currentUser = null;
+    clearCloud();
+    if (capabilities) capabilities = { ...capabilities, aiPlans: false, asr: false, asrProviders: [], semanticSearch: false, clipRecommendations: false, subtitleCorrection: false };
     resetWorkbench();
     $('delete-dialog').close();
     clearPasswords();
@@ -199,7 +244,7 @@
     clearPasswords();
     showOnly('account-view');
     notice('auth-notice', '');
-    if (first) { selectPanel('workbench'); loadMedia(); loadTasks(); }
+    if (first) { clearCloud(); selectPanel('workbench'); refreshUserCapabilities(); loadMedia(); loadTasks(); }
   }
 
   // 向后端查询当前登录用户并恢复对应界面。
@@ -388,6 +433,8 @@
 
   function selectPanel(panel) {
     activePanel = panel;
+    clearCloudSecrets();
+    if (panel === 'account' && currentUser && cloudOwner !== currentUser.id) loadCloudCredentials();
     $('workbench-panel').hidden = panel !== 'workbench';
     $('account-panel').hidden = panel !== 'account';
     $('header-location').textContent = panel === 'workbench' ? '工作台' : '账户';
@@ -405,26 +452,140 @@
       $('compression-target').value = (selectedMedia.sizeBytes * .7 / 1024 / 1024).toFixed(3);
     }
     const target = Math.floor(Number($('compression-target').value) * 1024 * 1024);
+    if (selectedMedia?.status === 'READY' && trimSourceId !== selectedMedia.id) {
+      trimSourceId = selectedMedia.id;
+      $('trim-start').value = '0'; $('trim-end').value = String(selectedMedia.metadata.durationMs / 1000);
+      for (const id of ['trim-start', 'trim-end']) $(id).max = String(selectedMedia.metadata.durationMs / 1000);
+    }
+    for (const id of ['trim-start', 'trim-end']) {
+      $(id).disabled = busy || processingOperation !== 'trim'; $(id).required = processingOperation === 'trim';
+    }
+    const invalidTrim = processingOperation === 'trim' && !trimRange().valid;
+    $('trim-range-error').hidden = processingOperation !== 'trim' || selectedMedia?.status !== 'READY' || !invalidTrim;
     $('compression-target').disabled = busy || processingOperation !== 'compress';
     const invalidTarget = processingOperation === 'compress' && (!Number.isSafeInteger(target) || target < 32768 || target >= (selectedMedia?.sizeBytes || 0));
-    $('start-conversion').disabled = busy || selectedMedia?.status !== 'READY' || invalidTarget
+    $('start-conversion').disabled = busy || selectedMedia?.status !== 'READY' || invalidTarget || invalidTrim
       || (processingOperation === 'extract_audio' && !selectedMedia.metadata?.hasAudio)
       || !capabilities?.supportedOperations?.includes(processingOperation)
       || (taskActive(selectedTask) && selectedTask.mediaId === selectedMedia?.id);
     $('compression-small').hidden = processingOperation !== 'compress' || selectedMedia?.status !== 'READY' || selectedMedia.sizeBytes > 32768;
-    $('conversion-resolution').disabled = busy || processingOperation === 'extract_audio';
+    $('conversion-resolution').disabled = busy || processingOperation === 'extract_audio' || processingOperation === 'trim';
     $('audio-missing').hidden = processingOperation !== 'extract_audio' || selectedMedia?.status !== 'READY' || selectedMedia.metadata?.hasAudio;
     $('conversion-source').textContent = selectedMedia?.status === 'READY' ? selectedMedia.originalFilename : '未选择就绪素材';
     $('cancel-task').disabled = busy || !taskActive(selectedTask) || selectedTask?.status === 'CANCELLING';
+    $('delete-output').disabled = busy || !outputId;
     $('task-prev').disabled = busy || taskPage <= 1;
     $('task-next').disabled = busy || taskPage * 10 >= taskTotal;
+    syncSubtitleControls();
+    syncAIControls();
+    syncFindControls();
+    syncJoinControls();
+    syncCloudControls();
   }
+
+  const cloudProviders = [
+    { id: 'tencent', name: '腾讯云语音识别', fields: [['appId', 'AppId', false, 20], ['secretId', 'SecretId', true, 128], ['secretKey', 'SecretKey', true, 256]] },
+    { id: 'aliyun', name: '阿里云百炼语音识别', fields: [['apiKey', 'API Key', true, 512], ['workspaceId', 'Workspace ID', false, 80]] },
+    { id: 'deepseek', name: 'DeepSeek', fields: [['apiKey', 'API Key', true, 512], ['model', '模型', false, 80]] }
+  ];
+  function clearCloudSecrets() { $('cloud-providers').querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); }
+  function clearCloud() {
+    cloudRevision++; cloudEntries = null; cloudOwner = null; cloudLoading = false;
+    $('cloud-providers').replaceChildren(); notice('cloud-state', ''); notice('cloud-error', '');
+  }
+  async function refreshUserCapabilities() {
+    const owner = currentUser?.id, revision = workspaceRevision;
+    if (!owner) return;
+    try {
+      const item = await request('/api/system/capabilities');
+      if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+      capabilities = item; updateRegistrationControls(); syncMediaControls();
+    } catch (error) { if (currentUser?.id === owner && error.status === 401) showAuth(); }
+  }
+  function syncCloudControls() {
+    $('refresh-cloud').disabled = busy || cloudLoading || !currentUser;
+    $('cloud-providers').querySelectorAll('input,select,button').forEach((element) => { element.disabled = busy || cloudLoading || !currentUser; });
+  }
+  function renderCloudProvider(provider) {
+    const saved = cloudEntries?.find((item) => item.provider === provider.id); if (!saved) return;
+    let article = $('cloud-' + provider.id);
+    if (!article) { article = document.createElement('article'); article.id = 'cloud-' + provider.id; article.className = 'cloud-provider'; $('cloud-providers').append(article); }
+    article.replaceChildren();
+    const heading = document.createElement('div'); heading.className = 'section-heading';
+    const title = document.createElement('h3'); title.textContent = provider.name;
+    const state = document.createElement('span'); state.className = 'cloud-provider-status muted'; state.setAttribute('role', 'status');
+    state.textContent = saved.mode === 'OFF' ? '已停用' : saved.configured ? (saved.mode === 'PERSONAL' ? '个人凭据已配置' : '站点已配置') : saved.personalStored ? '个人凭据不可读取' : '未配置';
+    heading.append(title, state); article.append(heading);
+    const form = document.createElement('form'); form.autocomplete = 'off';
+    const source = document.createElement('label'); source.className = 'field'; source.textContent = '凭据来源';
+    const mode = document.createElement('select'); mode.setAttribute('aria-label', provider.name + '凭据来源');
+    for (const [value, text] of [['PERSONAL', '我的凭据'], ['SERVER', '站点配置'], ['OFF', '停用']]) {
+      const option = document.createElement('option'); option.value = value; option.textContent = text; mode.append(option);
+    }
+    mode.value = saved.mode; source.append(mode); form.append(source);
+    const fields = document.createElement('div'); fields.hidden = mode.value !== 'PERSONAL';
+    for (const [name, labelText, secret, max] of provider.fields) {
+      const label = document.createElement('label'); label.className = 'field'; label.textContent = labelText;
+      const input = document.createElement('input'); input.name = name; input.type = secret ? 'password' : 'text'; input.maxLength = max;
+      input.autocomplete = secret ? 'new-password' : 'off'; input.spellcheck = false; input.setAttribute('aria-label', provider.name + ' ' + labelText);
+      if (secret) { input.dataset.secret = 'true'; input.placeholder = saved.personalStored ? '已保存，留空保留' : labelText; }
+      else input.value = saved[name] || (name === 'model' ? 'deepseek-flash' : '');
+      input.addEventListener('input', () => { state.textContent = '未保存'; }); label.append(input); fields.append(label);
+    }
+    mode.addEventListener('change', () => { fields.hidden = mode.value !== 'PERSONAL'; form.querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); state.textContent = '未保存'; });
+    form.append(fields);
+    const actions = document.createElement('div'); actions.className = 'cloud-provider-actions';
+    const save = document.createElement('button'); save.type = 'submit'; save.className = 'icon-button save-button'; save.title = '保存配置'; save.setAttribute('aria-label', '保存' + provider.name + '配置'); save.innerHTML = '<i data-lucide="save" aria-hidden="true"></i>'; actions.append(save);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'icon-button danger-outline'; remove.title = '删除个人凭据并停用'; remove.setAttribute('aria-label', '删除' + provider.name + '个人凭据'); remove.innerHTML = '<i data-lucide="trash-2" aria-hidden="true"></i>'; remove.hidden = !saved.personalStored; actions.append(remove);
+    form.append(actions); article.append(form);
+    const write = (method, body) => {
+      const owner = currentUser?.id, revision = cloudRevision;
+      operation('cloud-error', async () => {
+        const result = await request('/api/users/me/cloud-credentials/' + provider.id, { method, body });
+        if (currentUser?.id !== owner || cloudRevision !== revision) return;
+        cloudEntries = cloudEntries.map((item) => item.provider === provider.id ? result : item);
+        renderCloudProvider(provider); syncCloudControls(); icons(); await refreshUserCapabilities();
+      });
+    };
+    form.addEventListener('submit', (event) => {
+      event.preventDefault(); if (busy || cloudLoading) return;
+      const body = { expectedVersion: saved.version, mode: mode.value };
+      if (mode.value === 'PERSONAL') {
+        for (const input of fields.querySelectorAll('input')) if (!input.dataset.secret || input.value) body[input.name] = input.value;
+        if (!window.confirm('将个人凭据加密保存在此服务器，并使用你对应服务商的额度。保存？')) return;
+      } else if (saved.personalStored && !window.confirm('这会删除此供应商的个人凭据，并切换凭据来源。继续？')) return;
+      write('PUT', body);
+    });
+    remove.addEventListener('click', () => {
+      if (busy || !window.confirm('删除此供应商的个人凭据并停用？不会自动使用站点额度。')) return;
+      write('DELETE', { expectedVersion: saved.version });
+    });
+  }
+  async function loadCloudCredentials() {
+    const owner = currentUser?.id, revision = ++cloudRevision; if (!owner) return;
+    clearCloudSecrets(); cloudLoading = true; syncCloudControls(); notice('cloud-error', ''); notice('cloud-state', '正在读取配置…');
+    try {
+      const items = await request('/api/users/me/cloud-credentials');
+      if (currentUser?.id !== owner || cloudRevision !== revision) return;
+      cloudEntries = items; cloudOwner = owner; cloudProviders.forEach(renderCloudProvider); icons(); notice('cloud-state', '');
+    } catch (error) {
+      if (currentUser?.id !== owner || cloudRevision !== revision) return;
+      if (error.status === 401) showAuth(); else notice('cloud-error', error.message, true);
+    } finally { if (cloudRevision === revision) { cloudLoading = false; syncCloudControls(); } }
+  }
+  $('refresh-cloud').addEventListener('click', loadCloudCredentials);
 
   function resetWorkbench() {
     workspaceRevision++;
+    clearAIPlan();
+    clearFind();
+    clearJoin();
+    clearSubtitle();
     deletingMedia = null; $('delete-media-dialog').close();
+    deletingOutput = null; $('delete-output-dialog').close();
     clearTimeout(probeTimer); probeTimer = null;
     mediaPage = 1; mediaTotal = 0; selectedMedia = null;
+    clearSourcePreview();
     $('media-list').replaceChildren();
     $('media-result').hidden = true;
     $('media-result-empty').hidden = false;
@@ -440,19 +601,26 @@
     previewUrl = null;
     clearTimeout(taskTimer); taskTimer = null;
     selectedTask = null; pendingPlan = null; outputId = null; taskPage = 1; taskTotal = 0; compressionSourceId = null;
-    $('compression-target').value = '';
+    $('compression-target').value = ''; trimSourceId = null; $('trim-start').value = ''; $('trim-end').value = '';
     $('task-list').replaceChildren();
     $('conversion-result').hidden = true;
     $('output-preview').pause(); $('output-preview').removeAttribute('src'); $('output-preview').load();
     $('output-preview').hidden = true; $('download-output').hidden = true; $('download-output').removeAttribute('href');
+    $('delete-output').hidden = true; $('output-empty').hidden = true;
     $('output-audio').pause(); $('output-audio').removeAttribute('src'); $('output-audio').load(); $('output-audio').hidden = true;
     selectTool('detect');
   }
 
   function clearMediaResult() {
+    clearFind();
+    clearJoin();
+    clearAIPlan();
+    clearSubtitle();
     clearTimeout(probeTimer); probeTimer = null; selectedMedia = null;
+    clearSourcePreview();
     $('media-result').hidden = true; $('media-result-empty').hidden = false; $('media-status').hidden = true;
     compressionSourceId = null; $('compression-target').value = '';
+    trimSourceId = null; $('trim-start').value = ''; $('trim-end').value = '';
     syncMediaControls();
   }
 
@@ -463,6 +631,7 @@
       $(id).pause(); $(id).removeAttribute('src'); $(id).load(); $(id).hidden = true;
     }
     $('download-output').hidden = true; $('download-output').removeAttribute('href');
+    $('delete-output').hidden = true; $('output-empty').hidden = true;
     syncMediaControls();
   }
 
@@ -483,9 +652,45 @@
 
   function statusText(status) { return ({ PROBING: '检测中', READY: '已就绪', FAILED: '检测失败' })[status] || status; }
 
+  function clearSourcePreview() {
+    const player = $('source-preview');
+    player.pause(); player.removeAttribute('src'); player.load(); player.hidden = true;
+    $('retry-source-preview').hidden = true;
+    notice('source-preview-status', '');
+  }
+
+  function displaySourcePreview(item) {
+    const url = item.status === 'READY' ? item.previewUrl : null;
+    if ($('source-preview').getAttribute('src') !== url) {
+      clearSourcePreview();
+      if (url) { $('source-preview').src = url; $('source-preview').hidden = false; }
+    }
+    if (!url) notice('source-preview-status', item.status === 'READY' ? '当前格式不支持直接预览。' : '');
+  }
+
+  $('source-preview').addEventListener('error', () => {
+    if (selectedMedia?.previewUrl && $('source-preview').error) {
+      notice('source-preview-status', '原视频暂时无法播放。', true);
+      $('retry-source-preview').hidden = false;
+    }
+  });
+  $('source-preview').addEventListener('loadeddata', () => {
+    notice('source-preview-status', ''); $('retry-source-preview').hidden = true;
+  });
+  $('retry-source-preview').addEventListener('click', () => {
+    if (!selectedMedia?.previewUrl) return;
+    notice('source-preview-status', ''); $('retry-source-preview').hidden = true; $('source-preview').load();
+  });
+
   function displayMedia(item) {
+    if (selectedMedia?.id !== item.id && (subtitleDirty || joinDirty) && !window.confirm('放弃未保存的字幕或未导出的拼接修改并切换素材？')) return;
     clearTimeout(probeTimer); probeTimer = null;
+    if (selectedMedia?.id !== item.id) clearSubtitle();
+    if (selectedMedia?.id !== item.id) clearAIPlan();
+    if (selectedMedia?.id !== item.id) clearFind();
+    if (selectedMedia?.id !== item.id) clearJoin();
     selectedMedia = item;
+    displaySourcePreview(item);
     $('media-result-empty').hidden = true;
     $('media-result').hidden = false;
     $('media-result-name').textContent = item.originalFilename;
@@ -507,6 +712,10 @@
     notice('media-error', item.error?.message || '', true);
     $('retry-probe').hidden = item.status !== 'FAILED';
     syncMediaControls();
+    if (!$('subtitle-section').hidden && item.status === 'READY' && subtitleMediaId !== item.id) loadSubtitle();
+    if (!$('ai-section').hidden && item.status === 'READY' && aiSourceId !== item.id) loadAIPlan();
+    if (!$('find-section').hidden && item.status === 'READY' && findMediaId !== item.id) loadFindTranscript();
+    if (!$('join-section').hidden && item.status === 'READY' && joinSourceId !== item.id) loadJoinPlan();
     if (item.status === 'PROBING') {
       const owner = currentUser?.id;
       const revision = workspaceRevision;
@@ -642,23 +851,36 @@
   $('media-next').addEventListener('click', () => { if (mediaPage * 10 < mediaTotal) { mediaPage++; loadMedia(); } });
 
   function selectTool(tool) {
-    const processing = tool !== 'detect';
-    processingOperation = tool === 'audio' ? 'extract_audio' : tool === 'compress' ? 'compress' : 'transcode';
-    for (const [id, active] of [['detect-tool', !processing], ['convert-tool', tool === 'convert'], ['compress-tool', tool === 'compress'], ['audio-tool', tool === 'audio']]) {
+    const processing = tool !== 'detect' && tool !== 'subtitle' && tool !== 'ai' && tool !== 'find' && tool !== 'join';
+    processingOperation = tool === 'mute' ? 'mute' : tool === 'trim' ? 'trim' : tool === 'audio' ? 'extract_audio' : tool === 'compress' ? 'compress' : 'transcode';
+    for (const [id, active] of [['detect-tool', tool === 'detect'], ['convert-tool', tool === 'convert'], ['compress-tool', tool === 'compress'], ['audio-tool', tool === 'audio'], ['trim-tool', tool === 'trim'], ['mute-tool', tool === 'mute'], ['subtitle-tool', tool === 'subtitle'], ['ai-tool', tool === 'ai'], ['find-tool', tool === 'find'], ['join-tool', tool === 'join']]) {
       $(id).classList.toggle('active', active);
       if (active) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current');
     }
     $('conversion-section').hidden = !processing;
-    $('task-section').hidden = !processing;
+    $('task-section').hidden = !processing && tool !== 'subtitle' && tool !== 'ai' && tool !== 'join';
+    $('ai-section').hidden = tool !== 'ai';
+    $('find-section').hidden = tool !== 'find';
+    if (tool !== 'find') $('find-preview').pause();
+    $('join-section').hidden = tool !== 'join';
+    if (tool !== 'join') $('join-preview').pause();
+    if (tool === 'join' && selectedMedia?.status === 'READY' && joinSourceId !== selectedMedia.id) loadJoinPlan();
+    if (tool === 'find' && selectedMedia?.status === 'READY') loadFindTranscript();
+    $(tool === 'join' ? 'join-result-slot' : tool === 'ai' ? 'ai-result-slot' : tool === 'subtitle' ? 'subtitle-result-slot' : 'conversion-layout').append($('conversion-result'));
+    if (tool === 'ai' && selectedMedia?.status === 'READY' && aiSourceId !== selectedMedia.id) loadAIPlan();
+    $('subtitle-section').hidden = tool !== 'subtitle';
+    if (tool === 'subtitle' && selectedMedia?.status === 'READY' && subtitleMediaId !== selectedMedia.id) loadSubtitle();
     $('compression-target-field').hidden = processingOperation !== 'compress';
     $('compression-target').required = processingOperation === 'compress';
     $('compression-target').disabled = processingOperation !== 'compress';
-    $('conversion-title').textContent = tool === 'audio' ? '提取音频' : tool === 'compress' ? '视频压缩' : '视频转换';
-    $('start-processing-label').textContent = tool === 'audio' ? '开始提取' : tool === 'compress' ? '开始压缩' : '开始转换';
-    $('resolution-field').hidden = tool === 'audio';
+    $('conversion-title').textContent = tool === 'mute' ? '视频静音' : tool === 'trim' ? '视频裁切' : tool === 'audio' ? '提取音频' : tool === 'compress' ? '视频压缩' : '视频转换';
+    $('start-processing-label').textContent = tool === 'mute' ? '开始静音' : tool === 'trim' ? '开始裁切' : tool === 'audio' ? '开始提取' : tool === 'compress' ? '开始压缩' : '开始转换';
+    $('resolution-field').hidden = tool === 'audio' || tool === 'trim';
+    $('trim-fields').hidden = tool !== 'trim';
     $('processing-fields').classList.toggle('audio', tool === 'audio');
+    $('processing-fields').classList.toggle('trim', tool === 'trim');
     $('processing-format').textContent = tool === 'audio' ? 'MP3 · 192 kbps' : 'MP4 · H.264';
-    $('processing-audio-mode').textContent = tool === 'audio' ? '第一条音轨' : '保留音轨';
+    $('processing-audio-mode').textContent = tool === 'mute' ? '移除音轨' : tool === 'audio' ? '第一条音轨' : '保留音轨';
     notice('conversion-error', '');
     syncMediaControls();
   }
@@ -672,28 +894,579 @@
     if (!capabilities?.supportedOperations?.includes('compress')) notice('conversion-error', '视频压缩工具暂不可用。', true);
   });
   $('compression-target').addEventListener('input', syncMediaControls);
+  function trimRange() {
+    const parse = (id) => {
+      const seconds = Number($(id).value), milliseconds = Math.round(seconds * 1000);
+      return $(id).value !== '' && Number.isSafeInteger(milliseconds) && Math.abs(seconds - milliseconds / 1000) < 1e-9 ? milliseconds : NaN;
+    };
+    const startMs = parse('trim-start'), endMs = parse('trim-end');
+    return { startMs, endMs, valid: startMs >= 0 && endMs - startMs >= 500 && endMs <= (selectedMedia?.metadata?.durationMs || 0) };
+  }
+  for (const id of ['trim-start', 'trim-end']) $(id).addEventListener('input', syncMediaControls);
+  $('trim-tool').addEventListener('click', () => {
+    selectTool('trim');
+    if (!capabilities?.supportedOperations?.includes('trim')) notice('conversion-error', '视频裁切工具暂不可用。', true);
+  });
   $('audio-tool').addEventListener('click', () => {
     selectTool('audio');
     if (!capabilities?.supportedOperations?.includes('extract_audio')) notice('conversion-error', 'MP3编码工具暂不可用。', true);
   });
+  $('mute-tool').addEventListener('click', () => {
+    selectTool('mute');
+    if (!capabilities?.supportedOperations?.includes('mute')) notice('conversion-error', '视频静音工具暂不可用。', true);
+  });
+
+  function clearJoinPreview() {
+    joinPreviewRange = null; $('join-preview').pause(); $('join-preview').removeAttribute('src'); $('join-preview').onloadedmetadata = null;
+    $('join-preview').load(); $('join-preview').hidden = true;
+  }
+  function clearJoin() {
+    joinRevision++; joinRows = []; joinSourceId = null; joinLoading = false; joinDirty = false; pendingJoinPlan = null;
+    $('join-clips').replaceChildren(); clearJoinPreview(); notice('join-error', '');
+  }
+  function joinRow(startMs, endMs) { return { id: crypto.randomUUID(), start: String(startMs / 1000), end: String(endMs / 1000) }; }
+  function joinParameters() {
+    const parse = (value) => /^\d+(?:\.\d{1,3})?$/.test(value) ? Math.round(Number(value) * 1000) : NaN;
+    const clips = joinRows.map((row) => ({ startMs: parse(row.start), endMs: parse(row.end) }));
+    const total = clips.reduce((sum, clip) => sum + clip.endMs - clip.startMs, 0);
+    const valid = clips.length > 0 && clips.length <= 20 && Number.isSafeInteger(total) && total <= 900000
+      && clips.every((clip) => Number.isSafeInteger(clip.startMs) && Number.isSafeInteger(clip.endMs) && clip.startMs >= 0
+        && clip.endMs - clip.startMs >= 500 && clip.endMs <= (selectedMedia?.metadata?.durationMs || 0));
+    return { clips, total, valid };
+  }
+  function syncJoinControls() {
+    const ready = selectedMedia?.status === 'READY', data = joinParameters();
+    $('join-source').textContent = ready ? selectedMedia.originalFilename : '未选择就绪素材';
+    $('join-total').textContent = `${joinRows.length} 段 · ${Number.isFinite(data.total) ? (data.total / 1000).toFixed(3) : '--'} 秒`;
+    $('join-range-error').hidden = !ready || !joinRows.length || data.valid;
+    $('join-state').textContent = joinLoading ? '正在读取方案…' : !ready ? '未选择就绪素材'
+      : !capabilities?.supportedOperations?.includes('join_clips') ? '片段拼接工具暂不可用。' : joinDirty ? '未导出' : '';
+    $('export-join').disabled = busy || joinLoading || !ready || !data.valid || !capabilities?.supportedOperations?.includes('join_clips')
+      || (taskActive(selectedTask) && selectedTask.mediaId === selectedMedia?.id);
+    $('add-join-clip').disabled = busy || joinLoading || !ready || joinRows.length >= 20;
+    $('refresh-join').disabled = busy || joinLoading || !ready;
+    $('join-clips').querySelectorAll('input').forEach((input) => { input.disabled = busy || joinLoading; });
+    $('join-clips').querySelectorAll('button').forEach((button) => { button.disabled = busy || joinLoading || button.dataset.unavailable === 'true'; });
+  }
+  function renderJoin() {
+    $('join-clips').replaceChildren(...joinRows.map((row, index) => {
+      const li = document.createElement('li'); li.className = 'join-row';
+      const number = document.createElement('span'); number.textContent = String(index + 1); li.append(number);
+      for (const [key, labelText] of [['start', '开始（秒）'], ['end', '结束（秒）']]) {
+        const label = document.createElement('label'); label.className = 'field'; label.textContent = labelText;
+        const input = document.createElement('input'); input.type = 'number'; input.min = '0'; input.step = '0.001'; input.required = true;
+        input.setAttribute('aria-label', `片段${index + 1}${key === 'start' ? '开始' : '结束'}时间`); input.value = row[key];
+        input.addEventListener('input', () => { row[key] = input.value; joinDirty = true; clearJoinPreview(); syncJoinControls(); });
+        label.append(input); li.append(label);
+      }
+      const actions = document.createElement('div'); actions.className = 'join-row-actions';
+      const button = (icon, title, unavailable, action) => {
+        const item = document.createElement('button'); item.type = 'button'; item.className = 'icon-button'; item.title = title;
+        item.setAttribute('aria-label', `${title} ${index + 1}`); item.dataset.unavailable = String(unavailable);
+        const i = document.createElement('i'); i.dataset.lucide = icon; i.setAttribute('aria-hidden', 'true'); item.append(i); item.addEventListener('click', action); actions.append(item);
+      };
+      const change = (action) => { action(); joinDirty = true; clearJoinPreview(); renderJoin(); };
+      button('arrow-up', '上移片段', index === 0, () => change(() => { [joinRows[index - 1], joinRows[index]] = [joinRows[index], joinRows[index - 1]]; }));
+      button('arrow-down', '下移片段', index === joinRows.length - 1, () => change(() => { [joinRows[index], joinRows[index + 1]] = [joinRows[index + 1], joinRows[index]]; }));
+      button('copy', '复制片段', joinRows.length >= 20, () => change(() => { joinRows.splice(index + 1, 0, { ...row, id: crypto.randomUUID() }); }));
+      button('play', '预览片段', !selectedMedia?.previewUrl, () => {
+        const clip = joinParameters().clips[index]; if (!Number.isSafeInteger(clip.startMs) || !Number.isSafeInteger(clip.endMs) || clip.endMs <= clip.startMs) return;
+        joinPreviewRange = { start: clip.startMs / 1000, end: clip.endMs / 1000 }; const video = $('join-preview'); video.hidden = false;
+        const play = () => { if (joinPreviewRange) { video.currentTime = joinPreviewRange.start; video.play().catch(() => notice('join-error', '片段暂时无法播放。', true)); } };
+        if (video.getAttribute('src') !== selectedMedia.previewUrl) { video.onloadedmetadata = play; video.src = selectedMedia.previewUrl; video.load(); }
+        else if (video.readyState >= 1) play(); else video.onloadedmetadata = play;
+      });
+      button('trash-2', '移除片段', joinRows.length <= 1, () => change(() => { joinRows.splice(index, 1); }));
+      li.append(actions); return li;
+    })); syncJoinControls(); icons();
+  }
+  async function loadJoinPlan() {
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision, token = ++joinRevision;
+    if (!owner || !mediaId || selectedMedia.status !== 'READY') return;
+    joinSourceId = mediaId; joinLoading = true; pendingJoinPlan = null; joinDirty = false; clearJoinPreview();
+    joinRows = [joinRow(0, selectedMedia.metadata.durationMs)]; renderJoin();
+    try {
+      const page = await request(`/api/operation-plans?mediaId=${mediaId}&page=1&pageSize=10`);
+      if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== mediaId || joinRevision !== token) return;
+      const plan = page.items.find((item) => item.parameters?.operation === 'join_clips');
+      if (plan) { joinRows = plan.parameters.clips.map((clip) => joinRow(clip.startMs, clip.endMs)); pendingJoinPlan = plan.status === 'READY' ? plan : null; }
+      notice('join-error', '');
+    } catch (error) {
+      if (currentUser?.id !== owner || workspaceRevision !== revision || joinRevision !== token) return;
+      if (error.status === 401) showAuth(); else notice('join-error', error.message, true);
+    } finally { if (joinRevision === token) { joinLoading = false; renderJoin(); } }
+  }
+  $('join-preview').addEventListener('timeupdate', () => { if (joinPreviewRange && $('join-preview').currentTime >= joinPreviewRange.end) $('join-preview').pause(); });
+  $('join-preview').addEventListener('play', () => { const video = $('join-preview'); if (joinPreviewRange && (video.currentTime < joinPreviewRange.start || video.currentTime >= joinPreviewRange.end)) video.currentTime = joinPreviewRange.start; });
+  $('join-tool').addEventListener('click', () => selectTool('join'));
+  $('refresh-join').addEventListener('click', () => { if (!joinDirty || window.confirm('放弃未导出的修改并恢复最近方案？')) loadJoinPlan(); });
+  $('add-join-clip').addEventListener('click', () => {
+    if (busy || joinLoading || !selectedMedia || joinRows.length >= 20) return;
+    joinRows.push(joinRow(0, Math.min(5000, selectedMedia.metadata.durationMs))); joinDirty = true; renderJoin();
+  });
+  $('join-form').addEventListener('submit', (event) => {
+    event.preventDefault(); const data = joinParameters();
+    if (busy || joinLoading || !data.valid || selectedMedia?.status !== 'READY') return;
+    if (!window.confirm(`按当前顺序拼接${data.clips.length}段，共${(data.total / 1000).toFixed(3)}秒，生成 MP4？原素材保持不变。`)) return;
+    const owner = currentUser?.id, mediaId = selectedMedia.id, revision = workspaceRevision;
+    operation('join-error', async () => {
+      const parameters = { operation: 'join_clips', outputFormat: 'mp4', clips: data.clips, audioMode: 'keep' };
+      const current = () => currentUser?.id === owner && workspaceRevision === revision && selectedMedia?.id === mediaId;
+      let plan = pendingJoinPlan?.mediaId === mediaId ? pendingJoinPlan : null;
+      if (!plan) {
+        plan = await request('/api/operation-plans', { method: 'POST', body: { mediaId, parameters } });
+        if (!current()) return; pendingJoinPlan = plan;
+      } else if (JSON.stringify(plan.parameters.clips) !== JSON.stringify(data.clips)) {
+        plan = await request(`/api/operation-plans/${plan.id}`, { method: 'PATCH', body: { expectedVersion: plan.version, parameters } });
+        if (!current()) return; pendingJoinPlan = plan;
+      }
+      const task = await request(`/api/operation-plans/${plan.id}/execute`, { method: 'POST', body: { expectedVersion: plan.version } });
+      if (!current()) return;
+      pendingJoinPlan = null; joinDirty = false; displayTask(task); taskPage = 1; await loadTasks();
+    });
+  });
+
+  function clearFindResults() {
+    findResult = null; findPreviewRange = null;
+    $('find-results').replaceChildren(); notice('find-result-state', '');
+    $('find-preview').pause(); $('find-preview').removeAttribute('src'); $('find-preview').load();
+    $('find-preview').onloadedmetadata = null;
+    $('find-preview-section').hidden = true; notice('find-preview-error', '');
+  }
+  function clearFind() {
+    findRevision++; findMediaId = null; findTranscript = null; findLoading = false; findRunning = false;
+    $('find-query').value = ''; clearFindResults(); notice('find-error', '');
+  }
+  function findMode() { return document.querySelector('input[name="find-mode"]:checked').value; }
+  function syncFindControls() {
+    const recommend = findMode() === 'recommend', ready = selectedMedia?.status === 'READY';
+    const configured = recommend ? capabilities?.clipRecommendations : capabilities?.semanticSearch;
+    const limit = Number($('find-limit').value), budget = Number($('find-budget').value);
+    $('find-source').textContent = selectedMedia?.originalFilename || '未选择就绪素材';
+    $('find-budget-field').hidden = !recommend; $('find-budget').required = recommend;
+    $('find-budget').disabled = busy || findLoading || !recommend;
+    $('find-limit').disabled = busy || findLoading;
+    document.querySelectorAll('input[name="find-mode"]').forEach((input) => { input.disabled = busy || findLoading; });
+    $('find-limit').max = recommend ? '10' : '20';
+    $('find-query').disabled = busy || findLoading || !ready;
+    $('refresh-find').disabled = busy || findLoading || !ready;
+    $('find-submit').disabled = busy || findLoading || !ready || !findTranscript || !configured || !$('find-query').value.trim()
+      || !Number.isInteger(limit) || limit < 1 || limit > (recommend ? 10 : 20)
+      || (recommend && (!Number.isInteger(budget) || budget < 1 || budget > 900));
+    $('find-submit-label').textContent = findRunning ? '分析中…' : recommend ? '生成建议' : '查找片段';
+    $('find-state').textContent = findLoading ? '正在读取字幕…' : findRunning ? '正在分析字幕…' : !ready ? '未选择就绪素材'
+      : !findTranscript ? '当前素材暂无字幕。' : !configured ? 'AI 服务尚未配置。' : `字幕 v${findTranscript.version}`;
+    $('find-results').querySelectorAll('button').forEach((button) => { button.disabled = busy || button.dataset.unavailable === 'true'; });
+  }
+  async function loadFindTranscript() {
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
+    if (!owner || !mediaId || selectedMedia.status !== 'READY') return;
+    const token = ++findRevision; findMediaId = mediaId; findLoading = true; syncFindControls();
+    try {
+      const item = await request(`/api/media/${mediaId}/transcript`);
+      if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== mediaId || findRevision !== token) return;
+      if (findTranscript?.id !== item.id || findTranscript?.version !== item.version) clearFindResults();
+      findTranscript = { id: item.id, version: item.version }; notice('find-error', '');
+    } catch (error) {
+      if (currentUser?.id !== owner || workspaceRevision !== revision || findRevision !== token) return;
+      if (error.status === 401) showAuth();
+      else if (error.status === 404) { findTranscript = null; clearFindResults(); }
+      else notice('find-error', error.message, true);
+    } finally { if (findRevision === token) { findLoading = false; syncFindControls(); } }
+  }
+  function findTime(ms) { return `${(ms / 1000).toFixed(3)} 秒`; }
+  function displayFindResults(result, recommend) {
+    clearFindResults(); findResult = result;
+    const items = recommend ? result.clips : result.matches;
+    notice('find-result-state', items.length ? `${items.length} 个结果 · 字幕 v${result.transcriptVersion}` : result.message || '未找到相关片段。');
+    $('find-results').replaceChildren(...items.map((item, index) => {
+      const row = document.createElement('li'); row.className = 'find-result';
+      const heading = document.createElement('div'); heading.className = 'find-result-heading';
+      const title = document.createElement('h3'); title.textContent = recommend ? item.title : `片段 ${index + 1}`;
+      const actions = document.createElement('div'); actions.className = 'find-result-actions';
+      const preview = document.createElement('button'); preview.type = 'button'; preview.className = 'icon-button';
+      preview.title = selectedMedia?.previewUrl ? '预览片段' : '当前原视频不支持直接预览'; preview.setAttribute('aria-label', `预览片段 ${index + 1}`);
+      preview.dataset.unavailable = String(!selectedMedia?.previewUrl); preview.innerHTML = '<i data-lucide="play" aria-hidden="true"></i>';
+      preview.addEventListener('click', () => previewFind(item));
+      const trim = document.createElement('button'); trim.type = 'button'; trim.className = 'icon-button'; trim.title = '带入裁切';
+      trim.setAttribute('aria-label', `裁切片段 ${index + 1}`); trim.dataset.unavailable = String(item.endMs - item.startMs < 500 || !capabilities?.supportedOperations?.includes('trim'));
+      trim.innerHTML = '<i data-lucide="scissors" aria-hidden="true"></i>';
+      const useRange = (join) => {
+        const snapshot = findResult, owner = currentUser?.id, revision = workspaceRevision, token = findRevision;
+        operation('find-error', async () => {
+          const current = await request(`/api/media/${snapshot.mediaId}/transcript`);
+          if (currentUser?.id !== owner || workspaceRevision !== revision || token !== findRevision || selectedMedia?.id !== snapshot.mediaId) return;
+          if (current.id !== snapshot.transcriptId || current.version !== snapshot.transcriptVersion) {
+            clearFindResults(); findTranscript = { id: current.id, version: current.version }; throw new ApiError('TRANSCRIPT_VERSION_CONFLICT', 409);
+          }
+          if (join) {
+            if (joinSourceId !== snapshot.mediaId) await loadJoinPlan();
+            if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== snapshot.mediaId || token !== findRevision) return;
+            const replace = !joinDirty && !pendingJoinPlan && joinRows.length === 1 && joinRows[0].start === '0' && Number(joinRows[0].end) * 1000 === selectedMedia.metadata.durationMs;
+            if (!replace && joinRows.length >= 20) throw new Error('最多添加20个片段。');
+            if (replace) joinRows = [];
+            joinRows.push(joinRow(item.startMs, item.endMs)); joinDirty = true; selectTool('join'); renderJoin(); $('join-section').scrollIntoView({ block: 'start' });
+          } else {
+            selectTool('trim'); trimSourceId = selectedMedia.id;
+            $('trim-start').value = String(item.startMs / 1000); $('trim-end').value = String(item.endMs / 1000);
+            syncMediaControls(); $('conversion-section').scrollIntoView({ block: 'start' });
+          }
+        });
+      };
+      trim.addEventListener('click', () => useRange(false));
+      const join = document.createElement('button'); join.type = 'button'; join.className = 'icon-button'; join.title = '加入拼接';
+      join.setAttribute('aria-label', `加入拼接 ${index + 1}`); join.dataset.unavailable = String(item.endMs - item.startMs < 500 || !capabilities?.supportedOperations?.includes('join_clips'));
+      join.innerHTML = '<i data-lucide="list-plus" aria-hidden="true"></i>'; join.addEventListener('click', () => useRange(true));
+      actions.append(preview, trim, join); heading.append(title, actions);
+      const range = document.createElement('p'); range.className = 'muted'; range.textContent = `${findTime(item.startMs)} 至 ${findTime(item.endMs)}`;
+      row.append(heading, range);
+      if (recommend) { const reason = document.createElement('p'); reason.textContent = item.reason; row.append(reason); }
+      const details = document.createElement('details'); details.open = index === 0;
+      const summary = document.createElement('summary'); summary.textContent = `原文 · ${item.evidence.length} 段`;
+      const quote = document.createElement('blockquote'); quote.textContent = item.evidence.map((entry) => entry.text).join('\n');
+      details.append(summary, quote); row.append(details); return row;
+    }));
+    syncFindControls(); icons();
+  }
+  function previewFind(item) {
+    if (!selectedMedia?.previewUrl || findResult?.mediaId !== selectedMedia.id) return;
+    const video = $('find-preview'); findPreviewRange = { start: item.startMs / 1000, end: item.endMs / 1000 };
+    const range = findPreviewRange;
+    notice('find-preview-error', ''); $('find-preview-range').textContent = `${findTime(item.startMs)} 至 ${findTime(item.endMs)}`;
+    $('find-preview-section').hidden = false;
+    const play = () => {
+      if (!findPreviewRange) return;
+      video.currentTime = findPreviewRange.start;
+      video.play().catch(() => { if (findPreviewRange === range) notice('find-preview-error', '片段暂时无法播放，请重试。', true); });
+    };
+    if (video.getAttribute('src') !== selectedMedia.previewUrl || video.error) {
+      video.onloadedmetadata = play; video.src = selectedMedia.previewUrl; video.load();
+    } else if (video.readyState >= 1) play();
+    else video.onloadedmetadata = play;
+  }
+  $('find-preview').addEventListener('timeupdate', () => {
+    if (findPreviewRange && $('find-preview').currentTime >= findPreviewRange.end) $('find-preview').pause();
+  });
+  $('find-preview').addEventListener('play', () => {
+    const video = $('find-preview');
+    if (findPreviewRange && (video.currentTime < findPreviewRange.start || video.currentTime >= findPreviewRange.end)) video.currentTime = findPreviewRange.start;
+  });
+  $('find-preview').addEventListener('error', () => { if (findPreviewRange) notice('find-preview-error', '原视频暂时无法播放。', true); });
+  $('find-tool').addEventListener('click', () => selectTool('find'));
+  $('refresh-find').addEventListener('click', loadFindTranscript);
+  for (const id of ['find-query', 'find-limit', 'find-budget']) $(id).addEventListener('input', () => { findRevision++; clearFindResults(); syncFindControls(); });
+  document.querySelectorAll('input[name="find-mode"]').forEach((input) => input.addEventListener('change', () => {
+    findRevision++; clearFindResults(); $('find-limit').value = findMode() === 'recommend' ? '3' : '10'; syncFindControls();
+  }));
+  $('find-form').addEventListener('submit', (event) => {
+    event.preventDefault(); if (busy || !findTranscript) return;
+    if (!window.confirm('将向 DeepSeek 发送目标和当前已保存字幕，可能产生服务费用。继续？')) return;
+    const owner = currentUser?.id, mediaId = selectedMedia.id, revision = workspaceRevision, token = ++findRevision;
+    const snapshot = findTranscript, recommend = findMode() === 'recommend';
+    operation('find-error', async () => {
+      const query = $('find-query').value.trim(); if (!query || Array.from(query).length > 500) throw new Error('目标内容需要1至500个字符。');
+      findRunning = true; clearFindResults(); syncFindControls();
+      try {
+        const body = { query, transcriptId: snapshot.id, transcriptVersion: snapshot.version, limit: Number($('find-limit').value) };
+        if (recommend) body.maxTotalDurationMs = Number($('find-budget').value) * 1000;
+        const result = await request(`/api/media/${mediaId}/${recommend ? 'clip-recommendations' : 'search'}`, { method: 'POST', body });
+        if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || findRevision !== token) return;
+        displayFindResults(result, recommend);
+      } finally { findRunning = false; syncFindControls(); }
+    });
+  });
+
+  function clearAIPlan() {
+    aiRevision++; aiPlan = null; aiSourceId = null; aiLoading = false; aiPlanDirty = false; aiGenerating = false;
+    $('ai-plan').hidden = true; $('ai-instruction').value = ''; notice('ai-error', '');
+  }
+  function syncAIControls() {
+    const ready = selectedMedia?.status === 'READY';
+    $('ai-source').textContent = ready ? selectedMedia.originalFilename : '未选择就绪素材';
+    $('ai-instruction').disabled = busy || aiLoading || !ready;
+    $('generate-ai-plan').disabled = busy || aiLoading || !ready || !capabilities?.aiPlans || !$('ai-instruction').value.trim();
+    $('refresh-ai-plan').disabled = busy || aiLoading || !ready;
+    $('execute-ai-plan').disabled = busy || aiLoading || aiPlanDirty || !ready || aiPlan?.mediaId !== selectedMedia?.id || aiPlan?.status !== 'READY';
+    $('ai-state').textContent = aiGenerating ? '正在生成方案…' : aiLoading ? '正在读取方案…' : !capabilities?.aiPlans ? 'AI 服务尚未配置。' : '';
+    $('generate-ai-label').textContent = aiGenerating ? '生成中…' : '生成方案';
+    $('ai-result-slot').hidden = !selectedTask || selectedTask.mediaId !== selectedMedia?.id || selectedTask.kind === 'TRANSCRIPTION';
+  }
+  function renderAIPlan(plan) {
+    aiPlan = plan; aiPlanDirty = false; $('ai-plan').hidden = !plan;
+    if (!plan) { syncAIControls(); return; }
+    $('ai-plan-status').textContent = plan.status === 'NEEDS_INPUT' ? '待补充' : plan.status === 'EXECUTED' ? '已执行' : '待确认';
+    $('ai-plan-status').className = 'media-status ' + (plan.status === 'READY' ? 'ready' : '');
+    $('ai-plan-summary').textContent = plan.summary;
+    const values = [], p = plan.parameters;
+    if (p) {
+      values.push(['操作', taskVerb(p.operation)], ['格式', p.outputFormat.toUpperCase()]);
+      if (p.resolutionPreset) values.push(['分辨率', p.resolutionPreset === 'source' ? '原分辨率' : '720p']);
+      if (p.operation === 'compress') values.push(['目标体积', sizeText(p.targetSizeBytes)]);
+      if (p.operation === 'trim') values.push(['保留区间', `${(p.startMs / 1000).toFixed(3)} 至 ${(p.endMs / 1000).toFixed(3)} 秒`]);
+      values.push(['音轨', p.operation === 'mute' ? '全部移除' : p.operation === 'extract_audio' ? '提取第一条音轨' : '保留']);
+    }
+    $('ai-plan-parameters').replaceChildren(...values.map(([key, value]) => {
+      const row = document.createElement('div'), label = document.createElement('dt'), detail = document.createElement('dd');
+      label.textContent = key; detail.textContent = value; row.append(label, detail); return row;
+    }));
+    $('ai-plan-questions').replaceChildren(...plan.questions.map((question) => {
+      const row = document.createElement('li'); row.textContent = question.message; return row;
+    }));
+    syncAIControls();
+  }
+  async function loadAIPlan() {
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
+    if (!owner || !mediaId || selectedMedia.status !== 'READY') return;
+    const token = ++aiRevision; aiSourceId = mediaId; aiLoading = true; syncAIControls();
+    try {
+      const result = await request(`/api/operation-plans?mediaId=${mediaId}&page=1&pageSize=10`);
+      if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== token) return;
+      const plan = result.items.find((item) => item.instruction);
+      $('ai-instruction').value = plan?.instruction || ''; renderAIPlan(plan || null); notice('ai-error', '');
+      if (plan?.taskId) {
+        const task = await request(`/api/tasks/${plan.taskId}`);
+        if (currentUser?.id === owner && selectedMedia?.id === mediaId && workspaceRevision === revision && aiRevision === token) displayTask(task);
+      }
+    } catch (error) {
+      if (currentUser?.id !== owner || workspaceRevision !== revision || aiRevision !== token) return;
+      if (error.status === 401) showAuth(); else notice('ai-error', error.message, true);
+    } finally { if (aiRevision === token) { aiLoading = false; syncAIControls(); } }
+  }
+  $('ai-tool').addEventListener('click', () => selectTool('ai'));
+  $('refresh-ai-plan').addEventListener('click', () => {
+    if (!$('ai-instruction').value || window.confirm('恢复最近保存的方案并放弃当前输入？')) loadAIPlan();
+  });
+  $('ai-instruction').addEventListener('input', () => { aiRevision++; aiPlanDirty = true; $('ai-plan').hidden = true; syncAIControls(); });
+  $('ai-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const instruction = $('ai-instruction').value.trim(), owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
+    if (!instruction || busy) return;
+    if (!window.confirm('将向 DeepSeek 发送处理要求和视频参数，可能产生服务费用。继续？')) return;
+    const token = ++aiRevision; aiSourceId = mediaId;
+    operation('ai-error', async () => {
+      if (Array.from(instruction).length > 2000) throw new Error('处理要求不能超过2000个字符。');
+      aiGenerating = true; syncAIControls();
+      try {
+        const body = aiPlan && aiPlan.status !== 'EXECUTED' ? { expectedVersion: aiPlan.version, instruction } : { mediaId, instruction };
+        const plan = await request(aiPlan && aiPlan.status !== 'EXECUTED' ? `/api/operation-plans/${aiPlan.id}` : '/api/operation-plans', {
+          method: aiPlan && aiPlan.status !== 'EXECUTED' ? 'PATCH' : 'POST', body
+        });
+        if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== token) return;
+        renderAIPlan(plan);
+      } finally { aiGenerating = false; syncAIControls(); }
+    });
+  });
+  $('execute-ai-plan').addEventListener('click', () => {
+    const plan = aiPlan, owner = currentUser?.id, token = aiRevision, revision = workspaceRevision;
+    if (busy || plan?.status !== 'READY' || plan.mediaId !== selectedMedia?.id) return;
+    operation('ai-error', async () => {
+      const task = await request(`/api/operation-plans/${plan.id}/execute`, { method: 'POST', body: { expectedVersion: plan.version } });
+      if (currentUser?.id !== owner || workspaceRevision !== revision || aiRevision !== token || selectedMedia?.id !== plan.mediaId) return;
+      renderAIPlan({ ...plan, status: 'EXECUTED', taskId: task.id }); displayTask(task); taskPage = 1; await loadTasks();
+    });
+  });
+
+  function clearSubtitle() {
+    subtitleRevision++; subtitle = null; subtitleMediaId = null; subtitleLatestVersion = 0;
+    subtitleDirty = false; subtitleLoading = false; subtitleTaskLoaded = null;
+    pendingSubtitlePlan = null; $('subtitle-result-slot').hidden = true;
+    $('subtitle-editor').hidden = true; $('subtitle-segments').replaceChildren();
+    $('download-srt').removeAttribute('href'); $('subtitle-original').checked = false;
+    notice('subtitle-error', '');
+  }
+
+  function syncSubtitleControls() {
+    const providers = capabilities?.asrProviders || [];
+    for (const option of $('asr-provider').options) option.disabled = !providers.includes(option.value);
+    if (!$('asr-provider').value || !providers.includes($('asr-provider').value)) $('asr-provider').value = providers[0] || '';
+    const task = selectedTask?.kind === 'TRANSCRIPTION' && selectedTask.mediaId === selectedMedia?.id ? selectedTask : null;
+    $('subtitle-source').textContent = selectedMedia?.originalFilename || '未选择就绪素材';
+    $('asr-provider').disabled = busy || !providers.length;
+    $('start-transcription').disabled = busy || subtitleLoading || selectedMedia?.status !== 'READY'
+      || !selectedMedia?.metadata?.hasAudio || !providers.length || taskActive(task);
+    $('transcription-label').textContent = subtitle ? '重新识别' : '识别字幕';
+    $('cancel-transcription').hidden = !taskActive(task);
+    $('cancel-transcription').disabled = busy || task?.status === 'CANCELLING';
+    $('refresh-subtitle').disabled = busy || subtitleLoading || selectedMedia?.status !== 'READY';
+    $('subtitle-state').textContent = subtitleLoading ? '正在读取字幕…'
+      : taskActive(task) ? taskStatus(task.status, 'transcribe')
+      : task?.error ? task.error.message
+      : selectedMedia?.status === 'READY' && !selectedMedia.metadata.hasAudio ? '当前素材没有音轨。'
+      : !providers.length ? '语音识别服务尚未配置。' : !subtitle ? '暂无字幕' : `${subtitle.segments.length} 段字幕`;
+    $('save-subtitle').disabled = busy || !subtitleDirty || !subtitle || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked;
+    $('subtitle-version').disabled = busy || subtitleDirty || !subtitle;
+    $('subtitle-original').disabled = busy || subtitleDirty || !subtitle;
+    $('subtitle-draft-state').textContent = subtitleDirty ? '有未保存的修改' : subtitle ? `已保存 · v${subtitle.version}` : '';
+    const readOnly = !subtitle || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked;
+    const burnTask = selectedTask?.mediaId === selectedMedia?.id && selectedTask?.parameters?.operation === 'burn_subtitles' ? selectedTask : null;
+    $('subtitle-result-slot').hidden = !burnTask;
+    $('burn-subtitle').disabled = busy || subtitleLoading || readOnly || subtitleDirty || selectedMedia?.status !== 'READY'
+      || !capabilities?.supportedOperations?.includes('burn_subtitles') || taskActive(burnTask);
+    $('burn-subtitle').title = !capabilities?.supportedOperations?.includes('burn_subtitles') ? '字幕烧录工具暂不可用' : subtitleDirty ? '请先保存字幕' : '生成字幕视频';
+    $('subtitle-segments').querySelectorAll('input, textarea').forEach((element) => { element.disabled = busy || readOnly; });
+    $('subtitle-segments').querySelectorAll('[data-correct]').forEach((element) => {
+      element.disabled = busy || readOnly || subtitleDirty || !capabilities?.subtitleCorrection;
+    });
+    $('download-srt').hidden = !subtitle || subtitleDirty;
+    if (subtitle) $('download-srt').href = `/api/transcripts/${subtitle.id}/srt?version=${$('subtitle-original').checked ? 1 : subtitle.version}`;
+  }
+
+  async function loadSubtitle(version) {
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
+    if (!owner || !mediaId || selectedMedia.status !== 'READY') return;
+    const token = ++subtitleRevision;
+    subtitleMediaId = mediaId; subtitleLoading = true; syncSubtitleControls();
+    try {
+      const result = await request(version && subtitle ? `/api/transcripts/${subtitle.id}?version=${version}` : `/api/media/${mediaId}/transcript`);
+      if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== mediaId || subtitleRevision !== token) return;
+      if (!version) subtitleLatestVersion = result.version;
+      subtitle = result; subtitleDirty = false; $('subtitle-original').checked = false;
+      $('subtitle-version').replaceChildren(...Array.from({ length: subtitleLatestVersion }, (_, index) => {
+        const option = document.createElement('option'); option.value = String(index + 1); option.textContent = `v${index + 1}`; return option;
+      }));
+      $('subtitle-version').value = String(result.version); renderSubtitle(); notice('subtitle-error', '');
+    } catch (error) {
+      if (currentUser?.id !== owner || workspaceRevision !== revision || subtitleRevision !== token) return;
+      if (error.status === 401) showAuth();
+      else if (error.status === 404) { subtitle = null; $('subtitle-editor').hidden = true; }
+      else notice('subtitle-error', error.message, true);
+    } finally {
+      if (subtitleRevision === token) { subtitleLoading = false; syncSubtitleControls(); }
+    }
+  }
+
+  function renderSubtitle() {
+    $('subtitle-editor').hidden = !subtitle;
+    if (!subtitle) return;
+    const segments = $('subtitle-original').checked ? subtitle.originalSegments : subtitle.segments;
+    $('subtitle-segments').replaceChildren(...segments.map((segment, index) => {
+      const row = document.createElement('li'); row.className = 'subtitle-segment'; row.dataset.segmentId = segment.id;
+      const number = document.createElement('span'); number.textContent = String(index + 1); row.append(number);
+      for (const [key, title] of [['startMs', '开始（秒）'], ['endMs', '结束（秒）'], ['text', '字幕']]) {
+        const label = document.createElement('label'); label.textContent = title;
+        const input = document.createElement(key === 'text' ? 'textarea' : 'input'); input.dataset.field = key;
+        input.setAttribute('aria-label', `第${index + 1}段${title}`);
+        if (key !== 'text') { input.type = 'number'; input.min = '0'; input.step = '0.001'; input.max = String(selectedMedia.metadata.durationMs / 1000); }
+        else { input.rows = 2; input.maxLength = 4000; }
+        input.value = key === 'text' ? segment.text : String(segment[key] / 1000);
+        input.addEventListener('input', () => { subtitleDirty = true; syncSubtitleControls(); });
+        label.append(input); row.append(label);
+      }
+      const correct = document.createElement('button'); correct.type = 'button'; correct.className = 'icon-button'; correct.dataset.correct = segment.id;
+      correct.title = 'DeepSeek 校对'; correct.setAttribute('aria-label', `校对第${index + 1}段`);
+      correct.innerHTML = '<i data-lucide="wand-sparkles" aria-hidden="true"></i>';
+      correct.addEventListener('click', () => {
+        if (!window.confirm('将向 DeepSeek 发送这段字幕进行校对，可能产生服务费用。继续？')) return;
+        const item = subtitle, token = subtitleRevision, owner = currentUser?.id;
+        operation('subtitle-error', async () => {
+          const suggestion = await request(`/api/transcripts/${item.id}/corrections`, {
+            method: 'POST', body: { expectedVersion: item.version, segmentId: segment.id }
+          });
+          if (currentUser?.id !== owner || subtitleRevision !== token || subtitle !== item) return;
+          row.querySelector('.subtitle-suggestion')?.remove();
+          const area = document.createElement('div'); area.className = 'subtitle-suggestion';
+          const text = document.createElement('p'); text.textContent = suggestion.correctedText;
+          const accept = document.createElement('button'); accept.type = 'button'; accept.className = 'button secondary compact';
+          accept.innerHTML = '<i data-lucide="check" aria-hidden="true"></i>采用建议';
+          accept.addEventListener('click', () => {
+            if (busy || subtitle !== item || subtitleRevision !== token) return;
+            row.querySelector('textarea').value = suggestion.correctedText; subtitleDirty = true; area.remove(); syncSubtitleControls();
+          });
+          area.append(text, accept); row.append(area); icons();
+        });
+      });
+      row.append(correct); return row;
+    }));
+    syncSubtitleControls(); icons();
+  }
+
+  $('burn-subtitle').addEventListener('click', () => {
+    if (busy || !subtitle || subtitleDirty || subtitleLoading || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked) return;
+    const item = subtitle, owner = currentUser?.id, revision = workspaceRevision;
+    if (!window.confirm(`使用已保存的字幕 v${item.version} 生成带字幕的 MP4？原视频保持不变。`)) return;
+    operation('subtitle-error', async () => {
+      const parameters = { operation: 'burn_subtitles', outputFormat: 'mp4', transcriptId: item.id, transcriptVersion: item.version, resolutionPreset: 'source', audioMode: 'keep' };
+      if (!pendingSubtitlePlan || pendingSubtitlePlan.mediaId !== item.mediaId || pendingSubtitlePlan.parameters.transcriptId !== item.id
+          || pendingSubtitlePlan.parameters.transcriptVersion !== item.version) {
+        pendingSubtitlePlan = await request('/api/operation-plans', { method: 'POST', body: { mediaId: item.mediaId, parameters } });
+      }
+      const task = await request(`/api/operation-plans/${pendingSubtitlePlan.id}/execute`, { method: 'POST', body: { expectedVersion: pendingSubtitlePlan.version } });
+      if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== item.mediaId) return;
+      pendingSubtitlePlan = null; displayTask(task); taskPage = 1; await loadTasks();
+    });
+  });
+  $('subtitle-tool').addEventListener('click', () => selectTool('subtitle'));
+  $('refresh-subtitle').addEventListener('click', () => {
+    if (!subtitleDirty || window.confirm('放弃未保存的字幕修改并刷新？')) loadSubtitle();
+  });
+  $('subtitle-version').addEventListener('change', () => loadSubtitle(Number($('subtitle-version').value)));
+  $('subtitle-original').addEventListener('change', renderSubtitle);
+  $('start-transcription').addEventListener('click', () => {
+    const vendor = $('asr-provider').value === 'aliyun' ? '阿里云百炼' : '腾讯云';
+    if (!window.confirm(`将向${vendor}发送当前素材的音轨，可能产生服务费用。${subtitle ? '重新识别会创建新字幕，原有版本仍保留。' : ''}继续？`)) return;
+    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
+    operation('subtitle-error', async () => {
+      const task = await request(`/api/media/${mediaId}/transcriptions`, {
+        method: 'POST', body: { language: 'zh-CN', force: !!subtitle, provider: $('asr-provider').value }
+      });
+      if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision) return;
+      displayTask(task); taskPage = 1; await loadTasks();
+    });
+  });
+  $('cancel-transcription').addEventListener('click', () => operation('subtitle-error', async () => {
+    if (selectedTask?.kind !== 'TRANSCRIPTION' || selectedTask.mediaId !== selectedMedia?.id) return;
+    displayTask(await request(`/api/tasks/${selectedTask.id}/cancel`, { method: 'POST' })); await loadTasks();
+  }));
+  $('save-subtitle').addEventListener('click', () => {
+    const item = subtitle, token = subtitleRevision, owner = currentUser?.id;
+    operation('subtitle-error', async () => {
+      const segments = [...$('subtitle-segments').children].map((row) => {
+        const milliseconds = (field) => {
+          const raw = row.querySelector(`[data-field="${field}"]`).value, seconds = Number(raw), ms = Math.round(seconds * 1000);
+          if (raw === '' || !Number.isSafeInteger(ms) || Math.abs(seconds - ms / 1000) > 1e-9) throw new Error('时间最多保留三位小数。');
+          return ms;
+        };
+        return { id: row.dataset.segmentId, startMs: milliseconds('startMs'), endMs: milliseconds('endMs'), text: row.querySelector('textarea').value };
+      });
+      const result = await request(`/api/transcripts/${item.id}`, { method: 'PATCH', body: { expectedVersion: item.version, segments } });
+      if (currentUser?.id !== owner || subtitleRevision !== token || subtitle !== item) return;
+      subtitleDirty = false; await loadSubtitle();
+      notice('subtitle-error', '');
+    });
+  });
+  window.addEventListener('beforeunload', (event) => { if (subtitleDirty || joinDirty) { event.preventDefault(); event.returnValue = ''; } });
 
   function taskActive(task) { return task && ['QUEUED', 'RUNNING', 'CANCELLING'].includes(task.status); }
   function taskStatus(status, operation) {
     const verb = taskVerb(operation);
     return ({ QUEUED: '排队中', RUNNING: verb + '中', CANCELLING: '取消中', CANCELLED: '已取消', SUCCEEDED: '已完成', FAILED: verb + '失败' })[status] || status;
   }
-  function taskVerb(operation) { return operation === 'extract_audio' ? '提取' : operation === 'compress' ? '压缩' : '转换'; }
-  function taskFormat(parameters) { return parameters?.operation === 'extract_audio' ? 'MP3' : `MP4 · ${parameters?.resolutionPreset === '720p' ? '720p' : '原分辨率'}`; }
+  function taskVerb(operation) { return operation === 'join_clips' ? '拼接' : operation === 'burn_subtitles' ? '字幕烧录' : operation === 'transcribe' ? '识别' : operation === 'mute' ? '静音' : operation === 'trim' ? '裁切' : operation === 'extract_audio' ? '提取' : operation === 'compress' ? '压缩' : '转换'; }
+  function taskFormat(parameters) {
+    if (parameters?.operation === 'join_clips') return `MP4 · ${parameters.clips.length}段 · ${(parameters.clips.reduce((sum, clip) => sum + clip.endMs - clip.startMs, 0) / 1000).toFixed(3)} 秒`;
+    if (parameters?.operation === 'burn_subtitles') return `MP4 · 字幕 v${parameters.transcriptVersion}`;
+    if (parameters?.operation === 'trim') return `MP4 · ${(parameters.startMs / 1000).toFixed(3)}-${(parameters.endMs / 1000).toFixed(3)} 秒`;
+    return parameters?.operation === 'extract_audio' ? 'MP3' : `MP4 · ${parameters?.resolutionPreset === '720p' ? '720p' : '原分辨率'}`;
+  }
   function displayTask(task) {
     selectedTask = task;
+    if (task.kind === 'TRANSCRIPTION') {
+      $('conversion-result').hidden = true;
+      if (task.mediaId === selectedMedia?.id && task.status === 'SUCCEEDED' && task.transcript
+          && subtitleTaskLoaded !== task.id && !subtitleDirty && !subtitleLoading) {
+        subtitleTaskLoaded = task.id; loadSubtitle();
+      }
+      syncMediaControls(); return;
+    }
     $('conversion-result').hidden = false;
     $('task-status').textContent = taskStatus(task.status, task.parameters?.operation);
     $('task-status').className = 'media-status ' + (task.status === 'SUCCEEDED' ? 'ready' : task.status === 'FAILED' ? 'failed' : '');
-    const stage = ({ WAITING: '等待处理', TRANSCODING: '正在' + taskVerb(task.parameters?.operation), VERIFYING: '正在校验文件', DONE: '文件已就绪', CANCELLED: '任务已取消', FAILED: '任务未完成' })[task.stage] || task.stage;
+    const stage = ({ WAITING: '等待处理', TRANSCODING: '正在' + taskVerb(task.parameters?.operation), VERIFYING: '正在校验文件', DONE: task.outputs.length ? '文件已就绪' : '无可用结果', CANCELLED: '任务已取消', FAILED: '任务未完成' })[task.stage] || task.stage;
     $('task-stage').textContent = `${task.id.slice(0, 8)} · ${taskFormat(task.parameters)} · ${stage}`;
     notice('task-error', task.error?.message || '', true);
     $('cancel-task').hidden = !taskActive(task);
     const result = task.status === 'SUCCEEDED' ? task.outputs[0] : null;
+    $('output-empty').hidden = task.status !== 'SUCCEEDED' || !!result;
     const audioResult = result?.contentType === 'audio/mpeg';
     $('compression-stats').hidden = !result || task.parameters?.operation !== 'compress';
     $('compression-stats').textContent = result && task.parameters?.operation === 'compress'
@@ -712,6 +1485,7 @@
     $('audio-stats').textContent = audioResult ? `${(result.metadata.durationMs / 1000).toFixed(2)} 秒 · ${sizeText(result.sizeBytes)}` : '';
     $('download-label').textContent = audioResult ? '下载 MP3' : '下载 MP4';
     $('download-output').hidden = !result;
+    $('delete-output').hidden = !result;
     if (result) { $('download-output').href = result.downloadUrl; $('download-output').setAttribute('download', result.filename); }
     else $('download-output').removeAttribute('href');
     syncMediaControls();
@@ -736,12 +1510,26 @@
         const button = document.createElement('button'); button.type = 'button';
         const icon = document.createElement('i'); icon.setAttribute('data-lucide', task.parameters?.operation === 'extract_audio' ? 'file-audio' : 'file-video'); icon.setAttribute('aria-hidden', 'true');
         const name = document.createElement('span'); name.className = 'file-name';
-        const title = document.createElement('span'); title.textContent = `${taskVerb(task.parameters?.operation)} ${taskFormat(task.parameters)}`;
+        const title = document.createElement('span'); title.textContent = task.kind === 'TRANSCRIPTION' ? '语音转字幕' : `${taskVerb(task.parameters?.operation)} ${taskFormat(task.parameters)}`;
         const time = document.createElement('small'); time.textContent = `${task.id.slice(0, 8)} · ${new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(task.createdAt))}`;
         name.append(title, time);
         const size = document.createElement('span'); size.className = 'file-size'; size.textContent = task.outputs[0] ? sizeText(task.outputs[0].sizeBytes) : '';
-        const status = document.createElement('span'); status.className = 'media-status ' + (task.status === 'SUCCEEDED' ? 'ready' : task.status === 'FAILED' ? 'failed' : ''); status.textContent = taskStatus(task.status, task.parameters?.operation);
-        button.append(icon, name, size, status); button.addEventListener('click', () => { selectTool(task.parameters?.operation === 'extract_audio' ? 'audio' : task.parameters?.operation === 'compress' ? 'compress' : 'convert'); displayTask(task); });
+        const status = document.createElement('span'); status.className = 'media-status ' + (task.status === 'SUCCEEDED' ? 'ready' : task.status === 'FAILED' ? 'failed' : ''); status.textContent = taskStatus(task.status, task.kind === 'TRANSCRIPTION' ? 'transcribe' : task.parameters?.operation);
+        button.append(icon, name, size, status); button.addEventListener('click', () => {
+          if (task.kind === 'TRANSCRIPTION' || task.parameters?.operation === 'burn_subtitles' || task.parameters?.operation === 'join_clips') {
+            operation('task-list-error', async () => {
+              const source = await request(`/api/media/${task.mediaId}`);
+              if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+              displayMedia(source);
+              if (selectedMedia?.id !== source.id) return;
+              if (task.parameters?.operation === 'join_clips') {
+                selectTool('join'); joinRevision++; joinLoading = false; joinSourceId = task.mediaId;
+                joinRows = task.parameters.clips.map((clip) => joinRow(clip.startMs, clip.endMs)); joinDirty = false; pendingJoinPlan = null; renderJoin();
+              } else selectTool('subtitle');
+              displayTask(task);
+            });
+          } else { selectTool(task.parameters?.operation === 'mute' ? 'mute' : task.parameters?.operation === 'trim' ? 'trim' : task.parameters?.operation === 'extract_audio' ? 'audio' : task.parameters?.operation === 'compress' ? 'compress' : 'convert'); displayTask(task); }
+        });
         row.append(button); return row;
       }));
       const chosen = result.items.find((task) => task.id === selectedTask?.id);
@@ -774,7 +1562,11 @@
       if (selectedMedia?.status !== 'READY') throw new Error('当前素材尚未就绪。');
       const mediaId = selectedMedia.id;
       const resolution = $('conversion-resolution').value;
-      const parameters = processingOperation === 'extract_audio' ? { operation: 'extract_audio', outputFormat: 'mp3' }
+      const range = trimRange();
+      if (processingOperation === 'trim' && !range.valid) throw new Error('区间需至少0.5秒，且不超过素材时长。');
+      const parameters = processingOperation === 'trim' ? { operation: 'trim', outputFormat: 'mp4', startMs: range.startMs, endMs: range.endMs, audioMode: 'keep' }
+        : processingOperation === 'extract_audio' ? { operation: 'extract_audio', outputFormat: 'mp3' }
+        : processingOperation === 'mute' ? { operation: 'mute', outputFormat: 'mp4', resolutionPreset: resolution }
         : { operation: processingOperation, outputFormat: 'mp4', resolutionPreset: resolution, audioMode: 'keep' };
       if (processingOperation === 'extract_audio' && !selectedMedia.metadata?.hasAudio) throw new Error('素材没有可提取的音轨。');
       if (processingOperation === 'compress') {
@@ -784,7 +1576,8 @@
       }
       // Retain the plan on an uncertain execute response so another click cannot enqueue a duplicate task.
       if (!pendingPlan || pendingPlan.mediaId !== mediaId || pendingPlan.parameters.resolutionPreset !== parameters.resolutionPreset
-          || pendingPlan.parameters.operation !== parameters.operation || pendingPlan.parameters.targetSizeBytes !== parameters.targetSizeBytes) {
+          || pendingPlan.parameters.operation !== parameters.operation || pendingPlan.parameters.targetSizeBytes !== parameters.targetSizeBytes
+          || pendingPlan.parameters.startMs !== parameters.startMs || pendingPlan.parameters.endMs !== parameters.endMs) {
         pendingPlan = await request('/api/operation-plans', { method: 'POST', body: { mediaId,
           parameters } });
       }
@@ -796,6 +1589,31 @@
     if (!selectedTask) return;
     displayTask(await request(`/api/tasks/${selectedTask.id}/cancel`, { method: 'POST' })); await loadTasks();
   }));
+  function closeOutputDelete() { $('delete-output-dialog').close(); deletingOutput = null; }
+  $('delete-output').addEventListener('click', () => {
+    const result = selectedTask?.outputs[0];
+    if (busy || !result) return;
+    deletingOutput = { id: result.id, owner: currentUser.id };
+    $('delete-output-name').textContent = result.filename; notice('delete-output-error', '');
+    $('delete-output-dialog').showModal(); $('cancel-delete-output').focus();
+  });
+  $('close-delete-output').addEventListener('click', closeOutputDelete);
+  $('cancel-delete-output').addEventListener('click', closeOutputDelete);
+  $('delete-output-dialog').addEventListener('cancel', (event) => { if (busy) event.preventDefault(); else deletingOutput = null; });
+  $('delete-output-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (busy || !deletingOutput) return;
+    const item = deletingOutput;
+    operation('delete-output-error', async () => {
+      await request(`/api/outputs/${item.id}`, { method: 'DELETE' });
+      if (currentUser?.id !== item.owner) return;
+      workspaceRevision++;
+      if (selectedTask) displayTask({ ...selectedTask, outputs: selectedTask.outputs.filter((result) => result.id !== item.id) });
+      closeOutputDelete(); await loadTasks();
+      notice('account-notice', '结果已删除，原素材和处理记录已保留。');
+      $('refresh-tasks').focus();
+    });
+  });
   $('refresh-tasks').addEventListener('click', loadTasks);
   $('task-prev').addEventListener('click', () => { if (taskPage > 1) { taskPage--; loadTasks(); } });
   $('task-next').addEventListener('click', () => { if (taskPage * 10 < taskTotal) { taskPage++; loadTasks(); } });

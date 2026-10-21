@@ -17,6 +17,7 @@ import org.springframework.util.unit.DataSize;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class PropertiesBindingTests {
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
@@ -45,7 +46,9 @@ class PropertiesBindingTests {
             var media = context.getBean(MediaProperties.class);
             var capabilities = new SystemServiceImpl(context.getBean(AuthProperties.class), media,
                     mock(RegistrationMailSender.class), mock(org.example.ai_media_workbench.service.MediaProbe.class),
-                    mock(org.example.ai_media_workbench.service.MediaTranscoder.class)).getCapabilities();
+                    mock(org.example.ai_media_workbench.service.MediaTranscoder.class), mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),
+                    mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),mock(org.example.ai_media_workbench.service.OperationPlanner.class),
+                    mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class)).getCapabilities();
             assertThat(capabilities.registration()).isFalse();
             assertThat(capabilities.maxUploadBytes()).isEqualTo(DataSize.ofMegabytes(16).toBytes());
             assertThat(capabilities.maxDurationMs()).isEqualTo(Duration.ofMinutes(3).toMillis());
@@ -53,6 +56,23 @@ class PropertiesBindingTests {
             assertThat(context.getBean(AccountCleanupProperties.class).enabled()).isFalse();
             assertThat(capabilities.aiPlans()).isFalse();
             assertThat(capabilities.mediaTool()).isFalse();
+            var analyzer=mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class);
+            when(analyzer.isAvailable(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+            var textOnly=new SystemServiceImpl(context.getBean(AuthProperties.class),media,
+                    mock(RegistrationMailSender.class),mock(org.example.ai_media_workbench.service.MediaProbe.class),
+                    mock(org.example.ai_media_workbench.service.MediaTranscoder.class),mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),
+                    mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),mock(org.example.ai_media_workbench.service.OperationPlanner.class),analyzer).getCapabilities();
+            assertThat(textOnly.semanticSearch()).isTrue();
+            assertThat(textOnly.clipRecommendations()).isTrue();
+            assertThat(textOnly.mediaTool()).isFalse();
+            var videoProbe=mock(org.example.ai_media_workbench.service.MediaProbe.class);
+            var burnTool=mock(org.example.ai_media_workbench.service.MediaTranscoder.class);
+            when(videoProbe.isAvailable()).thenReturn(true); when(burnTool.isSubtitleBurnAvailable()).thenReturn(true);
+            var burnOnly=new SystemServiceImpl(context.getBean(AuthProperties.class),media,mock(RegistrationMailSender.class),videoProbe,burnTool,
+                    mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),
+                    mock(org.example.ai_media_workbench.service.OperationPlanner.class),mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class)).getCapabilities();
+            assertThat(burnOnly.supportedOperations()).containsExactly("burn_subtitles");
+            assertThat(burnOnly.asr()).isFalse();
         });
     }
 

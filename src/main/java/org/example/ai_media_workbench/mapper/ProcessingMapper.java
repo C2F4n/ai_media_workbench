@@ -36,6 +36,9 @@ public interface ProcessingMapper {
     int finish(@Param("task") TaskEntity task, @Param("cutoff") LocalDateTime cutoff);
     void insertOutput(OutputEntity output);
     OutputEntity output(@Param("userId") String userId, @Param("id") String id);
+    /** 删除专用查询，包含已逻辑删除记录，不要求磁盘文件仍存在。 */
+    OutputEntity lockOutputIncludingDeleted(@Param("userId") String userId, @Param("id") String id);
+    void markOutputDeleted(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
     List<OutputEntity> taskOutputs(@Param("userId") String userId, @Param("taskId") String taskId);
     List<OutputEntity> outputs(@Param("userId") String userId, @Param("mediaId") String mediaId,
                                @Param("offset") long offset, @Param("limit") int limit);

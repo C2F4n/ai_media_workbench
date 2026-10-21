@@ -16,7 +16,9 @@ public class SystemController {
 
     /** 获取当前可用功能及上传限制。 */
     @GetMapping("/capabilities")
-    public Result<CapabilitiesVO> capabilities() {
-        return Result.success(systemService.getCapabilities());
+    public Result<CapabilitiesVO> capabilities(@org.springframework.security.core.annotation.AuthenticationPrincipal org.example.ai_media_workbench.common.security.AccountPrincipal user,
+                                              jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control","no-store");
+        return Result.success(systemService.getCapabilities(user==null ? null : user.userId()));
     }
 }

@@ -14,6 +14,9 @@ import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters.ClipRange;
 import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
 import org.example.ai_media_workbench.mapper.ProcessingMapper;
 import org.example.ai_media_workbench.service.*;
@@ -39,6 +42,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.JsonNode;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -64,6 +68,7 @@ class ProcessingIntegrationTests {
     @Autowired MediaService mediaService;
     @MockitoBean MediaProbe probe;
     @MockitoBean MediaTranscoder transcoder;
+    @MockitoBean OperationPlanner planner;
     private static final String PASSWORD = "Testing-2026!";
     private static final byte[] OUTPUT = "verified-output-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     private final MediaMetadataVO metadata = new MediaMetadataVO("mov,mp4", 1200, 160, 90, "h264", false, null);
@@ -433,6 +438,342 @@ class ProcessingIntegrationTests {
         assertThat(mapper.countTasks(owner.id(),null)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_cleanup_job WHERE user_id=?",Integer.class,owner.id())).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM media_task WHERE media_id=? AND deleted_at IS NULL",Integer.class,mediaId)).isZero();
+    }
+
+    @Test void trimPlansAreVersionedAndPublishOnlyTheSelectedDuration() throws Exception {
+        Browser owner=login(),other=login(); String mediaId=source(owner);
+        var input=trimInput(mediaId,100,800);
+        var created=mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(input))).andExpect(status().isCreated())
+                .andExpect(jsonPath("data.parameters.startMs").value(100)).andReturn();
+        String id=data(created).path("id").asText();
+        mvc.perform(patch("/api/operation-plans/"+id).cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("expectedVersion",1,"parameters",trimInput(mediaId,200,900).parameters()))))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.version").value(2));
+        execute(owner,id,1).andExpect(status().isConflict());
+        String task=data(execute(owner,id,2).andExpect(status().isAccepted()).andReturn()).path("id").asText();
+        execute(owner,id,2).andExpect(jsonPath("data.id").value(task));
+        when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov",700,160,90,"h264",false,null));
+        worker.runOne(); var result=processing.task(owner.id(),task);
+        assertThat(result.parameters()).isEqualTo(new TrimParameters("trim","mp4",200,900,"keep"));
+        assertThat(json.valueToTree(result.parameters()).size()).isEqualTo(5);
+        assertThat(result.status().name()).isEqualTo("SUCCEEDED");
+        var output=result.outputs().getFirst(); assertThat(output.filename()).endsWith("-trimmed.mp4");
+        assertThat(output.metadata().durationMs()).isEqualTo(700);
+        assertPreview(owner,output.id(),"bytes=0-3",206,java.util.Arrays.copyOfRange(OUTPUT,0,4));
+        mvc.perform(get("/api/outputs/"+output.id()+"/download").cookie(other.cookie())).andExpect(status().isNotFound());
+        assertThat(mediaService.get(owner.id(),mediaId).metadata().durationMs()).isEqualTo(1200);
+    }
+
+    @Test void trimRejectsInvalidNumericRangesExtraFieldsAndMissingCodecsBeforeEnqueueing() throws Exception {
+        Browser owner=login(); String mediaId=source(owner);
+        for(Object[] values:List.of(new Object[]{-1,800},new Object[]{100,500},new Object[]{700,700},new Object[]{900,800},
+                new Object[]{0,1201},new Object[]{0.5,800},new Object[]{"0",800},new Object[]{0,new java.math.BigInteger("9223372036854775808")})) {
+            var parameters=new java.util.HashMap<String,Object>();
+            parameters.put("operation","trim"); parameters.put("outputFormat","mp4"); parameters.put("audioMode","keep");
+            parameters.put("startMs",values[0]); parameters.put("endMs",values[1]);
+            mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId",mediaId,"parameters",parameters))))
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("INVALID_PARAMETERS"));
+        }
+        var extra=json.valueToTree(trimInput(mediaId,0,500));
+        ((tools.jackson.databind.node.ObjectNode)extra.path("parameters")).put("resolutionPreset","720p");
+        mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(extra))).andExpect(status().isUnprocessableEntity());
+        when(transcoder.isAvailable()).thenReturn(false);
+        mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(trimInput(mediaId,0,500))))
+                .andExpect(status().isServiceUnavailable());
+        assertThat(mapper.countPlans(owner.id(),null)).isZero(); assertThat(mapper.countTasks(owner.id(),null)).isZero();
+    }
+
+    @Test void failedTrimVerificationAndCancellationNeverPublishPartialFiles() throws Exception {
+        Browser owner=login(); String mediaId=source(owner); var input=trimInput(mediaId,100,700);
+        var bad=processing.execute(owner.id(),processing.create(owner.id(),input).id(),1);
+        worker.runOne(); assertThat(processing.task(owner.id(),bad.id()).error().code()).isEqualTo("TRIM_FAILED");
+        assertThat(mapper.taskOutputs(owner.id(),bad.id())).isEmpty();
+        var cancelled=processing.execute(owner.id(),processing.create(owner.id(),input).id(),1);
+        doAnswer(call->{
+            Files.write(call.getArgument(1,Path.class),OUTPUT); processing.cancel(owner.id(),cancelled.id());
+            throw new BusinessException(ErrorCode.TASK_CANCELLED);
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        worker.runOne(); assertThat(processing.task(owner.id(),cancelled.id()).status().name()).isEqualTo("CANCELLED");
+        try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
+    }
+
+    @Test void trimCanFinishWithoutAudioInTheSelectedIntervalButCannotPublishAfterSourceDeletion() throws Exception {
+        Browser owner=login(); String mediaId=audioSource(owner); var input=trimInput(mediaId,600,1200);
+        when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov",600,160,90,"h264",false,null));
+        var task=processing.execute(owner.id(),processing.create(owner.id(),input).id(),1); worker.runOne();
+        assertThat(processing.task(owner.id(),task.id()).outputs().getFirst().metadata().hasAudio()).isFalse();
+        var removed=processing.execute(owner.id(),processing.create(owner.id(),input).id(),1);
+        doAnswer(call->{
+            Files.write(call.getArgument(1,Path.class),OUTPUT); mediaService.delete(owner.id(),mediaId);
+            assertThat(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue();
+            return null;
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        worker.runOne(); assertThat(mapper.taskOutputs(owner.id(),removed.id())).isEmpty();
+        assertThat(mapper.task(owner.id(),removed.id())).isNull(); assertThat(mapper.activeCount()).isZero();
+    }
+
+    @Test void mutePlansAreVersionedIdempotentAndPublishPrivateSilentMp4WithoutChangingSource() throws Exception {
+        Browser owner = login(), other = login(); String mediaId = audioSource(owner);
+        var created = mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(muteInput(mediaId, "source"))))
+                .andExpect(status().isCreated()).andExpect(jsonPath("data.summary").value("MP4 / 原分辨率 / 移除音轨")).andReturn();
+        String id = data(created).path("id").asText();
+        mvc.perform(patch("/api/operation-plans/" + id).cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("expectedVersion", 1, "parameters", muteInput(mediaId, "720p").parameters()))))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.version").value(2));
+        execute(owner, id, 1).andExpect(status().isConflict());
+        String task = data(execute(owner, id, 2).andExpect(status().isAccepted()).andReturn()).path("id").asText();
+        execute(owner, id, 2).andExpect(jsonPath("data.id").value(task));
+        worker.runOne(); var result = processing.task(owner.id(), task);
+        assertThat(result.status().name()).isEqualTo("SUCCEEDED");
+        assertThat(json.valueToTree(result.parameters()).size()).isEqualTo(3);
+        assertThat(json.valueToTree(result.parameters()).has("audioMode")).isFalse();
+        var output = result.outputs().getFirst(); assertThat(output.filename()).endsWith("-muted.mp4");
+        assertThat(output.metadata().hasAudio()).isFalse(); assertThat(output.metadata().audioCodec()).isNull();
+        assertThat(output.metadata().durationMs()).isEqualTo(1200);
+        assertPreview(owner, output.id(), "bytes=0-3", 206, java.util.Arrays.copyOfRange(OUTPUT, 0, 4));
+        mvc.perform(get("/api/outputs/" + output.id() + "/download").cookie(other.cookie())).andExpect(status().isNotFound());
+        assertThat(mediaService.get(owner.id(), mediaId).metadata().hasAudio()).isTrue();
+        assertThat(mapper.countTasks(owner.id(), null)).isEqualTo(1);
+    }
+
+    @Test void muteRejectsExtraFieldsWrongFormatsOwnershipAndMissingToolsBeforeEnqueue() throws Exception {
+        Browser owner = login(), other = login(); String mediaId = source(owner);
+        for (var parameters : List.of(Map.of("operation", "mute", "outputFormat", "mp3", "resolutionPreset", "source"),
+                Map.of("operation", "mute", "outputFormat", "mp4", "resolutionPreset", "1080p"),
+                Map.of("operation", "mute", "outputFormat", "mp4", "resolutionPreset", "source", "audioMode", "keep"),
+                Map.of("operation", "mute", "outputFormat", "mp4"))) {
+            mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId", mediaId, "parameters", parameters))))
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("INVALID_PARAMETERS"));
+        }
+        mvc.perform(post("/api/operation-plans").cookie(other.cookie()).header("X-CSRF-Token", other.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(muteInput(mediaId, "source"))))
+                .andExpect(status().isNotFound());
+        when(transcoder.isAvailable()).thenReturn(false);
+        mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(muteInput(mediaId, "source"))))
+                .andExpect(status().isServiceUnavailable());
+        assertThat(mapper.countPlans(owner.id(), null)).isZero(); assertThat(mapper.countTasks(owner.id(), null)).isZero();
+    }
+
+    @Test void muteVerificationRejectsAnyAudioAndCancellationDiscardsThePartialFile() throws Exception {
+        Browser owner = login(); String mediaId = audioSource(owner); var input = muteInput(mediaId, "source");
+        when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov", 1200, 160, 90, "h264", true, "aac"));
+        var bad = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1); worker.runOne();
+        assertThat(processing.task(owner.id(), bad.id()).error().code()).isEqualTo("MUTE_FAILED");
+        assertThat(mapper.taskOutputs(owner.id(), bad.id())).isEmpty();
+        var cancelled = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1);
+        doAnswer(call -> {
+            Files.write(call.getArgument(1, Path.class), OUTPUT); processing.cancel(owner.id(), cancelled.id());
+            throw new BusinessException(ErrorCode.TASK_CANCELLED);
+        }).when(transcoder).convert(any(), any(), any(), any(), any());
+        worker.runOne(); assertThat(processing.task(owner.id(), cancelled.id()).status().name()).isEqualTo("CANCELLED");
+        try (var files = Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
+    }
+
+    @Test void muteAcceptsSilentSourcesButCannotPublishAfterSourceDeletion() throws Exception {
+        Browser owner = login(); String mediaId = source(owner); var input = muteInput(mediaId, "source");
+        var task = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1); worker.runOne();
+        assertThat(processing.task(owner.id(), task.id()).status().name()).isEqualTo("SUCCEEDED");
+        var removed = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1);
+        doAnswer(call -> {
+            Files.write(call.getArgument(1, Path.class), OUTPUT); mediaService.delete(owner.id(), mediaId);
+            assertThat(call.getArgument(4, java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue(); return null;
+        }).when(transcoder).convert(any(), any(), any(), any(), any());
+        worker.runOne(); assertThat(mapper.taskOutputs(owner.id(), removed.id())).isEmpty();
+        assertThat(mapper.activeCount()).isZero();
+    }
+
+    @Test void naturalLanguagePlansRequireConfirmationAndUseExistingVersionedTasks() throws Exception {
+        Browser owner=login(); String mediaId=source(owner);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            var context=call.getArgument(1,OperationPlanner.Context.class);
+            assertThat(context.metadata().durationMs()).isEqualTo(1200);
+            assertThat(context.supportedOperations()).contains("trim","compress","mute").doesNotContain("extract_audio");
+            return new OperationPlanner.Proposal(json.valueToTree(new TrimParameters("trim","mp4",0L,1000L,"keep")),List.of());
+        });
+        var result=mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId",mediaId,"instruction","截取前1秒"))))
+                .andExpect(status().isCreated()).andExpect(jsonPath("data.status").value("READY"))
+                .andExpect(jsonPath("data.instruction").value("截取前1秒")).andExpect(jsonPath("data.parameters.endMs").value(1000)).andReturn();
+        String planId=data(result).path("id").asText();
+        assertThat(mapper.taskForPlan(owner.id(),planId)).isNull();
+        assertThat(processing.plan(owner.id(),planId).instruction()).isEqualTo("截取前1秒");
+        var first=processing.execute(owner.id(),planId,1); var repeated=processing.execute(owner.id(),planId,1);
+        assertThat(repeated.id()).isEqualTo(first.id());
+        assertThat(first.parameters()).isInstanceOf(TrimParameters.class);
+        assertThatThrownBy(()->processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"改成静音")))
+                .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.RESOURCE_CONFLICT));
+        verify(planner,times(1)).propose(anyString(),any(),anyString());
+    }
+
+    @Test void ambiguousRequestsPersistFixedQuestionsAndCanBeCompletedWithoutCallingAiAgain() throws Exception {
+        Browser owner=login(); String mediaId=source(owner);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(planner.propose(anyString(),any(),anyString())).thenReturn(new OperationPlanner.Proposal(null,List.of(OperationPlanner.Question.TARGET_SIZE_REQUIRED)));
+        var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"压小一点"));
+        assertThat(plan.status().name()).isEqualTo("NEEDS_INPUT"); assertThat(plan.parameters()).isNull();
+        assertThat(plan.questions().getFirst().code()).isEqualTo("TARGET_SIZE_REQUIRED");
+        assertThat(processing.plan(owner.id(),plan.id()).questions()).isEqualTo(plan.questions());
+        assertThatThrownBy(()->processing.execute(owner.id(),plan.id(),1)).isInstanceOf(BusinessException.class);
+        var completed=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,json.valueToTree(new org.example.ai_media_workbench.dto.processing.MuteParameters("mute","mp4","source")),null));
+        assertThat(completed.version()).isEqualTo(2); assertThat(completed.status().name()).isEqualTo("READY");
+        assertThat(completed.instruction()).isNull(); assertThat(completed.questions()).isEmpty();
+        verify(planner,times(1)).propose(anyString(),any(),anyString());
+    }
+
+    @Test void aiPlanUpdatesReceivePreviousParametersButRejectVersionsChangedWhileWaiting() throws Exception {
+        Browser owner=login(); String mediaId=source(owner); String planId=create(owner,mediaId);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
+            assertThat(call.getArgument(1,OperationPlanner.Context.class).previousParameters().operation()).isEqualTo("transcode");
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,json.valueToTree(new org.example.ai_media_workbench.dto.processing.MuteParameters("mute","mp4","source")),null));
+            return new OperationPlanner.Proposal(json.valueToTree(new TrimParameters("trim","mp4",0L,1000L,"keep")),List.of());
+        });
+        assertThatThrownBy(()->processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"改成前1秒")))
+                .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.PLAN_VERSION_CONFLICT));
+        var preserved=processing.plan(owner.id(),planId); assertThat(preserved.version()).isEqualTo(2);
+        assertThat(preserved.parameters().operation()).isEqualTo("mute");
+    }
+
+    @Test void cloudWaitingDoesNotBlockSourceDeletionAndCannotResurrectAPlan() throws Exception {
+        Browser owner=login(); String mediaId=source(owner);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            try(var executor=Executors.newSingleThreadExecutor()) {
+                executor.submit(()->mediaService.delete(owner.id(),mediaId)).get(2,java.util.concurrent.TimeUnit.SECONDS);
+            }
+            return new OperationPlanner.Proposal(json.valueToTree(new org.example.ai_media_workbench.dto.processing.MuteParameters("mute","mp4","source")),List.of());
+        });
+        assertThatThrownBy(()->processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"移除声音")))
+                .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.RESOURCE_NOT_FOUND));
+        assertThat(mapper.countPlans(owner.id(),mediaId)).isZero();
+    }
+
+    @Test void malformedAiParametersNeverCreatePlansOrTasksAndOwnershipIsCheckedBeforeBilling() throws Exception {
+        Browser owner=login(), other=login(); String mediaId=source(owner);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        for(String value:List.of("{\"operation\":\"shell\",\"command\":\"x\"}",
+                "{\"operation\":\"mute\",\"outputFormat\":\"mp4\",\"resolutionPreset\":\"source\",\"outputPath\":\"outside.mp4\"}",
+                "{\"operation\":\"trim\",\"outputFormat\":\"mp4\",\"startMs\":0,\"endMs\":999999,\"audioMode\":\"keep\"}",
+                "{\"operation\":\"trim\",\"outputFormat\":\"mp4\",\"startMs\":0.5,\"endMs\":1000,\"audioMode\":\"keep\"}",
+                "{\"operation\":\"extract_audio\",\"outputFormat\":\"mp3\"}")) {
+            when(planner.propose(anyString(),any(),anyString())).thenReturn(new OperationPlanner.Proposal(json.readTree(value),List.of()));
+            mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId",mediaId,"instruction","test"))))
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("AI_PLAN_FAILED"));
+        }
+        assertThat(mapper.countPlans(owner.id(),mediaId)).isZero(); assertThat(mapper.activeCount()).isZero();
+        clearInvocations(planner);
+        mvc.perform(post("/api/operation-plans").cookie(other.cookie()).header("X-CSRF-Token",other.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId",mediaId,"instruction","mute"))))
+                .andExpect(status().isNotFound());
+        verifyNoInteractions(planner);
+    }
+
+    @Test void invalidAiUpdatePreservesTheExistingPlanAndItsVersion() throws Exception {
+        Browser owner=login(); String mediaId=source(owner); String planId=create(owner,mediaId);
+        when(planner.isAvailable(anyString())).thenReturn(true);
+        when(planner.propose(anyString(),any(),anyString())).thenThrow(new BusinessException(ErrorCode.AI_PLAN_FAILED));
+        assertThatThrownBy(()->processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"test")))
+                .isInstanceOf(BusinessException.class);
+        assertThat(processing.plan(owner.id(),planId).version()).isEqualTo(1);
+        assertThat(processing.plan(owner.id(),planId).parameters().operation()).isEqualTo("transcode");
+        assertThat(processing.plan(owner.id(),planId).instruction()).isNull();
+    }
+
+    private CreatePlanRequest muteInput(String mediaId, String resolution) {
+        return new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(
+                new org.example.ai_media_workbench.dto.processing.MuteParameters("mute", "mp4", resolution)), null);
+    }
+
+    @Test void clipJoinFreezesOrderedParametersReusesOneTaskAndCleansPrivatePartsBeforePublishing() throws Exception {
+        var owner=login(); var other=login(); String mediaId=source(owner);
+        var input=joinInput(mediaId,List.of(new ClipRange(600,1200),new ClipRange(0,600)));
+        var created=mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input))).andExpect(status().isCreated()).andReturn();
+        String id=data(created).path("id").asText(); assertThat(data(created).path("parameters").path("clips").get(0).path("startMs").asLong()).isEqualTo(600);
+        String taskId=data(execute(owner,id,1).andExpect(status().isAccepted()).andReturn()).path("id").asText();
+        execute(owner,id,1).andExpect(jsonPath("data.id").value(taskId)); execute(other,id,1).andExpect(status().isNotFound());
+        doAnswer(call->{
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            Path target=call.getArgument(1); Files.write(target,OUTPUT);
+            Files.writeString(Path.of(target+".join-0.mp4"),"private part"); Files.writeString(Path.of(target+".join.ffconcat"),"private manifest"); return null;
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        worker.runOne(); var done=processing.task(owner.id(),taskId); assertThat(done.status().name()).isEqualTo("SUCCEEDED");
+        assertThat(done.outputs().getFirst().filename()).endsWith("-joined.mp4");
+        assertThat(((JoinClipsParameters)done.parameters()).clips()).containsExactly(new ClipRange(600,1200),new ClipRange(0,600));
+        try(var files=Files.walk(root.resolve(owner.id()))) { assertThat(files.filter(path->path.toString().contains(".join")).toList()).isEmpty(); }
+        var download=mvc.perform(get(done.outputs().getFirst().downloadUrl()).cookie(owner.cookie())).andExpect(request().asyncStarted()).andReturn();
+        mvc.perform(asyncDispatch(download)).andExpect(status().isOk()).andExpect(content().bytes(OUTPUT));
+        mvc.perform(get(done.outputs().getFirst().previewUrl()).cookie(other.cookie())).andExpect(status().isNotFound());
+    }
+
+    @Test void invalidJoinCountsRangesTotalsAndUnexpectedJsonAreRejectedWithoutEnqueuing() throws Exception {
+        var owner=login(); String id=source(owner);
+        for(var clips:List.of(List.<ClipRange>of(),List.of(new ClipRange(0,499)),List.of(new ClipRange(-1,600)),List.of(new ClipRange(0,1201)),
+                List.of(new ClipRange(Long.MIN_VALUE,Long.MAX_VALUE)),java.util.Collections.nCopies(21,new ClipRange(0,600))))
+            assertThatThrownBy(()->processing.create(owner.id(),joinInput(id,clips))).isInstanceOf(BusinessException.class);
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",900000,160,90,"h264",false,null)),id);
+        assertThatThrownBy(()->processing.create(owner.id(),joinInput(id,java.util.Collections.nCopies(20,new ClipRange(0,60000)))))
+                .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.INVALID_PARAMETERS));
+        var valid=joinInput(id,List.of(new ClipRange(0,600)));
+        for(String clip:List.of("{\"startMs\":0.5,\"endMs\":600}","{\"startMs\":\"0\",\"endMs\":600}","{\"startMs\":0,\"endMs\":600,\"path\":\"outside.mp4\"}")) {
+            var node=json.readTree("{\"operation\":\"join_clips\",\"outputFormat\":\"mp4\",\"audioMode\":\"keep\",\"clips\":["+clip+"]}");
+            mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(new CreatePlanRequest(UUID.fromString(id),node,null))))
+                    .andExpect(status().isUnprocessableEntity());
+        }
+        mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(valid)))
+                .andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM media_task WHERE user_id=?",Integer.class,owner.id())).isZero();
+    }
+
+    @Test void joinCancellationDeletionAndVerificationFailureCannotPublishPartialResults() throws Exception {
+        var owner=login(); String id=source(owner);
+        var plan=processing.create(owner.id(),joinInput(id,List.of(new ClipRange(0,600)))); var bad=processing.execute(owner.id(),plan.id(),1);
+        worker.runOne(); assertThat(processing.task(owner.id(),bad.id()).error().code()).isEqualTo("CLIP_JOIN_FAILED");
+        var second=processing.create(owner.id(),joinInput(id,List.of(new ClipRange(0,600),new ClipRange(600,1200))));
+        var cancelled=processing.execute(owner.id(),second.id(),1);
+        doAnswer(call->{
+            Path target=call.getArgument(1); Files.write(target,OUTPUT); Files.writeString(Path.of(target+".join-0.mp4"),"part");
+            processing.cancel(owner.id(),cancelled.id()); assertThat(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue(); return null;
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        worker.runOne(); assertThat(processing.task(owner.id(),cancelled.id()).status().name()).isEqualTo("CANCELLED");
+        var third=processing.create(owner.id(),joinInput(id,List.of(new ClipRange(0,600)))); var deleted=processing.execute(owner.id(),third.id(),1);
+        doAnswer(call->{
+            Path target=call.getArgument(1); Files.write(target,OUTPUT); Files.writeString(Path.of(target+".join-0.mp4"),"part");
+            mediaService.delete(owner.id(),id); return null;
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        worker.runOne(); assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM output_file WHERE task_id IN (?,?,?)",Integer.class,bad.id(),cancelled.id(),deleted.id())).isZero();
+        try(var files=Files.walk(root.resolve(owner.id()))) { assertThat(files.filter(path->path.toString().endsWith(".mp4") || path.toString().contains(".join")).toList()).isEmpty(); }
+    }
+
+    @Test void expiredJoinLeaseRemovesEveryKnownPartAndManifestBeforeClearingItsToken() throws Exception {
+        var owner=login(); String id=source(owner); var plan=processing.create(owner.id(),joinInput(id,List.of(new ClipRange(0,600))));
+        var task=processing.execute(owner.id(),plan.id(),1); String token=UUID.randomUUID().toString();
+        mapper.claim(task.id(),token,LocalDateTime.now().minusDays(1)); var target=storage.createOutput(owner.id(),task.id(),token,"mp4");
+        for(String suffix:LocalMediaStorage.JOIN_SUFFIXES) Files.writeString(Path.of(target.path()+suffix),"private cache");
+        worker.runOne(); assertThat(processing.task(owner.id(),task.id()).error().code()).isEqualTo("TASK_INTERRUPTED");
+        assertThat(Files.exists(target.path())).isFalse();
+        for(String suffix:LocalMediaStorage.JOIN_SUFFIXES) assertThat(Files.exists(Path.of(target.path()+suffix))).isFalse();
+    }
+
+    private CreatePlanRequest joinInput(String mediaId,List<ClipRange> clips) {
+        return new CreatePlanRequest(UUID.fromString(mediaId),json.valueToTree(new JoinClipsParameters("join_clips","mp4",clips,"keep")),null);
+    }
+
+    private CreatePlanRequest trimInput(String mediaId,long start,long end) {
+        return new CreatePlanRequest(UUID.fromString(mediaId),json.valueToTree(new TrimParameters("trim","mp4",start,end,"keep")),null);
     }
 
     private String audioSource(Browser owner) {

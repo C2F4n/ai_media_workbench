@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI音视频工作台接口文档",
-    "version": "2.4.0",
-    "description": "轻量版契约，共52个接口。登录后直接使用功能，不创建项目或分类；素材直接归属当前用户，处理方案关联素材、结果关联任务。所有业务JSON统一Result<T>。登录使用Spring Session JDBC的HttpOnly AMW_SESSION会话Cookie，不是JWT，写请求校验CSRF；注册前邮箱验证保留。已实现与规划接口由x-implementation-status区分，具体范围见API.md。2.0为破坏性调整，删除项目接口及projectId，不创建隐式默认项目。 当前已实现28个接口：账号、素材上传检测与删除、明确参数MP4转换、压缩和MP3音频提取、持久化任务与取消、结果预览和下载；其他能力仍为规划。"
+    "version": "2.14.0",
+    "description": "轻量版契约，共55个接口，41个已实现。登录后直接使用功能，不创建项目或分类；素材直接归属用户。所有业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly AMW_SESSION会话Cookie，不是JWT，写请求校验CSRF。支持账号/注册邮箱验证、素材检测预览删除、转换压缩裁切静音MP3提取、明确参数或自然语言版本方案、持久化任务与结果管理、云端字幕编辑/SRT/单句校对。2.12新增明确参数字幕烧录，生成带字幕的H.264/AAC MP4，不新增接口或表；绑定当前字幕ID/版本，入队后使用不可变历史稿。支持字幕检索和片段建议，同源多段剪辑已在2.13通过join_clips明确参数方案实现，无新增接口或表。跨素材、拼接字幕重映射和clip-drafts管理仍为规划。云端配置不代表真实效果或费用已验收。 2.14新增按用户加密保存的腾讯/百炼/DeepSeek凭据（个人/站点/停用），不回显秘密，调用失败不回退公共额度；capabilities按登录用户计算。"
   },
   "servers": [
     {
@@ -48,6 +48,339 @@
     }
   ],
   "paths": {
+    "/api/users/me/cloud-credentials": {
+      "get": {
+        "tags": [
+          "用户"
+        ],
+        "operationId": "listCloudCredentials",
+        "summary": "查询本人三个云端供应商配置状态",
+        "description": "只操作会话当前用户，三种来源互斥；缺省SERVER。PERSONAL失败不回退站点。秘密加密保存且不回显，不进入任务/方案/日志。保存不发起付费校验；删除或切换不能撤回已发送请求。",
+        "responses": {
+          "200": {
+            "description": "保存或查询成功；不回显秘密，configured仅表示本地配置完整。",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Result"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "SUCCESS"
+                          ]
+                        },
+                        "data": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 3,
+                          "items": {
+                            "$ref": "#/components/schemas/CloudCredential"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "x-implementation-status": "IMPLEMENTED"
+      }
+    },
+    "/api/users/me/cloud-credentials/{provider}": {
+      "put": {
+        "tags": [
+          "用户"
+        ],
+        "operationId": "saveCloudCredential",
+        "summary": "保存本人云端凭据或切换来源",
+        "description": "只操作会话当前用户，三种来源互斥；缺省SERVER。PERSONAL失败不回退站点。秘密加密保存且不回显，不进入任务/方案/日志。保存不发起付费校验；删除或切换不能撤回已发送请求。 写入默认每用户5分钟20次。省略/null个人字段保留旧值；显式空密钥无效；不接受其他供应商字段及自定义URL。SERVER/OFF清除个人密文。",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "tencent",
+                "aliyun",
+                "deepseek"
+              ]
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "先GET /api/auth/csrf获取；登录后使用旋转令牌。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveCloudCredentialRequest"
+              },
+              "example": {
+                "expectedVersion": 0,
+                "mode": "PERSONAL",
+                "apiKey": "sk-example-not-real",
+                "model": "deepseek-flash"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存或查询成功；不回显秘密，configured仅表示本地配置完整。",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Result"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "SUCCESS"
+                          ]
+                        },
+                        "data": {
+                          "$ref": "#/components/schemas/CloudCredential"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "description": "CLOUD_CREDENTIALS_CONFLICT：expectedVersion已过期，刷新后重试。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultError"
+                }
+              }
+            }
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedContentType"
+          },
+          "422": {
+            "$ref": "#/components/responses/InvalidParameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "description": "CLOUD_CREDENTIALS_UNAVAILABLE：主密钥或密文不可读取，不回退站点额度。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultError"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation-status": "IMPLEMENTED"
+      },
+      "delete": {
+        "tags": [
+          "用户"
+        ],
+        "operationId": "deleteCloudCredential",
+        "summary": "清除本人该供应商的密钥并停用",
+        "description": "只操作会话当前用户，三种来源互斥；缺省SERVER。PERSONAL失败不回退站点。秘密加密保存且不回显，不进入任务/方案/日志。保存不发起付费校验；删除或切换不能撤回已发送请求。 删除保留OFF状态和递增版本；需要公共额度时显式PUT SERVER。",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "tencent",
+                "aliyun",
+                "deepseek"
+              ]
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "先GET /api/auth/csrf获取；登录后使用旋转令牌。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteCloudCredentialRequest"
+              },
+              "example": {
+                "expectedVersion": 1
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存或查询成功；不回显秘密，configured仅表示本地配置完整。",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Result"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "SUCCESS"
+                          ]
+                        },
+                        "data": {
+                          "$ref": "#/components/schemas/CloudCredential"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "description": "CLOUD_CREDENTIALS_CONFLICT：expectedVersion已过期，刷新后重试。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultError"
+                }
+              }
+            }
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedContentType"
+          },
+          "422": {
+            "$ref": "#/components/responses/InvalidParameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "description": "CLOUD_CREDENTIALS_UNAVAILABLE：主密钥或密文不可读取，不回退站点额度。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultError"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation-status": "IMPLEMENTED"
+      }
+    },
     "/api/media/{mediaId}": {
       "get": {
         "tags": [
@@ -131,7 +464,7 @@
                           "hasAudio": true,
                           "audioCodec": "aac"
                         },
-                        "previewUrl": null,
+                        "previewUrl": "/api/media/22222222-2222-4222-8222-222222222222/preview",
                         "error": null,
                         "createdAt": "2026-10-14T03:00:00Z",
                         "updatedAt": "2026-10-14T03:00:00Z",
@@ -257,7 +590,7 @@
         ],
         "operationId": "previewMedia",
         "summary": "预览可播放的原素材",
-        "description": "流式返回已支持浏览器播放的MP4或MP3。鉴权后支持单段Range（含开放结尾/后缀），非法语法或多段Range忽略返回200；越界416。SRT无播放器预览。",
+        "description": "已实现。只预览本人READY视频，检测容器为MP4/MOV族、视频H.264、音轨AAC或无音轨；不按扩展名判断，不即时转码。当前不开放MKV/WebM、其他编码或音频原素材。鉴权成功后检查归属、状态、受控路径及文件字节数；非本人/已删除404，未就绪、不兼容、文件丢失或大小变化409 MEDIA_PREVIEW_UNAVAILABLE。成功video/mp4原字节流，Cache-Control:no-store、inline文件名，支持单段Range（含开放结尾/后缀），非法语法或多段Range忽略返回200，越界416及Result。刷新/选择历史素材可播放；列表刷新不重置同一地址的播放位置，失败可重新加载。已发送的数据不能追回。",
         "parameters": [
           {
             "name": "mediaId",
@@ -312,12 +645,6 @@
                   "type": "string",
                   "format": "binary"
                 }
-              },
-              "audio/mpeg": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
-                }
               }
             }
           },
@@ -361,12 +688,6 @@
                   "type": "string",
                   "format": "binary"
                 }
-              },
-              "audio/mpeg": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
-                }
               }
             }
           },
@@ -389,7 +710,7 @@
             "$ref": "#/components/responses/InternalError"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/operation-plans/{planId}": {
@@ -399,7 +720,7 @@
         ],
         "operationId": "updateOperationPlan",
         "summary": "修改待确认方案并增加版本",
-        "description": "expectedVersion须匹配，parameters完整替换并增加版本。已执行方案不可修改；本轮instruction返回503 AI_UNAVAILABLE且不修改方案。",
+        "description": "READY/NEEDS_INPUT方案可修改，expectedVersion必须匹配；已执行方案不可修改。parameters完整替换，或instruction结合当前参数重新生成，成功版本+1，失败不改变旧方案/版本。云端等待不占用事务或账号锁，落库前再次检查素材、账号和方案版本；期间被修改409 PLAN_VERSION_CONFLICT，删除404，账号注销401。信息不足可变为NEEDS_INPUT；用户补充后可重新READY，仍需显式确认执行。非法模型参数422 AI_PLAN_FAILED，不运行任意命令。 明确parameters另支持burn_subtitles六字段，按BurnSubtitleParameters校验；要求本人素材最新字幕ID/版本，跨素材或非本人404，改稿/重识别409 TRANSCRIPT_VERSION_CONFLICT，工具缺少503 SUBTITLE_BURN_UNAVAILABLE。入队后字幕版本冻结，重复execute仍复用任务。 明确参数支持join_clips四字段，1至20段，每段至少500ms，所有区间在源素材内，总时长不超过900000ms；数组顺序即输出顺序。无草稿资源，参数在入队后冻结；不接收跨素材或字幕参数。",
         "parameters": [
           {
             "name": "planId",
@@ -545,22 +866,18 @@
           "422": {
             "$ref": "#/components/responses/InvalidParameters"
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
           "503": {
-            "description": "工具不可用、队列已满或AI未开放；具体原因见code。",
+            "description": "AI未配置(AI_UNAVAILABLE)、文字请求并发已满(AI_BUSY)，或相关处理工具不可用。",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResultError"
-                },
-                "example": {
-                  "code": "TRANSCODE_UNAVAILABLE",
-                  "message": "工具不可用、队列已满或AI未开放；具体原因见code。",
-                  "data": null,
-                  "requestId": "req-error",
-                  "details": []
                 }
               }
             }
@@ -637,7 +954,7 @@
         ],
         "operationId": "executeOperationPlan",
         "summary": "确认方案版本并幂等创建任务",
-        "description": "首次执行仅接受READY方案。数据库约束一个planId最多一个任务；任务记录参数快照并冻结方案。同一版本重复请求返回同一任务：运行中202，终态200。不同版本409；队列满503且方案保持READY。失败重试必须新建方案。 CANCELLING也属于活动任务；只有READY可首次执行，版本检查与冻结应原子完成。",
+        "description": "首次执行仅接受READY方案。数据库约束一个planId最多一个任务；任务记录参数快照并冻结方案。同一版本重复请求返回同一任务：运行中202，终态200。不同版本409；队列满503且方案保持READY。失败重试必须新建方案。 CANCELLING也属于活动任务；只有READY可首次执行，版本检查与冻结应原子完成。 明确parameters另支持burn_subtitles六字段，按BurnSubtitleParameters校验；要求本人素材最新字幕ID/版本，跨素材或非本人404，改稿/重识别409 TRANSCRIPT_VERSION_CONFLICT，工具缺少503 SUBTITLE_BURN_UNAVAILABLE。入队后字幕版本冻结，重复execute仍复用任务。 明确参数支持join_clips四字段，1至20段，每段至少500ms，所有区间在源素材内，总时长不超过900000ms；数组顺序即输出顺序。无草稿资源，参数在入队后冻结；不接收跨素材或字幕参数。",
         "parameters": [
           {
             "name": "planId",
@@ -1318,10 +1635,14 @@
         ],
         "operationId": "getCapabilities",
         "summary": "查询实际能力与限制",
+        "description": "匿名仅报告站点能力，登录后按本人三种凭据来源计算；Cache-Control:no-store。登录或修改配置后应重新查询，不能跨用户缓存。配置不等于远程验收。",
         "security": [],
         "responses": {
           "200": {
             "description": "真实配置状态。",
+            "headers": {
+              "Cache-Control": { "schema": { "type": "string", "enum": ["no-store"] } }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1362,8 +1683,12 @@
                     "supportedOperations": [
                       "transcode",
                       "compress",
+                      "trim",
+                      "mute",
                       "extract_audio"
-                    ]
+                    ],
+                    "asrProviders": [],
+                    "subtitleCorrection": false
                   },
                   "requestId": "req-capabilities",
                   "details": []
@@ -2972,12 +3297,13 @@
               },
               "example": {
                 "language": "zh-CN",
-                "force": false
+                "force": false,
+                "provider": "tencent"
               }
             }
           }
         },
-        "description": "需READY且有音轨。活动转写请求返回同任务；已有字幕且force=false为409；force=true成功后切换最新稿，失败保留旧稿及历史快照。队列满与ASR未配置均503，按code区分。",
+        "description": "需本人READY且有音轨。provider为tencent或aliyun，省略为tencent；force省略为false。活动转写返回同任务；已有字幕且force=false为409 TRANSCRIPT_ALREADY_EXISTS。force=true成功后创建新字幕并切换最新稿，失败保留旧稿与历史版本。云端按需付费，提交前应征得用户同意；不自动切换供应商或重试付费调用。每用户默认5分钟最多10次新提交，活动任务复用不扣次数。共享有界任务队列，单实例串行；默认总预算5分钟、租约7分钟，超时/取消/删除后不得发布迟到结果。私有临时音频为64kbps、16kHz单声道MP3，不作为用户结果发布，完成后清理。",
         "responses": {
           "202": {
             "description": "转写已受理。",
@@ -3028,7 +3354,7 @@
                     "transcript": null,
                     "status": "QUEUED",
                     "stage": "WAITING",
-                    "progressPercent": 0,
+                    "progressPercent": null,
                     "outputs": [],
                     "error": null,
                     "createdAt": "2026-10-14T03:00:00Z",
@@ -3062,11 +3388,14 @@
           "422": {
             "$ref": "#/components/responses/InvalidParameters"
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
           "503": {
-            "description": "ASR服务未配置(ASR_UNAVAILABLE)，或队列已满(TASK_QUEUE_FULL)。",
+            "description": "识别服务未配置/音频工具不可用(ASR_UNAVAILABLE)，或队列已满(QUEUE_FULL)。",
             "content": {
               "application/json": {
                 "schema": {
@@ -3076,7 +3405,7 @@
             }
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/media/{mediaId}/transcript": {
@@ -3169,7 +3498,7 @@
             "$ref": "#/components/responses/InternalError"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/transcripts/{transcriptId}": {
@@ -3271,7 +3600,7 @@
             "$ref": "#/components/responses/InternalError"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       },
       "patch": {
         "tags": [
@@ -3320,7 +3649,7 @@
             }
           }
         },
-        "description": "全量替换segments；保留原稿。段ID唯一，0<=start<end<=素材时长，时间有序不重叠。成功版本+1，旧索引失效。",
+        "description": "全量替换segments；expectedVersion冲突409 TRANSCRIPT_VERSION_CONFLICT。原稿及历史版本不变。1至3000段，ID唯一，整毫秒0<=start<end<=素材时长，按时间排序且不重叠。文本1至2000码点，归一化换行、去首尾空白，禁止空白段、空行或控制字符（换行/tab除外），整个segments序列化JSON最多2MiB。素材删除/账号注销后当前及历史字幕不可访问。",
         "responses": {
           "200": {
             "description": "新版本。",
@@ -3405,7 +3734,7 @@
             "$ref": "#/components/responses/InternalError"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/transcripts/{transcriptId}/srt": {
@@ -3437,7 +3766,7 @@
         ],
         "responses": {
           "200": {
-            "description": "UTF-8 SRT；attachment下载；时间格式HH:MM:SS,mmm。",
+            "description": "UTF-8、CRLF SRT原始字节，attachment下载、Cache-Control:no-store；时间格式HH:MM:SS,mmm。省略version为当前版本，version=1为原始识别稿；错误仍返回Result。",
             "headers": {
               "Content-Disposition": {
                 "schema": {
@@ -3468,7 +3797,7 @@
             "$ref": "#/components/responses/InternalError"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/transcripts/{transcriptId}/corrections": {
@@ -3477,7 +3806,7 @@
           "字幕"
         ],
         "operationId": "createCorrection",
-        "summary": "生成AI字幕校对建议",
+        "summary": "DeepSeek单句字幕校对建议",
         "parameters": [
           {
             "name": "transcriptId",
@@ -3503,28 +3832,19 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CorrectionRequest"
+                "$ref": "#/components/schemas/CorrectTranscriptRequest"
               },
               "example": {
                 "expectedVersion": 1,
-                "instruction": "检查错字，不改变原意"
+                "segmentId": "77777777-7777-4777-8777-777777777777"
               }
             }
           }
         },
-        "description": "只生成建议，不直接改稿；不得篡改原文或编造内容。",
+        "description": "只校对当前已保存版本中的一个segmentId，不接收客户端原文、时间轴或任意提示词。expectedVersion冲突409，非本人/段不存在404，调用前后检查版本与归属。最多35秒，验证模型JSON和文本边界，不执行指令、不自动改稿。每用户默认5分钟20次。200只返回瞬时建议，不创建correction资源；用户确认后通过PATCH字幕保存新版本。规划中的GET /api/corrections/{correctionId}及apply接口仍未实现，不能用于本接口建议。",
         "responses": {
-          "201": {
-            "description": "待确认建议。",
-            "headers": {
-              "Location": {
-                "required": true,
-                "schema": {
-                  "type": "string"
-                },
-                "example": "/api/corrections/88888888-8888-4888-8888-888888888888"
-              }
-            },
+          "200": {
+            "description": "单句建议，未保存，不改变字幕版本或时间轴。",
             "content": {
               "application/json": {
                 "schema": {
@@ -3542,7 +3862,7 @@
                           ]
                         },
                         "data": {
-                          "$ref": "#/components/schemas/Correction"
+                          "$ref": "#/components/schemas/TranscriptCorrection"
                         }
                       }
                     }
@@ -3552,18 +3872,11 @@
                   "code": "SUCCESS",
                   "message": "Success",
                   "data": {
-                    "id": "88888888-8888-4888-8888-888888888888",
                     "transcriptId": "66666666-6666-4666-8666-666666666666",
-                    "baseVersion": 1,
-                    "suggestions": [
-                      {
-                        "segmentId": "77777777-7777-4777-8777-777777777777",
-                        "originalText": "这个产品适合在室内使用。",
-                        "suggestedText": "这个产品适合室内使用。",
-                        "reason": "精简表达，请对照原音频确认。"
-                      }
-                    ],
-                    "createdAt": "2026-10-14T03:00:00Z"
+                    "version": 1,
+                    "segmentId": "77777777-7777-4777-8777-777777777777",
+                    "originalText": "这个产品适合在室内使用。",
+                    "correctedText": "这个产品适合在室内使用。"
                   },
                   "requestId": "req-correction",
                   "details": []
@@ -3589,6 +3902,12 @@
           "415": {
             "$ref": "#/components/responses/UnsupportedContentType"
           },
+          "422": {
+            "$ref": "#/components/responses/InvalidParameters"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
@@ -3596,7 +3915,7 @@
             "$ref": "#/components/responses/AIUnavailable"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/corrections/{correctionId}": {
@@ -3850,12 +4169,13 @@
               "example": {
                 "query": "哪里提到使用限制",
                 "transcriptVersion": 1,
-                "limit": 10
+                "limit": 10,
+                "transcriptId": "66666666-6666-4666-8666-666666666666"
               }
             }
           }
         },
-        "description": "限定素材与字幕版本；版本冲突或索引未就绪409。未找到返回200 matches=[]。evidence逐字对应真实字幕和时间。",
+        "description": "已实现，需要登录及CSRF。绑定当前素材的最新transcriptId和transcriptVersion，二者都必须匹配；修改或重识别后409 TRANSCRIPT_VERSION_CONFLICT，调用前后重查归属和版本，非本人/删除404。不依赖向量索引，不新增表或任务；仅分析完整已保存字幕，最多600段且segments序列化UTF-8 JSON不超过128KiB，超出422 TRANSCRIPT_ANALYSIS_TOO_LARGE，不截断。DeepSeek仅选择连续字幕段ID，后端重建全部真实原文与首尾时间；伪造ID、重叠区间或非法输出422 AI_ANALYSIS_FAILED。两种模式共享每用户默认5分钟20次；与方案/校对共享2个云端并发槽、35秒超时，不自动重试。未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY，限流429。结果按score降序，score只是AI相关度排序参考，不是准确率。没找到返回200 matches=[]；标题式理解仍需用户判断。",
         "responses": {
           "200": {
             "description": "有原文依据的结果。",
@@ -3925,19 +4245,46 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "$ref": "#/components/responses/ResourceConflict"
+            "description": "字幕身份或版本不再是当前最新：TRANSCRIPT_VERSION_CONFLICT。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
           },
           "415": {
             "$ref": "#/components/responses/UnsupportedContentType"
+          },
+          "422": {
+            "description": "INVALID_PARAMETERS：请求边界不合法；TRANSCRIPT_ANALYSIS_TOO_LARGE：超过600段或128KiB；AI_ANALYSIS_FAILED：模型返回无效、重叠或超预算结果。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
           "503": {
-            "$ref": "#/components/responses/AIUnavailable"
+            "description": "AI_UNAVAILABLE：DeepSeek未配置；AI_BUSY：两个共享文字请求槽已占用。配置不代表供应商可达、权限或余额正常。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/media/{mediaId}/clip-recommendations": {
@@ -3978,12 +4325,13 @@
                 "query": "整理产品使用限制",
                 "transcriptVersion": 1,
                 "maxTotalDurationMs": 60000,
-                "limit": 3
+                "limit": 3,
+                "transcriptId": "66666666-6666-4666-8666-666666666666"
               }
             }
           }
         },
-        "description": "推荐供用户确认，不直接执行。总时长不超请求限制；没找到返回clips=[]。",
+        "description": "已实现，需要登录及CSRF。绑定当前素材的最新transcriptId和transcriptVersion，二者都必须匹配；修改或重识别后409 TRANSCRIPT_VERSION_CONFLICT，调用前后重查归属和版本，非本人/删除404。不依赖向量索引，不新增表或任务；仅分析完整已保存字幕，最多600段且segments序列化UTF-8 JSON不超过128KiB，超出422 TRANSCRIPT_ANALYSIS_TOO_LARGE，不截断。DeepSeek仅选择连续字幕段ID，后端重建全部真实原文与首尾时间；伪造ID、重叠区间或非法输出422 AI_ANALYSIS_FAILED。两种模式共享每用户默认5分钟20次；与方案/校对共享2个云端并发槽、35秒超时，不自动重试。未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY，限流429。每个连续区间至少500ms；sum(endMs-startMs)不超过maxTotalDurationMs，包含区间内静音/字幕间隙；超预算拒绝而非截断。没找到返回200 clips=[]。title/reason由AI生成，须用户复核。页面可预览和带入已有单段裁切表单，不自动执行，不创建clip-draft或多段导出。",
         "responses": {
           "200": {
             "description": "推荐片段。",
@@ -4054,19 +4402,46 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "$ref": "#/components/responses/ResourceConflict"
+            "description": "字幕身份或版本不再是当前最新：TRANSCRIPT_VERSION_CONFLICT。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
           },
           "415": {
             "$ref": "#/components/responses/UnsupportedContentType"
+          },
+          "422": {
+            "description": "INVALID_PARAMETERS：请求边界不合法；TRANSCRIPT_ANALYSIS_TOO_LARGE：超过600段或128KiB；AI_ANALYSIS_FAILED：模型返回无效、重叠或超预算结果。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
           "503": {
-            "$ref": "#/components/responses/AIUnavailable"
+            "description": "AI_UNAVAILABLE：DeepSeek未配置；AI_BUSY：两个共享文字请求槽已占用。配置不代表供应商可达、权限或余额正常。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/clip-drafts/{draftId}": {
@@ -4613,7 +4988,7 @@
             "description": "先GET /api/auth/csrf获取；登录后使用旋转令牌。"
           }
         ],
-        "description": "标记删除立即停止访问，异步清理。原素材和任务历史保留；Task.outputs移除已删结果，终态保持；活动任务引用中409。",
+        "description": "已实现，需要登录及CSRF，无请求体。事务内逻辑删除一个本人MP4/MP3结果并保存持久化清理任务，成功200 Result.success()。详情、预览、下载立即404，列表及Task.outputs排除该结果；原素材、方案和任务记录保留，任务仍为SUCCEEDED。本人重复请求幂等200，包括结果此前随素材删除；不存在或他人资源404。即使磁盘文件已丢失也可删除。物理文件后台清理，失败有界重试，200不表示已释放磁盘。不会删除其他结果，也不会自动重新执行旧方案；重新生成应创建新方案。",
         "responses": {
           "200": {
             "description": "成功，统一返回Result，data为null。",
@@ -4644,9 +5019,6 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "409": {
-            "$ref": "#/components/responses/ResourceConflict"
-          },
           "415": {
             "$ref": "#/components/responses/UnsupportedContentType"
           },
@@ -4654,7 +5026,7 @@
             "$ref": "#/components/responses/InternalError"
           }
         },
-        "x-implementation-status": "PLANNED"
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/auth/registration-email-code": {
@@ -4991,7 +5363,7 @@
         ],
         "operationId": "createOperationPlan",
         "summary": "按明确参数或自然语言创建方案",
-        "description": "已实现明确参数transcode、compress和extract_audio。前两者输出MP4，source或720p，保留音轨；extract_audio只提供operation=extract_audio、outputFormat=mp3，固定第一条音轨，192kbps、44.1kHz、双声道，无音轨422 SOURCE_HAS_NO_AUDIO。compress要求整数targetSizeBytes，至少32768字节、小于原文件且不超过输出上限；目标不可达422 COMPRESSION_TARGET_UNREACHABLE。缺少MP3编码器503 AUDIO_EXTRACTION_UNAVAILABLE，其他工具不可用503 TRANSCODE_UNAVAILABLE；自然语言503 AI_UNAVAILABLE。其他操作或额外参数422。",
+        "description": "已实现明确参数或DeepSeek自然语言生成方案，parameters/instruction恰好一个。仅支持transcode、compress、trim、mute、extract_audio单步操作；参数格式与素材边界同对应参数Schema。自然语言只发送要求、元信息/字节数/工具列表，不发送视频、音轨、文件名或路径。模型输出再经白名单、类型、时长/体积/音轨校验；非法结果422 AI_PLAN_FAILED且不落库。信息不足返回NEEDS_INPUT、parameters=null及固定questions，不入队。READY方案也不会自动执行，须用户检查参数后调用execute。默认每用户5分钟20次生成、与校对共用最多2个云端文字请求、35秒超时，不自动重试。AI未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY；明确参数不依赖云端。云端等待不持有数据库事务/锁，落库前重新检查账号、素材，删除/注销后不保存迟到结果。 明确parameters另支持burn_subtitles六字段，按BurnSubtitleParameters校验；要求本人素材最新字幕ID/版本，跨素材或非本人404，改稿/重识别409 TRANSCRIPT_VERSION_CONFLICT，工具缺少503 SUBTITLE_BURN_UNAVAILABLE。入队后字幕版本冻结，重复execute仍复用任务。 明确参数支持join_clips四字段，1至20段，每段至少500ms，所有区间在源素材内，总时长不超过900000ms；数组顺序即输出顺序。无草稿资源，参数在入队后冻结；不接收跨素材或字幕参数。",
         "parameters": [
           {
             "name": "X-CSRF-Token",
@@ -5046,6 +5418,28 @@
                     "parameters": {
                       "operation": "extract_audio",
                       "outputFormat": "mp3"
+                    }
+                  }
+                },
+                "mute": {
+                  "value": {
+                    "mediaId": "22222222-2222-4222-8222-222222222222",
+                    "parameters": {
+                      "operation": "mute",
+                      "outputFormat": "mp4",
+                      "resolutionPreset": "source"
+                    }
+                  }
+                },
+                "trim": {
+                  "value": {
+                    "mediaId": "22222222-2222-4222-8222-222222222222",
+                    "parameters": {
+                      "operation": "trim",
+                      "outputFormat": "mp4",
+                      "startMs": 1250,
+                      "endMs": 2250,
+                      "audioMode": "keep"
                     }
                   }
                 }
@@ -5125,13 +5519,13 @@
                         "mediaId": "22222222-2222-4222-8222-222222222222",
                         "version": 1,
                         "status": "NEEDS_INPUT",
-                        "instruction": "尽量压到20MB以内",
+                        "instruction": "压小一点",
                         "parameters": null,
-                        "summary": "需要修改处理要求。",
+                        "summary": "请补充处理要求",
                         "questions": [
                           {
-                            "code": "UNSUPPORTED_REQUEST",
-                            "message": "阶段A暂不支持目标体积压缩，请修改为MP4转换或720p预设。"
+                            "code": "TARGET_SIZE_REQUIRED",
+                            "message": "请补充压缩后的目标体积，例如20MB。"
                           }
                         ],
                         "warnings": [],
@@ -5168,22 +5562,18 @@
           "422": {
             "$ref": "#/components/responses/InvalidParameters"
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
           "503": {
-            "description": "工具不可用、队列已满或AI未开放；具体原因见code。",
+            "description": "AI未配置(AI_UNAVAILABLE)、文字请求并发已满(AI_BUSY)，或相关处理工具不可用。",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResultError"
-                },
-                "example": {
-                  "code": "TRANSCODE_UNAVAILABLE",
-                  "message": "工具不可用、队列已满或AI未开放；具体原因见code。",
-                  "data": null,
-                  "requestId": "req-error",
-                  "details": []
                 }
               }
             }
@@ -5703,6 +6093,146 @@
   },
   "components": {
     "schemas": {
+      "CloudCredential": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "mode",
+          "version",
+          "configured",
+          "personalStored"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "tencent",
+              "aliyun",
+              "deepseek"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "SERVER",
+              "PERSONAL",
+              "OFF"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "无记录为0；每次写入递增，用于expectedVersion。"
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "本地格式完整且可读取；不代表远端网络、权限、余额已验证。"
+          },
+          "personalStored": {
+            "type": "boolean",
+            "description": "仍保存个人密文，解密失败时也为true。"
+          },
+          "appId": {
+            "type": "string",
+            "nullable": true,
+            "description": "仅个人腾讯配置返回。"
+          },
+          "workspaceId": {
+            "type": "string",
+            "nullable": true,
+            "description": "仅个人百炼配置返回。"
+          },
+          "model": {
+            "type": "string",
+            "nullable": true,
+            "description": "仅DeepSeek返回模型名。"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "SaveCloudCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedVersion",
+          "mode"
+        ],
+        "description": "PERSONAL仅接收当前供应商字段。腾讯appId/secretId/secretKey；百炼apiKey/workspaceId；DeepSeek apiKey/model。省略或null保留旧值；未有旧值时DeepSeek模型默认deepseek-flash，workspaceId可空，其余必需。SERVER/OFF不得附带凭据字段。",
+        "properties": {
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "SERVER",
+              "PERSONAL",
+              "OFF"
+            ]
+          },
+          "appId": {
+            "type": "string",
+            "maxLength": 20,
+            "pattern": "^[0-9]{1,20}$",
+            "nullable": true
+          },
+          "secretId": {
+            "type": "string",
+            "maxLength": 128,
+            "writeOnly": true,
+            "description": "不回显；省略/null保留旧值，首次保存必填，显式空串不合法。",
+            "pattern": "^[A-Za-z0-9]{1,128}$",
+            "nullable": true
+          },
+          "secretKey": {
+            "type": "string",
+            "maxLength": 256,
+            "writeOnly": true,
+            "description": "不回显；省略/null保留旧值，首次保存必填，显式空串不合法。",
+            "pattern": "^[A-Za-z0-9+/=_-]{1,256}$",
+            "nullable": true
+          },
+          "apiKey": {
+            "type": "string",
+            "maxLength": 512,
+            "writeOnly": true,
+            "description": "不回显；省略/null保留旧值，首次保存必填，显式空串不合法。",
+            "pattern": "^[A-Za-z0-9_.-]{1,512}$",
+            "nullable": true
+          },
+          "workspaceId": {
+            "type": "string",
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9-]{0,80}$",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9_.-]{1,80}$",
+            "nullable": true
+          }
+        }
+      },
+      "DeleteCloudCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedVersion"
+        ],
+        "properties": {
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "MediaMetadata": {
         "type": "object",
         "additionalProperties": false,
@@ -5849,7 +6379,7 @@
           "previewUrl": {
             "type": "string",
             "nullable": true,
-            "description": "预览能力尚未实现，本轮始终为null，不能据此宣称可播放。"
+            "description": "本人READY视频且检测为MP4/MOV族、H.264及AAC/无音轨时返回同源预览地址，其他状态或格式为null。仅声明编码兼容，不保证文件仍在磁盘或所有设备支持；播放端点再次检查权限、状态及文件。"
           },
           "error": {
             "oneOf": [
@@ -5903,9 +6433,12 @@
           },
           {
             "$ref": "#/components/schemas/BurnSubtitleParameters"
+          },
+          {
+            "$ref": "#/components/schemas/JoinClipsParameters"
           }
         ],
-        "description": "本轮transcode、compress、extract_audio已实现；其他变体仍为规划，明确参数请求返回422。"
+        "description": "明确参数支持transcode、compress、extract_audio、trim、mute、burn_subtitles、join_clips；自然语言仅支持前五种。join_clips无需字幕或草稿资源，不新增表。"
       },
       "CreatePlanWithParameters": {
         "type": "object",
@@ -5999,7 +6532,7 @@
             "$ref": "#/components/schemas/UpdatePlanWithInstruction"
           }
         ],
-        "description": "parameters完整替换；instruction结合当前方案重新生成。失败不增加版本。"
+        "description": "parameters完整替换，或instruction结合当前参数重新生成；READY/NEEDS_INPUT可修改，成功版本+1，失败不增加版本。已执行不可修改。"
       },
       "ExecutePlanRequest": {
         "type": "object",
@@ -6078,6 +6611,9 @@
                 "$ref": "#/components/schemas/BurnSubtitleParameters"
               },
               {
+                "$ref": "#/components/schemas/JoinClipsParameters"
+              },
+              {
                 "type": "object",
                 "nullable": true,
                 "enum": [
@@ -6093,7 +6629,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Notice"
-            }
+            },
+            "description": "NEEDS_INPUT时为服务端固定问题文案。代码限OPERATION_REQUIRED、TARGET_SIZE_REQUIRED、TRIM_RANGE_REQUIRED、UNSUPPORTED_REQUEST、CONFLICTING_REQUIREMENTS；不直接展示模型任意提问。"
           },
           "warnings": {
             "type": "array",
@@ -6244,6 +6781,9 @@
                 "$ref": "#/components/schemas/BurnSubtitleParameters"
               },
               {
+                "$ref": "#/components/schemas/JoinClipsParameters"
+              },
+              {
                 "type": "object",
                 "nullable": true,
                 "enum": [
@@ -6289,7 +6829,7 @@
               "$ref": "#/components/schemas/Output"
             },
             "maxItems": 1,
-            "description": "媒体/剪辑成功时一个结果，转写成功时为空并提供transcript。"
+            "description": "媒体/剪辑成功时最多一个可用结果；结果已删除时为空，任务终态仍为SUCCEEDED。转写成功时为空并提供transcript。"
           },
           "error": {
             "oneOf": [
@@ -6711,7 +7251,9 @@
           "mediaTool",
           "maxUploadBytes",
           "maxDurationMs",
-          "supportedOperations"
+          "supportedOperations",
+          "asrProviders",
+          "subtitleCorrection"
         ],
         "properties": {
           "registration": {
@@ -6724,16 +7266,19 @@
             "type": "boolean"
           },
           "aiPlans": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "DeepSeek凭据/模型已配置且至少一种明确参数处理工具可用；不保证远端权限、网络、余额或模型理解效果。生成后仍需确认，不自动执行。"
           },
           "asr": {
             "type": "boolean"
           },
           "semanticSearch": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "DeepSeek密钥和模型已配置；不依赖FFmpeg，但每次调用仍要求本人已保存的当前字幕，且不超过600段/128KiB。不代表网络、权限、余额或效果已验收。"
           },
           "clipRecommendations": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "DeepSeek密钥和模型已配置；不依赖FFmpeg，但每次调用仍要求本人已保存的当前字幕，且不超过600段/128KiB。不代表网络、权限、余额或效果已验收。"
           },
           "mediaTool": {
             "type": "boolean",
@@ -6754,7 +7299,22 @@
             "items": {
               "type": "string"
             },
-            "description": "ffprobe可用时，H.264/AAC编码器可用则包含transcode、compress，libmp3lame可用则独立包含extract_audio；其他操作不开放。"
+            "description": "ffprobe可用时，H.264/AAC编码器可用则包含transcode、compress、trim、mute；额外具备libass的ass过滤器时包含burn_subtitles；libmp3lame可用时独立包含extract_audio。烧录已有字幕不依赖云端凭据。 同一H.264/AAC工具可用时包含join_clips；不代表clip-drafts管理或拼接字幕重映射开放。"
+          },
+          "asrProviders": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "tencent",
+                "aliyun"
+              ]
+            },
+            "description": "凭据配置通过且ffprobe/MP3编码器可用的供应商；不代表远端可达或余额充足。空数组时asr=false。"
+          },
+          "subtitleCorrection": {
+            "type": "boolean",
+            "description": "DeepSeek密钥和模型已配置，可生成单句文字建议；自然语言方案和内容检索分别检查对应能力字段。"
           }
         }
       },
@@ -6774,6 +7334,14 @@
           "force": {
             "type": "boolean",
             "default": false
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "tencent",
+              "aliyun"
+            ],
+            "default": "tencent"
           }
         }
       },
@@ -6793,11 +7361,13 @@
           },
           "startMs": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "format": "int64"
           },
           "endMs": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "format": "int64"
           },
           "text": {
             "type": "string",
@@ -6895,7 +7465,59 @@
             "items": {
               "$ref": "#/components/schemas/TranscriptSegment"
             },
-            "minItems": 1
+            "minItems": 1,
+            "maxItems": 3000
+          }
+        }
+      },
+      "CorrectTranscriptRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedVersion",
+          "segmentId"
+        ],
+        "properties": {
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "segmentId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "TranscriptCorrection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transcriptId",
+          "version",
+          "segmentId",
+          "originalText",
+          "correctedText"
+        ],
+        "properties": {
+          "transcriptId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "segmentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "originalText": {
+            "type": "string"
+          },
+          "correctedText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
           }
         }
       },
@@ -7007,6 +7629,7 @@
         "additionalProperties": false,
         "required": [
           "query",
+          "transcriptId",
           "transcriptVersion"
         ],
         "properties": {
@@ -7024,8 +7647,14 @@
             "minimum": 1,
             "maximum": 20,
             "default": 10
+          },
+          "transcriptId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "必须与当前最新字幕ID一致；重识别会产生新ID，即使version同为1也不能复用旧ID。"
           }
-        }
+        },
+        "description": "已保存的当前字幕身份和版本；query按Unicode码点计数，去首尾空白后不得为空。"
       },
       "Evidence": {
         "type": "object",
@@ -7043,16 +7672,19 @@
           },
           "startMs": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "format": "int64"
           },
           "endMs": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "format": "int64"
           },
           "text": {
             "type": "string"
           }
-        }
+        },
+        "description": "由后端从指定字幕版本逐字重建，不接受模型生成的原文或时间。"
       },
       "SearchMatch": {
         "type": "object",
@@ -7066,16 +7698,19 @@
         "properties": {
           "startMs": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "format": "int64"
           },
           "endMs": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "format": "int64"
           },
           "score": {
             "type": "number",
             "minimum": 0,
-            "maximum": 1
+            "maximum": 1,
+            "description": "AI相关度排序参考，不是校准后的概率或准确率。结果按此降序。"
           },
           "evidence": {
             "type": "array",
@@ -7126,6 +7761,7 @@
         "additionalProperties": false,
         "required": [
           "query",
+          "transcriptId",
           "transcriptVersion",
           "maxTotalDurationMs"
         ],
@@ -7142,15 +7778,22 @@
           "maxTotalDurationMs": {
             "type": "integer",
             "minimum": 1000,
-            "maximum": 900000
+            "maximum": 900000,
+            "format": "int64"
           },
           "limit": {
             "type": "integer",
             "minimum": 1,
             "maximum": 10,
             "default": 3
+          },
+          "transcriptId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "必须与当前最新字幕ID一致；重识别会产生新ID，即使version同为1也不能复用旧ID。"
           }
-        }
+        },
+        "description": "已保存的当前字幕身份和版本；query按Unicode码点计数，去首尾空白后不得为空。"
       },
       "RecommendedClip": {
         "type": "object",
@@ -7166,18 +7809,22 @@
           "title": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100
+            "maxLength": 80
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
           },
           "startMs": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "format": "int64"
           },
           "endMs": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "format": "int64"
           },
           "evidence": {
             "type": "array",
@@ -7186,7 +7833,8 @@
             },
             "minItems": 1
           }
-        }
+        },
+        "description": "AI生成标题和理由须用户复核，原文/时间来自真实连续字幕；区间至少500ms，各推荐不重叠。"
       },
       "RecommendationResponse": {
         "type": "object",
@@ -7508,11 +8156,13 @@
           },
           "startMs": {
             "type": "integer",
+            "format": "int64",
             "minimum": 0
           },
           "endMs": {
             "type": "integer",
-            "minimum": 1
+            "format": "int64",
+            "minimum": 500
           },
           "audioMode": {
             "type": "string",
@@ -7520,10 +8170,14 @@
               "keep"
             ]
           }
-        }
+        },
+        "description": "已实现。只接受这五个字段；0<=startMs<endMs<=源视频时长，区间至少500ms。输出重新编码为H.264/AAC MP4，固定原展示分辨率并向下取偶数，应用旋转。不用关键帧复制替代裁切；保留区间内可用的第一条音轨，区间无音频时不补静音。输出按帧对齐，校验实际时长与所选区间，失败任务TRIM_FAILED且不发布结果。",
+        "example": { "operation": "trim", "outputFormat": "mp4", "startMs": 1250, "endMs": 2250, "audioMode": "keep" }
       },
       "MuteParameters": {
         "type": "object",
+        "description": "已实现。仅三个字段，固定移除全部音轨；已无音轨素材也允许处理。生成H.264/yuv420p MP4，应用旋转，source/720p不放大并向下取偶数，文件名后缀-muted.mp4。原素材不变；结果必须无音轨且尺寸/编码匹配，时长差不超过max(250ms, 源时长/1000)，失败MUTE_FAILED不发布。复用任务、取消、鉴权播放下载与清理，无新增迁移。",
+        "example": { "operation": "mute", "outputFormat": "mp4", "resolutionPreset": "source" },
         "additionalProperties": false,
         "required": [
           "operation",
@@ -7552,6 +8206,28 @@
           }
         }
       },
+      "JoinClipRange": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["startMs", "endMs"],
+        "properties": {
+          "startMs": { "type": "integer", "format": "int64", "minimum": 0 },
+          "endMs": { "type": "integer", "format": "int64", "minimum": 500 }
+        },
+        "description": "源视频整毫秒区间，0<=startMs<endMs<=素材时长，至少500ms；重复/倒序区间允许，数组顺序即播放顺序。"
+      },
+      "JoinClipsParameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation", "outputFormat", "clips", "audioMode"],
+        "properties": {
+          "operation": { "type": "string", "enum": ["join_clips"] },
+          "outputFormat": { "type": "string", "enum": ["mp4"] },
+          "clips": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/JoinClipRange" } },
+          "audioMode": { "type": "string", "enum": ["keep"] }
+        },
+        "description": "已实现，仅四字段。本人同一就绪素材，1至20段，每段至少500ms，总时长最多900000ms；允许重复、重叠、倒序，不允许路径/URL/跨素材/字幕参数。固定原展示尺寸取偶数、30fps、H.264/yuv420p；首条音轨AAC 48kHz双声道，缺失区间补静音以保持同步，无音轨素材仍无音轨。结果后缀-joined.mp4，原素材不变，失败CLIP_JOIN_FAILED不发布半成品。顺序分段编码再拼接重编码，所有阶段共享默认5分钟预算，临时分段总大小和最终输出分别受输出上限约束（默认各1GiB，峰值磁盘约两倍）。时长误差最多max(250ms,总时长/1000)，按30fps对齐。发布前删除临时分段和清单，失败保留租约由回收/资源清理重试。复用方案版本及任务幂等，不增加表或接口；clip-drafts管理、跨素材和拼接字幕重映射仍未实现。"
+      },
       "BurnSubtitleParameters": {
         "type": "object",
         "additionalProperties": false,
@@ -7578,11 +8254,13 @@
           },
           "transcriptId": {
             "type": "string",
-            "format": "uuid"
+            "format": "uuid",
+            "description": "本人该素材当前最新字幕ID；重识别产生新ID。"
           },
           "transcriptVersion": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "description": "首次执行前必须是最新已保存版本；入队后冻结该历史版本。"
           },
           "resolutionPreset": {
             "type": "string",
@@ -7597,7 +8275,8 @@
               "keep"
             ]
           }
-        }
+        },
+        "description": "已实现，仅这六个字段。创建/修改/首次执行绑定本人素材当前最新transcriptId和transcriptVersion；非本人/跨素材404，旧版本或重识别旧ID409 TRANSCRIPT_VERSION_CONFLICT。入队后使用不可变历史稿，后续编辑不改变该任务。原尺寸或720p，不放大并取偶数；输出H.264/yuv420p和首条音轨AAC，无音轨不补音，原素材不变。固定底部居中白字黑边，随输出高度缩放；用户文字按纯文本转义，不接收字体/样式命令/字幕文件或URL。ASS时间向外取整到10ms，再按帧呈现。文件后缀-subtitled.mp4。缺少ffprobe/H.264/AAC/ass过滤器503 SUBTITLE_BURN_UNAVAILABLE；烧录/验收失败任务FAILED/SUBTITLE_BURN_FAILED，不发布半成品。私有ASS在终态发布前清除，失败保留租约供重试；取消/删除/租约回收复用原流程。部署需安装覆盖字幕文字的系统字体，缺少中文字形可能显示方框。"
       },
       "TranscodeParameters": {
         "type": "object",
@@ -7972,7 +8651,7 @@
         }
       },
       "PreviewUnavailable": {
-        "description": "原素材未就绪或不适合浏览器播放。",
+        "description": "原素材未就绪、不支持直接预览或文件不可用（丢失、大小变化等）。",
         "content": {
           "application/json": {
             "schema": {
@@ -7980,7 +8659,7 @@
             },
             "example": {
               "code": "MEDIA_PREVIEW_UNAVAILABLE",
-              "message": "原素材未就绪或不适合浏览器播放。",
+              "message": "原素材未就绪、不支持直接预览或文件不可用",
               "data": null,
               "requestId": "req-error",
               "details": []

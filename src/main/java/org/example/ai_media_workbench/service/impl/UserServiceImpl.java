@@ -31,10 +31,12 @@ public class UserServiceImpl implements UserService {
     private final Clock clock;
     private final AccountCleanupMapper cleanupMapper;
     private final AccountCleanupService cleanupService;
+    private final org.example.ai_media_workbench.mapper.CloudCredentialMapper cloudCredentials;
 
     public UserServiceImpl(UserMapper userMapper, AuthTokenMapper tokenMapper,
                            PasswordEncoder passwordEncoder, SessionService sessionService, Clock clock,
-                           AccountCleanupMapper cleanupMapper, AccountCleanupService cleanupService) {
+                           AccountCleanupMapper cleanupMapper, AccountCleanupService cleanupService,
+                           org.example.ai_media_workbench.mapper.CloudCredentialMapper cloudCredentials) {
         this.userMapper = userMapper;
         this.tokenMapper = tokenMapper;
         this.passwordEncoder = passwordEncoder;
@@ -42,6 +44,7 @@ public class UserServiceImpl implements UserService {
         this.clock = clock;
         this.cleanupMapper = cleanupMapper;
         this.cleanupService = cleanupService;
+        this.cloudCredentials=cloudCredentials;
     }
 
     /** 查询有效用户，账号不可用时抛出未登录异常。 */
@@ -110,6 +113,7 @@ public class UserServiceImpl implements UserService {
         }
         // 先核验密码和确认用户名，再按账号归属逻辑删除资源、取消未完成任务。
         LocalDateTime timestamp = now();
+        cloudCredentials.deleteUser(userId);
         cleanupMapper.markTasksDeleted(userId, timestamp);
         cleanupMapper.markOutputsDeleted(userId, timestamp);
         cleanupMapper.markPlansDeleted(userId, timestamp);

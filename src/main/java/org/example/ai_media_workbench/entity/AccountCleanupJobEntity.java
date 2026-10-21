@@ -8,6 +8,7 @@ public class AccountCleanupJobEntity {
     private String id;
     private String userId;
     private String mediaId;
+    private String outputId;
     private String scopeKey;
     private String status;
     private int attempts;

@@ -5,6 +5,8 @@ public interface AccountCleanupService {
     void enqueue(String userId);
     /** 为已删除素材创建清理任务，等待现有工具租约结束后删除受控文件。 */
     void enqueueMedia(String userId, String mediaId);
+    /** 为已删除的单个处理结果安排持久化文件清理，不删除原素材或其他结果。 */
+    void enqueueOutput(String userId, String outputId);
     /** 执行一批待清理任务，返回成功完成的任务数。 */
     int runPending();
 }

@@ -110,7 +110,12 @@
           <button id="convert-tool" class="tool-choice" type="button"><i data-lucide="file-video" aria-hidden="true"></i>视频转换</button>
           <button id="compress-tool" class="tool-choice" type="button"><i data-lucide="minimize-2" aria-hidden="true"></i>视频压缩</button>
           <button id="audio-tool" class="tool-choice" type="button"><i data-lucide="audio-lines" aria-hidden="true"></i>提取音频</button>
-          <button class="tool-choice" type="button" data-unavailable disabled title="尚未开放"><i data-lucide="captions" aria-hidden="true"></i>字幕处理</button>
+          <button id="trim-tool" class="tool-choice" type="button"><i data-lucide="scissors" aria-hidden="true"></i>视频裁切</button>
+          <button id="join-tool" class="tool-choice" type="button"><i data-lucide="list-video" aria-hidden="true"></i>片段拼接</button>
+          <button id="mute-tool" class="tool-choice" type="button"><i data-lucide="volume-x" aria-hidden="true"></i>视频静音</button>
+          <button id="subtitle-tool" class="tool-choice" type="button"><i data-lucide="captions" aria-hidden="true"></i>字幕处理</button>
+          <button id="ai-tool" class="tool-choice" type="button"><i data-lucide="sparkles" aria-hidden="true"></i>AI 处理</button>
+          <button id="find-tool" class="tool-choice" type="button"><i data-lucide="search" aria-hidden="true"></i>找片段</button>
         </nav>
         <div class="processing-layout">
           <section class="upload-section" aria-labelledby="upload-title">
@@ -126,16 +131,72 @@
           <section class="result-section" aria-labelledby="media-result-title">
             <div class="section-heading"><h2 id="media-result-title">检测结果</h2><span id="media-status" class="media-status" hidden></span></div>
             <p id="media-result-empty" class="empty-state">暂无检测结果</p>
-            <div id="media-result" hidden aria-live="polite"><p id="media-result-name" class="result-filename"></p><dl id="media-metadata" class="metadata-list"></dl><p id="media-error" class="form-error" hidden></p><button id="retry-probe" class="button secondary compact" type="button" hidden><i data-lucide="rotate-cw" aria-hidden="true"></i>重新检测</button></div>
+            <div id="media-result" hidden aria-live="polite"><p id="media-result-name" class="result-filename"></p><dl id="media-metadata" class="metadata-list"></dl><video id="source-preview" controls preload="metadata" aria-label="原视频预览" hidden></video><p id="source-preview-status" class="muted" role="status" hidden></p><button id="retry-source-preview" class="icon-button" type="button" title="重新加载原视频" aria-label="重新加载原视频" hidden><i data-lucide="rotate-cw" aria-hidden="true"></i></button><p id="media-error" class="form-error" hidden></p><button id="retry-probe" class="button secondary compact" type="button" hidden><i data-lucide="rotate-cw" aria-hidden="true"></i>重新检测</button></div>
           </section>
         </div>
+        <section id="join-section" class="join-section" hidden aria-labelledby="join-title">
+          <div class="section-heading"><h2 id="join-title">片段拼接</h2><button id="refresh-join" class="icon-button" type="button" title="恢复最近拼接方案" aria-label="恢复最近拼接方案"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+          <p id="join-source" class="result-filename">未选择就绪素材</p>
+          <form id="join-form"><ol id="join-clips" class="join-clips"></ol>
+            <div class="join-actions"><button id="add-join-clip" class="icon-button" type="button" title="添加片段" aria-label="添加片段"><i data-lucide="plus" aria-hidden="true"></i></button><span id="join-total" class="muted" role="status"></span></div>
+            <p id="join-state" class="muted" role="status"></p><p id="join-range-error" class="form-error" role="status" hidden>每段至少0.5秒且不能超出素材，最多20段、总时长最多15分钟。</p><p id="join-error" class="form-error" role="alert" hidden></p>
+            <button id="export-join" class="button primary" type="submit"><i data-lucide="film" aria-hidden="true"></i>导出拼接视频</button>
+          </form>
+          <video id="join-preview" controls preload="metadata" aria-label="拼接片段预览" hidden></video>
+          <div id="join-result-slot"></div>
+        </section>
+        <section id="find-section" class="find-section" hidden aria-labelledby="find-title">
+          <div class="section-heading"><h2 id="find-title">找片段</h2><button id="refresh-find" class="icon-button" type="button" title="刷新字幕版本" aria-label="刷新字幕版本"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+          <p id="find-source" class="result-filename">未选择就绪素材</p>
+          <form id="find-form">
+            <fieldset class="find-modes"><legend class="sr-only">查找方式</legend><label><input type="radio" name="find-mode" value="search" checked><span>按内容查找</span></label><label><input type="radio" name="find-mode" value="recommend"><span>片段建议</span></label></fieldset>
+            <label class="field">目标内容<textarea id="find-query" rows="2" maxlength="1000" required placeholder="产品使用限制"></textarea></label>
+            <div class="find-options"><label class="field">最多结果<input id="find-limit" type="number" min="1" max="20" step="1" value="10" required></label><label id="find-budget-field" class="field" hidden>建议总时长（秒）<input id="find-budget" type="number" min="1" max="900" step="1" value="60"></label></div>
+            <p id="find-state" class="muted" role="status"></p><p id="find-error" class="form-error" role="alert" hidden></p>
+            <button id="find-submit" class="button primary" type="submit"><i data-lucide="search" aria-hidden="true"></i><span id="find-submit-label">查找片段</span></button>
+          </form>
+          <p id="find-result-state" class="muted" role="status" hidden></p>
+          <div id="find-preview-section" hidden><div class="section-heading"><h3>片段预览</h3><span id="find-preview-range" class="muted"></span></div><video id="find-preview" controls preload="metadata" aria-label="片段预览"></video><p id="find-preview-error" class="form-error" role="alert" hidden></p></div>
+          <ol id="find-results" class="find-results"></ol>
+        </section>
+        <section id="ai-section" class="ai-section" hidden aria-labelledby="ai-title">
+          <div class="section-heading"><h2 id="ai-title">AI 处理</h2><button id="refresh-ai-plan" class="icon-button" type="button" title="恢复最近方案" aria-label="恢复最近方案"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+          <div class="ai-layout">
+            <form id="ai-form">
+              <label class="field">当前素材<output id="ai-source" class="conversion-source">未选择就绪素材</output></label>
+              <label class="field">处理要求<textarea id="ai-instruction" rows="4" maxlength="4000" required placeholder="截取前10秒"></textarea></label>
+              <p id="ai-state" class="muted" role="status"></p><p id="ai-error" class="form-error" role="alert" hidden></p>
+              <button id="generate-ai-plan" class="button primary" type="submit"><i data-lucide="sparkles" aria-hidden="true"></i><span id="generate-ai-label">生成方案</span></button>
+            </form>
+            <div id="ai-plan" hidden>
+              <div class="section-heading"><h3>处理方案</h3><span id="ai-plan-status" class="media-status"></span></div>
+              <p id="ai-plan-summary" class="result-filename"></p><dl id="ai-plan-parameters" class="metadata-list"></dl><ul id="ai-plan-questions" class="ai-questions"></ul>
+              <button id="execute-ai-plan" class="button primary" type="button"><i data-lucide="play" aria-hidden="true"></i>确认执行</button>
+            </div>
+          </div>
+          <div id="ai-result-slot"></div>
+        </section>
+        <section id="subtitle-section" class="subtitle-section" hidden aria-labelledby="subtitle-title">
+          <div class="section-heading"><h2 id="subtitle-title">字幕处理</h2><button id="refresh-subtitle" class="icon-button" type="button" title="刷新字幕" aria-label="刷新字幕"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+          <p id="subtitle-source" class="result-filename">未选择就绪素材</p>
+          <div class="subtitle-toolbar"><label class="field">识别服务<select id="asr-provider"><option value="tencent">腾讯云</option><option value="aliyun">阿里云百炼</option></select></label><button id="start-transcription" class="button primary" type="button"><i data-lucide="captions" aria-hidden="true"></i><span id="transcription-label">识别字幕</span></button><button id="cancel-transcription" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消识别</button></div>
+          <p id="subtitle-state" class="muted" role="status"></p><p id="subtitle-error" class="form-error" role="alert" hidden></p>
+          <div id="subtitle-editor" hidden>
+            <div class="subtitle-toolbar"><label class="field">版本<select id="subtitle-version"></select></label><label class="checkbox-field"><input id="subtitle-original" type="checkbox">识别原文</label><span id="subtitle-draft-state" class="muted" role="status"></span><button id="save-subtitle" class="icon-button save-button" type="button" title="保存字幕" aria-label="保存字幕"><i data-lucide="save" aria-hidden="true"></i></button><a id="download-srt" class="button secondary compact"><i data-lucide="download" aria-hidden="true"></i>下载 SRT</a></div>
+            <ol id="subtitle-segments" class="subtitle-segments"></ol>
+            <button id="burn-subtitle" class="button primary" type="button"><i data-lucide="film" aria-hidden="true"></i>生成字幕视频</button>
+          </div>
+          <div id="subtitle-result-slot" hidden></div>
+        </section>
         <section id="conversion-section" class="conversion-section" hidden aria-labelledby="conversion-title">
           <h2 id="conversion-title">视频转换</h2>
-          <div class="conversion-layout">
+          <div id="conversion-layout" class="conversion-layout">
             <form id="conversion-form">
               <label class="field">当前素材<output id="conversion-source" class="conversion-source">未选择就绪素材</output></label>
               <div id="processing-fields" class="conversion-fields"><label class="field">输出格式<output id="processing-format">MP4 · H.264</output></label><label id="resolution-field" class="field">分辨率<select id="conversion-resolution"><option value="source">原分辨率</option><option value="720p">720p</option></select></label><label class="field">音轨<output id="processing-audio-mode">保留音轨</output></label></div>
               <label id="compression-target-field" class="field compression-target-field" hidden>目标体积（MB）<input id="compression-target" type="number" min="0.03125" step="any" inputmode="decimal"></label>
+              <div id="trim-fields" class="conversion-fields trim" hidden><label class="field">开始时间（秒）<input id="trim-start" type="number" min="0" step="0.001" inputmode="decimal"></label><label class="field">结束时间（秒）<input id="trim-end" type="number" min="0.5" step="0.001" inputmode="decimal"></label></div>
+              <p id="trim-range-error" class="form-error" role="status" hidden>区间需至少0.5秒，且不超过素材时长。</p>
               <p id="compression-small" class="form-error" role="status" hidden>当前素材体积过小，无法进行目标体积压缩。</p>
               <p id="audio-missing" class="form-error" role="status" hidden>当前素材没有可提取的音轨。</p>
               <p id="conversion-error" class="form-error" role="alert" hidden></p>
@@ -146,7 +207,8 @@
               <p id="task-stage" class="muted"></p><p id="compression-stats" class="muted" hidden></p><p id="task-error" class="form-error" role="alert" hidden></p>
               <video id="output-preview" controls preload="metadata" hidden></video>
               <audio id="output-audio" controls preload="metadata" hidden></audio><p id="audio-stats" class="muted" hidden></p>
-              <div class="conversion-actions"><button id="cancel-task" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消任务</button><a id="download-output" class="button primary compact" hidden><i data-lucide="download" aria-hidden="true"></i><span id="download-label">下载 MP4</span></a></div>
+              <p id="output-empty" class="muted" role="status" hidden>暂无可用结果</p>
+              <div class="conversion-actions"><button id="cancel-task" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消任务</button><a id="download-output" class="button primary compact" hidden><i data-lucide="download" aria-hidden="true"></i><span id="download-label">下载 MP4</span></a><button id="delete-output" class="icon-button danger-outline" type="button" title="删除结果" aria-label="删除结果" hidden><i data-lucide="trash-2" aria-hidden="true"></i></button></div>
             </div>
           </div>
         </section>
@@ -166,6 +228,7 @@
         <aside class="account-nav" aria-label="账户分区">
           <a href="#profile-section"><i data-lucide="user-round" aria-hidden="true"></i>账户资料</a>
           <a href="#security-section"><i data-lucide="shield-check" aria-hidden="true"></i>账户安全</a>
+          <a href="#cloud-section"><i data-lucide="cloud" aria-hidden="true"></i>云端服务</a>
         </aside>
         <div class="account-sections">
           <section id="profile-section" class="account-section">
@@ -195,6 +258,11 @@
               <button id="logout-all" class="button secondary"><i data-lucide="log-out" aria-hidden="true"></i>退出所有设备</button>
             </div>
           </section>
+          <section id="cloud-section" class="account-section" aria-labelledby="cloud-title">
+            <div class="section-heading"><h2 id="cloud-title">云端服务</h2><button id="refresh-cloud" class="icon-button" type="button" title="刷新云端配置" aria-label="刷新云端配置"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+            <p id="cloud-state" class="muted" role="status"></p><p id="cloud-error" class="form-error" role="alert" hidden></p>
+            <div id="cloud-providers" class="cloud-providers"></div>
+          </section>
           <section class="account-section danger-section">
             <h2>注销账号</h2>
             <p class="muted">注销后无法恢复，素材和文件将被清理，用户名和邮箱将保留占用。</p>
@@ -205,6 +273,16 @@
       </div>
     </section>
   </main>
+
+  <dialog id="delete-output-dialog" aria-labelledby="delete-output-title" aria-describedby="delete-output-description">
+    <div class="dialog-heading"><h2 id="delete-output-title">删除结果</h2><button id="close-delete-output" class="icon-button" type="button" title="取消" aria-label="取消删除结果"><i data-lucide="x" aria-hidden="true"></i></button></div>
+    <p id="delete-output-name" class="result-filename"></p>
+    <p id="delete-output-description" class="muted">仅删除此结果文件，原素材、参数和处理记录保留。此操作不可恢复。</p>
+    <form id="delete-output-form">
+      <p id="delete-output-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button id="cancel-delete-output" class="button secondary" type="button">取消</button><button class="button danger" type="submit"><i data-lucide="trash-2" aria-hidden="true"></i>确认删除结果</button></div>
+    </form>
+  </dialog>
 
   <dialog id="delete-media-dialog" aria-labelledby="delete-media-title" aria-describedby="delete-media-description">
     <div class="dialog-heading"><h2 id="delete-media-title">删除素材</h2><button id="close-delete-media" class="icon-button" type="button" title="取消" aria-label="取消删除素材"><i data-lucide="x" aria-hidden="true"></i></button></div>

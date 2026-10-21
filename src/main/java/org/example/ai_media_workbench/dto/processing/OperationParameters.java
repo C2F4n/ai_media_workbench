@@ -7,6 +7,10 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.EXISTING_PROPERTY, property = "operation", visible = true)
 @JsonSubTypes({@JsonSubTypes.Type(value = TranscodeParameters.class, name = "transcode"),
         @JsonSubTypes.Type(value = CompressionParameters.class, name = "compress"),
+        @JsonSubTypes.Type(value = TrimParameters.class, name = "trim"),
+        @JsonSubTypes.Type(value = MuteParameters.class, name = "mute"),
+        @JsonSubTypes.Type(value = BurnSubtitleParameters.class, name = "burn_subtitles"),
+        @JsonSubTypes.Type(value = JoinClipsParameters.class, name = "join_clips"),
         @JsonSubTypes.Type(value = ExtractAudioParameters.class, name = "extract_audio")})
 public sealed interface OperationParameters permits VideoParameters, ExtractAudioParameters {
     String operation();

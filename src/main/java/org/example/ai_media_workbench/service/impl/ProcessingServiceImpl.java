@@ -4,6 +4,8 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Set;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.UUID;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
@@ -15,6 +17,10 @@ import org.example.ai_media_workbench.dto.processing.VideoParameters;
 import org.example.ai_media_workbench.dto.processing.OperationParameters;
 import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
+import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
 import org.example.ai_media_workbench.entity.MediaEntity;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.example.ai_media_workbench.entity.OperationPlanEntity;
@@ -28,11 +34,16 @@ import org.example.ai_media_workbench.properties.TranscodeProperties;
 import org.example.ai_media_workbench.service.MediaProbe;
 import org.example.ai_media_workbench.service.MediaTranscoder;
 import org.example.ai_media_workbench.service.ProcessingService;
+import org.example.ai_media_workbench.service.OperationPlanner;
+import org.example.ai_media_workbench.common.security.AuthRateLimiter;
+import org.example.ai_media_workbench.vo.processing.PlanNotice;
 import org.example.ai_media_workbench.vo.common.PageVO;
 import org.example.ai_media_workbench.vo.processing.PlanVO;
 import org.example.ai_media_workbench.vo.processing.TaskVO;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -48,42 +59,52 @@ public class ProcessingServiceImpl implements ProcessingService {
     private final ProcessingViews views;
     private final ObjectMapper json;
     private final Clock clock;
+    private final OperationPlanner planner;
+    private final AuthRateLimiter limiter;
+    private final TransactionTemplate transactions;
+    private final org.example.ai_media_workbench.service.TranscriptService transcripts;
 
     public ProcessingServiceImpl(ProcessingMapper mapper, MediaMapper media, UserMapper users, LocalMediaStorage storage,
                                  MediaTranscoder transcoder, MediaProbe probe, TranscodeProperties properties,
-                                 ProcessingViews views, ObjectMapper json, Clock clock) {
+                                 ProcessingViews views, ObjectMapper json, Clock clock, OperationPlanner planner,
+                                 AuthRateLimiter limiter, PlatformTransactionManager manager,
+                                 org.example.ai_media_workbench.service.TranscriptService transcripts) {
         this.mapper = mapper; this.media = media; this.users = users; this.storage = storage;
         this.transcoder = transcoder; this.probe = probe; this.properties = properties;
         this.views = views; this.json = json; this.clock = clock;
+        this.planner=planner; this.limiter=limiter; this.transactions=new TransactionTemplate(manager);
+        this.transcripts=transcripts;
     }
 
     @Override
-    @Transactional
     public PlanVO create(String userId, CreatePlanRequest input) {
-        var parameters = parameters(input.parameters(), input.instruction());
-        lockUser(userId);
-        validateOperation(parameters, requireReady(userId, input.mediaId().toString()));
-        requireTool(parameters);
-        var plan = new OperationPlanEntity();
-        plan.setId(UUID.randomUUID().toString()); plan.setUserId(userId); plan.setMediaId(input.mediaId().toString());
-        plan.setVersion(1); plan.setStatus(PlanStatus.READY);
-        apply(plan, parameters); plan.setCreatedAt(now());
-        mapper.insertPlan(plan);
-        return views.plan(plan);
+        choice(input.parameters(),input.instruction());
+        var source=requireReady(userId,input.mediaId().toString());
+        var resolved=resolve(userId,input.parameters(),input.instruction(),source,null);
+        // 云端调用不持有事务/账号锁；持久化前重新鉴权和校验素材，防止等待期间被删除。
+        return transactions.execute(status->{
+            lockUser(userId);
+            verify(resolved,requireReady(userId,input.mediaId().toString()));
+            var plan=new OperationPlanEntity();
+            plan.setId(UUID.randomUUID().toString()); plan.setUserId(userId); plan.setMediaId(input.mediaId().toString());
+            plan.setVersion(1); plan.setCreatedAt(now());
+            apply(plan,resolved,input.instruction()); mapper.insertPlan(plan); return views.plan(plan);
+        });
     }
 
     @Override
-    @Transactional
     public PlanVO update(String userId, String id, UpdatePlanRequest input) {
-        lockUser(userId);
-        var plan = lockedPlan(userId, id);
-        if (plan.getVersion() != input.expectedVersion()) throw new BusinessException(ErrorCode.PLAN_VERSION_CONFLICT);
-        if (plan.getStatus() != PlanStatus.READY) throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
-        var parameters = parameters(input.parameters(), input.instruction());
-        validateOperation(parameters, requireReady(userId, plan.getMediaId())); requireTool(parameters);
-        apply(plan, parameters);
-        plan.setVersion(Math.addExact(plan.getVersion(), 1)); mapper.updatePlan(plan);
-        return views.plan(plan);
+        choice(input.parameters(),input.instruction());
+        var current=mapper.plan(userId,id);
+        if(current==null) throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+        editable(current,input.expectedVersion());
+        var previous=current.getParametersJson()==null ? null : json.readValue(current.getParametersJson(),OperationParameters.class);
+        var resolved=resolve(userId,input.parameters(),input.instruction(),requireReady(userId,current.getMediaId()),previous);
+        return transactions.execute(status->{
+            lockUser(userId); var plan=lockedPlan(userId,id); editable(plan,input.expectedVersion());
+            verify(resolved,requireReady(userId,plan.getMediaId())); apply(plan,resolved,input.instruction());
+            plan.setVersion(Math.addExact(plan.getVersion(),1)); mapper.updatePlan(plan); return views.plan(plan);
+        });
     }
 
     @Override
@@ -153,34 +174,128 @@ public class ProcessingServiceImpl implements ProcessingService {
     private void apply(OperationPlanEntity plan, OperationParameters parameters) {
         plan.setParametersJson(json.writeValueAsString(parameters));
         if (parameters instanceof VideoParameters video)
-            plan.setSummary("MP4 / " + (video.resolutionPreset().equals("720p") ? "720p" : "原分辨率") + " / 保留音轨");
+            plan.setSummary("MP4 / " + (video.resolutionPreset().equals("720p") ? "720p" : "原分辨率")
+                    + (parameters instanceof MuteParameters ? " / 移除音轨" : " / 保留音轨"));
         else plan.setSummary("MP3 / 提取第一条音轨 / 192 kbps");
         if (parameters instanceof CompressionParameters compression)
             plan.setSummary(plan.getSummary() + " / 压缩至最多 " + compression.targetSizeBytes() + " 字节");
+        if (parameters instanceof TrimParameters trim)
+            plan.setSummary(plan.getSummary() + " / 裁切 " + trim.startMs() + "-" + trim.endMs() + " 毫秒");
+        if (parameters instanceof BurnSubtitleParameters burn)
+            plan.setSummary(plan.getSummary()+" / 烧录字幕 v"+burn.transcriptVersion());
+        if (parameters instanceof JoinClipsParameters join)
+            plan.setSummary(plan.getSummary()+" / 拼接 "+join.clips().size()+" 段 / "+join.totalDurationMs()+" 毫秒");
         plan.setUpdatedAt(now());
     }
 
-    private OperationParameters parameters(JsonNode node, String instruction) {
-        if ((node == null) == (instruction == null)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
-        if (instruction != null) throw new BusinessException(ErrorCode.AI_UNAVAILABLE);
+    private void apply(OperationPlanEntity plan, Resolved resolved, String instruction) {
+        plan.setInstruction(instruction==null ? null : instruction.strip());
+        plan.setQuestionsJson(json.writeValueAsString(resolved.questions())); plan.setWarningsJson("[]");
+        plan.setStatus(resolved.parameters()==null ? PlanStatus.NEEDS_INPUT : PlanStatus.READY);
+        if(resolved.parameters()!=null) apply(plan,resolved.parameters());
+        else { plan.setParametersJson(null); plan.setSummary("请补充处理要求"); plan.setUpdatedAt(now()); }
+    }
+
+    private Resolved resolve(String userId,JsonNode node,String instruction,MediaEntity source,OperationParameters previous) {
+        if(instruction==null) return new Resolved(parameters(node),List.of());
+        if(instruction.isBlank()) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+        if(!planner.isAvailable(userId)) throw new BusinessException(ErrorCode.AI_UNAVAILABLE);
+        var operations=new ArrayList<String>();
+        if(probe.isAvailable() && transcoder.isAvailable()) operations.addAll(List.of("transcode","compress","trim","mute"));
+        var metadata=json.readValue(source.getMetadataJson(),MediaMetadataVO.class);
+        if(probe.isAvailable() && transcoder.isAudioExtractionAvailable() && metadata.hasAudio()) operations.add("extract_audio");
+        if(operations.isEmpty()) throw new BusinessException(ErrorCode.TRANSCODE_UNAVAILABLE);
+        limiter.check("ai-plan:user:"+userId,20);
+        var proposal=planner.propose(instruction.strip(),new OperationPlanner.Context(metadata,source.getSizeBytes(),List.copyOf(operations),previous),userId);
+        try {
+            if(proposal==null || proposal.questions()==null) throw new IllegalArgumentException();
+            if(proposal.parameters()!=null) {
+                if(!proposal.questions().isEmpty()) throw new IllegalArgumentException();
+                var parameters=parameters(proposal.parameters());
+                if(!operations.contains(parameters.operation())) throw new IllegalArgumentException();
+                validateOperation(parameters,source);
+                return new Resolved(parameters,List.of());
+            }
+            if(proposal.questions().isEmpty() || proposal.questions().size()>3 || new java.util.HashSet<>(proposal.questions()).size()!=proposal.questions().size())
+                throw new IllegalArgumentException();
+            return new Resolved(null,proposal.questions().stream().map(question->new PlanNotice(question.name(),question.message())).toList());
+        } catch(RuntimeException invalidModelOutput) { throw new BusinessException(ErrorCode.AI_PLAN_FAILED); }
+    }
+    private void verify(Resolved resolved,MediaEntity source) {
+        if(resolved.parameters()!=null) { validateOperation(resolved.parameters(),source); requireTool(resolved.parameters()); }
+    }
+    private static void choice(JsonNode node,String instruction) {
+        if((node==null)==(instruction==null)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+    }
+    private static void editable(OperationPlanEntity plan,int expectedVersion) {
+        if(plan.getVersion()!=expectedVersion) throw new BusinessException(ErrorCode.PLAN_VERSION_CONFLICT);
+        if(plan.getStatus()==PlanStatus.EXECUTED) throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
+    }
+    private record Resolved(OperationParameters parameters,List<PlanNotice> questions) {}
+
+    private OperationParameters parameters(JsonNode node) {
+        if("join_clips".equals(node.path("operation").asText())) {
+            if(!node.isObject() || node.size()!=4 || !node.path("outputFormat").isString() || !"mp4".equals(node.path("outputFormat").asText())
+                    || !node.path("audioMode").isString() || !"keep".equals(node.path("audioMode").asText())
+                    || !node.path("clips").isArray() || node.path("clips").isEmpty() || node.path("clips").size()>JoinClipsParameters.MAX_CLIPS)
+                throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+            for(var clip:node.path("clips")) {
+                if(!clip.isObject() || clip.size()!=2) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+                for(String key:Set.of("startMs","endMs")) if(!clip.path(key).isIntegralNumber() || !clip.path(key).canConvertToLong())
+                    throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+            }
+            return json.treeToValue(node,OperationParameters.class);
+        }
+        if ("burn_subtitles".equals(node.path("operation").asText())) {
+            if(!node.isObject() || node.size()!=6 || !node.path("outputFormat").isString() || !"mp4".equals(node.path("outputFormat").asText())
+                    || !node.path("transcriptId").isString() || !node.path("transcriptVersion").isIntegralNumber()
+                    || !node.path("transcriptVersion").canConvertToInt() || node.path("transcriptVersion").asInt()<1
+                    || !node.path("resolutionPreset").isString() || !Set.of("source","720p").contains(node.path("resolutionPreset").asText())
+                    || !node.path("audioMode").isString() || !"keep".equals(node.path("audioMode").asText()))
+                throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+            try { UUID.fromString(node.path("transcriptId").asText()); }
+            catch(IllegalArgumentException invalidId) { throw new BusinessException(ErrorCode.INVALID_PARAMETERS); }
+            return json.treeToValue(node,OperationParameters.class);
+        }
         if ("extract_audio".equals(node.path("operation").asText())) {
             if (!node.isObject() || node.size() != 2 || !node.path("outputFormat").isString() || !"mp3".equals(node.path("outputFormat").asText()))
                 throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
             return json.treeToValue(node, OperationParameters.class);
         }
+        if ("mute".equals(node.path("operation").asText())) {
+            if (!node.isObject() || node.size() != 3 || !node.path("outputFormat").isString()
+                    || !"mp4".equals(node.path("outputFormat").asText()) || !node.path("resolutionPreset").isString()
+                    || !Set.of("source", "720p").contains(node.path("resolutionPreset").asText()))
+                throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+            return json.treeToValue(node, OperationParameters.class);
+        }
         boolean compression = "compress".equals(node.path("operation").asText());
-        if (!node.isObject() || node.size() != (compression ? 5 : 4)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
-        for (String key : Set.of("operation", "outputFormat", "resolutionPreset", "audioMode"))
+        boolean trim = "trim".equals(node.path("operation").asText());
+        if (!node.isObject() || node.size() != (compression || trim ? 5 : 4)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+        for (String key : Set.of("operation", "outputFormat", "audioMode"))
             if (!node.path(key).isString()) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
-        if (!Set.of("transcode", "compress").contains(node.path("operation").asText()) || !node.path("outputFormat").asText().equals("mp4")
-                || !Set.of("source", "720p").contains(node.path("resolutionPreset").asText())
+        if (!Set.of("transcode", "compress", "trim").contains(node.path("operation").asText()) || !node.path("outputFormat").asText().equals("mp4")
+                || (!trim && (!node.path("resolutionPreset").isString() || !Set.of("source", "720p").contains(node.path("resolutionPreset").asText())))
                 || !node.path("audioMode").asText().equals("keep")) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+        if (trim) for (String key : Set.of("startMs", "endMs"))
+            if (!node.path(key).isIntegralNumber() || !node.path(key).canConvertToLong()) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         if (compression && (!node.path("targetSizeBytes").isIntegralNumber() || !node.path("targetSizeBytes").canConvertToLong()
                 || node.path("targetSizeBytes").asLong() <= 0)) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         return json.treeToValue(node, OperationParameters.class);
     }
 
     private void validateOperation(OperationParameters parameters, MediaEntity source) {
+        if(parameters instanceof JoinClipsParameters join && !join.fitsWithin(json.readValue(source.getMetadataJson(),MediaMetadataVO.class).durationMs()))
+            throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+        if(parameters instanceof BurnSubtitleParameters burn) {
+            var selected=transcripts.get(source.getUserId(),burn.transcriptId().toString(),null);
+            if(!selected.mediaId().equals(source.getId())) throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+            var latest=transcripts.latest(source.getUserId(),source.getId());
+            if(!latest.id().equals(burn.transcriptId().toString()) || latest.version()!=burn.transcriptVersion())
+                throw new BusinessException(ErrorCode.TRANSCRIPT_VERSION_CONFLICT);
+        }
+        if (parameters instanceof TrimParameters trim && !trim.fitsWithin(json.readValue(source.getMetadataJson(), MediaMetadataVO.class).durationMs()))
+            throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         if (parameters instanceof ExtractAudioParameters && !json.readValue(source.getMetadataJson(), MediaMetadataVO.class).hasAudio())
             throw new BusinessException(ErrorCode.SOURCE_HAS_NO_AUDIO);
         if (parameters instanceof CompressionParameters compression) {
@@ -211,6 +326,10 @@ public class ProcessingServiceImpl implements ProcessingService {
         if (user == null || user.getStatus() != UserStatus.ACTIVE) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
     }
     private void requireTool(OperationParameters parameters) {
+        if(parameters instanceof BurnSubtitleParameters) {
+            if(!probe.isAvailable() || !transcoder.isSubtitleBurnAvailable()) throw new BusinessException(ErrorCode.SUBTITLE_BURN_UNAVAILABLE);
+            return;
+        }
         boolean audio = parameters instanceof ExtractAudioParameters;
         if (!probe.isAvailable() || !(audio ? transcoder.isAudioExtractionAvailable() : transcoder.isAvailable()))
             throw new BusinessException(audio ? ErrorCode.AUDIO_EXTRACTION_UNAVAILABLE : ErrorCode.TRANSCODE_UNAVAILABLE);

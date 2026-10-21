@@ -34,11 +34,15 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doReturn;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 
 @SpringBootTest(properties={"spring.datasource.url=jdbc:h2:mem:media_tests;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
         "app.media.max-upload-size=2048B"})
@@ -113,7 +117,7 @@ class MediaIntegrationTests {
         assertThat(worker.runOne()).isTrue();
         mvc.perform(get("/api/media/"+id).cookie(browser.cookie())).andExpect(status().isOk())
                 .andExpect(jsonPath("data.status").value("READY")).andExpect(jsonPath("data.metadata.width").value(160))
-                .andExpect(jsonPath("data.kind").value("VIDEO")).andExpect(jsonPath("data.previewUrl").isEmpty());
+                .andExpect(jsonPath("data.kind").value("VIDEO")).andExpect(jsonPath("data.previewUrl").value("/api/media/"+id+"/preview"));
         var stale=media.findOwned(browser.id(),id); stale.setProbeToken("old-token");
         assertThat(media.complete(stale)).isZero();
         mvc.perform(post("/api/media/"+id+"/probe").cookie(browser.cookie()).header("X-CSRF-Token",browser.csrf()))
@@ -212,6 +216,93 @@ class MediaIntegrationTests {
         cleanup.runPending();
         assertThat(java.nio.file.Files.exists(root.resolve(key))).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM account_cleanup_job WHERE user_id=?",String.class,owner.id())).isEqualTo("FAILED");
+    }
+
+    @Test void sourcePreviewStreamsExactBytesAndSharesSingleRangeRulesWithOutputs() throws Exception {
+        Browser owner = login(); byte[] bytes = new byte[]{0,1,2,3,4,5,6,7,8,9};
+        String id = ready(owner, "../原片.mp4", bytes);
+        var full = assertPreview(owner, id, null, 200, bytes);
+        assertThat(org.springframework.http.ContentDisposition.parse(full.getResponse().getHeader("Content-Disposition")).getFilename()).isEqualTo("原片.mp4");
+        assertPreview(owner, id, "bytes=2-4", 206, new byte[]{2,3,4});
+        assertPreview(owner, id, "bytes=7-", 206, new byte[]{7,8,9});
+        assertPreview(owner, id, "bytes=-3", 206, new byte[]{7,8,9});
+        assertPreview(owner, id, "bytes=7-100", 206, new byte[]{7,8,9});
+        assertPreview(owner, id, "bytes=-100", 206, bytes);
+        for (String range : java.util.List.of("broken", "bytes=invalid", "bytes=0-1,4-5", "bytes=999999999999999999999999-"))
+            assertPreview(owner, id, range, 200, bytes);
+        mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie()).header("Range", "bytes=10-"))
+                .andExpect(status().isRequestedRangeNotSatisfiable()).andExpect(header().string("Content-Range", "bytes */10"))
+                .andExpect(jsonPath("code").value("RANGE_NOT_SATISFIABLE")).andExpect(jsonPath("data").isEmpty());
+    }
+
+    @Test void sourcePreviewAuthenticatesBeforeCheckingOwnershipOrRange() throws Exception {
+        Browser owner = login(), other = login(); String id = ready(owner, "private.mp4", new byte[]{1,2});
+        String url = "/api/media/"+id+"/preview";
+        mvc.perform(get(url)).andExpect(status().isUnauthorized()).andExpect(jsonPath("code").value("UNAUTHENTICATED"));
+        for (String target : java.util.List.of(url, "/api/media/"+UUID.randomUUID()+"/preview"))
+            mvc.perform(get(target).cookie(other.cookie()).header("Range", "bytes=999-"))
+                    .andExpect(status().isNotFound()).andExpect(jsonPath("code").value("RESOURCE_NOT_FOUND"));
+        mvc.perform(get("/api/media/not-a-uuid/preview").cookie(owner.cookie())).andExpect(status().isBadRequest());
+        assertPreview(owner, id, "bytes=0-0", 206, new byte[]{1});
+        when(probe.isAvailable()).thenReturn(false);
+        assertPreview(owner, id, null, 200, new byte[]{1,2});
+    }
+
+    @Test void sourcePreviewUsesDetectedContainerAndCodecsNotFilenameOrUploadMime() throws Exception {
+        Browser owner = login(); String id = id(upload(owner, "misleading.mp4", new byte[]{1}));
+        for (String state : java.util.List.of("PROBING", "FAILED")) {
+            jdbc.update("UPDATE media SET status=? WHERE id=?", state, id);
+            mvc.perform(get("/api/media/"+id).cookie(owner.cookie())).andExpect(jsonPath("data.previewUrl").isEmpty());
+            mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict())
+                    .andExpect(jsonPath("code").value("MEDIA_PREVIEW_UNAVAILABLE"));
+        }
+        for (var info : java.util.List.of(new MediaMetadataVO("matroska,webm",1200,160,90,"h264",false,null),
+                new MediaMetadataVO("mov,mp4",1200,160,90,"hevc",true,"aac"),
+                new MediaMetadataVO("mov,mp4",1200,160,90,"h264",true,"ac3"))) {
+            jdbc.update("UPDATE media SET kind='VIDEO',status='READY',metadata_json=? WHERE id=?", json.writeValueAsString(info), id);
+            mvc.perform(get("/api/media/"+id).cookie(owner.cookie())).andExpect(jsonPath("data.previewUrl").isEmpty());
+            mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict());
+        }
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?", json.writeValueAsString(
+                new MediaMetadataVO("mov,mp4",1200,160,90,"h264",true,"aac")), id);
+        assertPreview(owner, id, null, 200, new byte[]{1});
+    }
+
+    @Test void missingChangedOrEscapedSourceFilesReturnResultBeforeStartingAStream() throws Exception {
+        Browser owner = login(); String id = ready(owner, "source.mp4", new byte[]{1,2,3});
+        var item = media.findOwned(owner.id(), id); Path file = root.resolve(item.getStorageKey());
+        java.nio.file.Files.write(file, new byte[]{1});
+        mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict())
+                .andExpect(jsonPath("code").value("MEDIA_PREVIEW_UNAVAILABLE")).andExpect(jsonPath("data").isEmpty());
+        java.nio.file.Files.delete(file);
+        mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict());
+        jdbc.update("UPDATE media SET storage_key='../outside.mp4' WHERE id=?", id);
+        var response = mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict()).andReturn();
+        assertThat(response.getResponse().getContentAsString()).doesNotContain(root.toString(), "outside.mp4", "storageKey");
+        assertThat(mediaService.get(owner.id(), id).status().name()).isEqualTo("READY");
+    }
+
+    @Test void deletedSourcesAndRevokedSessionsCannotStartAnotherPreview() throws Exception {
+        Browser owner = login(); String remove = ready(owner, "remove.mp4", new byte[]{1});
+        String keep = ready(owner, "keep.mp4", new byte[]{2});
+        mediaService.delete(owner.id(), remove);
+        mvc.perform(get("/api/media/"+remove+"/preview").cookie(owner.cookie())).andExpect(status().isNotFound());
+        assertPreview(owner, keep, null, 200, new byte[]{2});
+        mvc.perform(post("/api/auth/logout").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())).andExpect(status().isOk());
+        mvc.perform(get("/api/media/"+keep+"/preview").cookie(owner.cookie())).andExpect(status().isUnauthorized());
+    }
+
+    private String ready(Browser owner, String filename, byte[] bytes) throws Exception {
+        String id = id(upload(owner, filename, bytes)); assertThat(worker.runOne()).isTrue(); return id;
+    }
+
+    private MvcResult assertPreview(Browser owner, String id, String range, int expected, byte[] bytes) throws Exception {
+        var requestBuilder = get("/api/media/"+id+"/preview").cookie(owner.cookie());
+        if (range != null) requestBuilder.header("Range", range);
+        var initial = mvc.perform(requestBuilder).andExpect(request().asyncStarted()).andReturn();
+        return mvc.perform(asyncDispatch(initial)).andExpect(status().is(expected)).andExpect(content().bytes(bytes))
+                .andExpect(content().contentType("video/mp4")).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(header().string("Accept-Ranges", "bytes")).andExpect(header().string("Content-Length", Integer.toString(bytes.length))).andReturn();
     }
 
     private MvcResult upload(Browser browser,String filename,byte[] bytes) throws Exception {

@@ -12,6 +12,10 @@ import org.example.ai_media_workbench.dto.processing.VideoParameters;
 import org.example.ai_media_workbench.dto.processing.OperationParameters;
 import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
+import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
 import org.example.ai_media_workbench.entity.OutputEntity;
 import org.example.ai_media_workbench.entity.TaskEntity;
 import org.example.ai_media_workbench.entity.UserStatus;
@@ -46,13 +50,18 @@ public class TranscodeWorker {
     private final ObjectMapper json;
     private final Clock clock;
     private final TransactionTemplate transactions;
+    private final TranscriptionWorker transcription;
+    private final org.example.ai_media_workbench.service.TranscriptService transcripts;
 
     public TranscodeWorker(ProcessingMapper mapper, MediaMapper media, UserMapper users, LocalMediaStorage storage,
                            MediaTranscoder transcoder, MediaProbe probe, TranscodeProperties properties,
-                           ObjectMapper json, Clock clock, PlatformTransactionManager manager) {
+                           ObjectMapper json, Clock clock, PlatformTransactionManager manager, TranscriptionWorker transcription,
+                           org.example.ai_media_workbench.service.TranscriptService transcripts) {
         this.mapper = mapper; this.media = media; this.users = users; this.storage = storage;
         this.transcoder = transcoder; this.probe = probe; this.properties = properties;
         this.json = json; this.clock = clock; this.transactions = new TransactionTemplate(manager);
+        this.transcription = transcription;
+        this.transcripts = transcripts;
     }
 
     @Scheduled(fixedDelay = 1000)
@@ -61,30 +70,51 @@ public class TranscodeWorker {
     public synchronized boolean runOne() {
         var cutoff = now().minus(properties.lease());
         for (var old : mapper.expired(cutoff)) {
-            if (mapper.expire(old.getId(), cutoff, now()) == 1 && old.getRunToken() != null) {
-                discard(old.getUserId() + "/" + old.getId() + "-" + old.getRunToken() + ".mp4");
-                discard(old.getUserId() + "/" + old.getId() + "-" + old.getRunToken() + ".mp3");
-            }
+            if (old.getRunToken() != null && !discardExpired(old)) continue;
+            mapper.expire(old.getId(), cutoff, now());
         }
         var pending = mapper.pending();
         if (pending.isEmpty()) return false;
         var task = pending.getFirst();
         task.setRunToken(UUID.randomUUID().toString());
         if (mapper.claim(task.getId(), task.getRunToken(), now()) != 1) return false;
+        if (task.getKind() == org.example.ai_media_workbench.entity.enums.TaskKind.TRANSCRIPTION) {
+            transcription.process(task); return true;
+        }
         LocalMediaStorage.OutputTarget target = null;
         boolean published = false;
         boolean extractingAudio = false;
+        boolean trimming = false;
+        boolean muting = false;
+        boolean burning = false;
+        boolean joining = false;
         try {
             var source = media.findOwned(task.getUserId(), task.getMediaId());
             if (source == null) throw new BusinessException(ErrorCode.TASK_CANCELLED);
             var original = json.readValue(source.getMetadataJson(), MediaMetadataVO.class);
             var parameters = json.readValue(task.getParametersJson(), OperationParameters.class);
             extractingAudio = parameters instanceof ExtractAudioParameters;
+            trimming = parameters instanceof TrimParameters;
+            muting = parameters instanceof MuteParameters;
+            burning = parameters instanceof BurnSubtitleParameters;
+            joining = parameters instanceof JoinClipsParameters;
             var input = storage.resolve(source.getStorageKey());
             if (extractingAudio) original = probe.inspectAudio(input);
             target = storage.createOutput(task.getUserId(), task.getId(), task.getRunToken(), parameters.outputFormat());
-            transcoder.convert(input, target.path(), original, parameters,
+            if(parameters instanceof BurnSubtitleParameters burn) {
+                var revision=transcripts.get(task.getUserId(),burn.transcriptId().toString(),burn.transcriptVersion());
+                if(!revision.mediaId().equals(task.getMediaId())) throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+                var size=FfmpegMediaTranscoder.dimensions(original,burn);
+                var subtitleFile=java.nio.file.Path.of(target.path()+".ass");
+                Files.writeString(subtitleFile,AssSubtitles.render(revision.segments(),size[0],size[1]),
+                        java.nio.charset.StandardCharsets.UTF_8,java.nio.file.StandardOpenOption.CREATE_NEW);
+                transcoder.burnSubtitles(input,target.path(),original,burn,subtitleFile,
+                        () -> mapper.running(task.getId(),task.getRunToken())!=1);
+                // 在清空运行令牌前删除私有字幕，避免崩溃后失去辅助文件的清理线索。
+                storage.discardOutputAuxiliary(target.key());
+            } else transcoder.convert(input, target.path(), original, parameters,
                     () -> mapper.running(task.getId(), task.getRunToken()) != 1);
+            if(joining) storage.discardOutputAuxiliary(target.key());
             if (mapper.verifying(task.getId(), task.getRunToken()) != 1) throw new BusinessException(ErrorCode.TASK_CANCELLED);
             var metadata = extractingAudio ? probe.inspectAudio(target.path()) : probe.inspect(target.path());
             verify(original, metadata, parameters);
@@ -97,7 +127,7 @@ public class TranscodeWorker {
             output.setId(UUID.randomUUID().toString()); output.setUserId(task.getUserId()); output.setTaskId(task.getId());
             String name = source.getOriginalFilename().replaceFirst("\\.[^.]*$", "");
             if (name.codePointCount(0, name.length()) > 120) name = name.substring(0, name.offsetByCodePoints(0, 120));
-            output.setFilename(name + (extractingAudio ? "-audio.mp3" : parameters instanceof CompressionParameters ? "-compressed.mp4" : "-converted.mp4")); output.setStorageKey(target.key());
+            output.setFilename(name + (extractingAudio ? "-audio.mp3" : trimming ? "-trimmed.mp4" : muting ? "-muted.mp4" : burning ? "-subtitled.mp4" : joining ? "-joined.mp4" : parameters instanceof CompressionParameters ? "-compressed.mp4" : "-converted.mp4")); output.setStorageKey(target.key());
             output.setContentType(extractingAudio ? "audio/mpeg" : "video/mp4"); output.setSizeBytes(size); output.setMetadataJson(json.writeValueAsString(metadata));
             output.setCreatedAt(now());
             published = Boolean.TRUE.equals(transactions.execute(status -> finish(task, output, null)));
@@ -105,8 +135,15 @@ public class TranscodeWorker {
             // Background work has no HTTP response: persist a safe failure, never raw tool output or disk paths.
             ErrorCode error = exception instanceof BusinessException business ? business.code() : ErrorCode.TRANSCODE_FAILED;
             if (extractingAudio && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.AUDIO_EXTRACTION_FAILED;
+            if (trimming && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.TRIM_FAILED;
+            if (muting && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.MUTE_FAILED;
+            if (burning && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.SUBTITLE_BURN_FAILED;
+            if (joining && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.CLIP_JOIN_FAILED;
             ErrorCode failure = error;
-            transactions.executeWithoutResult(status -> finish(task, null, failure));
+            boolean cleaned=true;
+            if((burning || joining) && target!=null) try { storage.discardOutput(target.key()); }
+            catch(Exception cleanupFailure) { cleaned=false; log.warn("Private subtitle cleanup deferred"); }
+            if(cleaned) transactions.executeWithoutResult(status -> finish(task, null, failure));
         } finally {
             // Unpublished/partial outputs must not become accessible after cancellation, deletion or a stale lease.
             if (!published && target != null) discard(target.key());
@@ -139,15 +176,27 @@ public class TranscodeWorker {
             return;
         }
         int[] size = FfmpegMediaTranscoder.dimensions(source, (VideoParameters) parameters);
+        boolean trim = parameters instanceof TrimParameters;
+        long expectedDuration = parameters instanceof JoinClipsParameters join ? join.totalDurationMs()
+                : trim ? ((TrimParameters) parameters).endMs() - ((TrimParameters) parameters).startMs() : source.durationMs();
+        // 首条音轨可能在所选区间开始前已结束；不补静音，也不要求裁切结果一定有声音。
+        boolean invalidAudio = parameters instanceof MuteParameters ? output.hasAudio() || output.audioCodec() != null
+                : trim ? output.hasAudio() && !source.hasAudio() : output.hasAudio() != source.hasAudio();
         if (output.width() != size[0] || output.height() != size[1] || !"h264".equals(output.videoCodec())
-                || output.hasAudio() != source.hasAudio() || (output.hasAudio() && !"aac".equals(output.audioCodec()))
-                || Math.abs(output.durationMs() - source.durationMs()) > Math.max(250, source.durationMs() / 1000))
+                || invalidAudio || (output.hasAudio() && !"aac".equals(output.audioCodec()))
+                || Math.abs(output.durationMs() - expectedDuration) > Math.max(250, expectedDuration / 1000))
             throw new BusinessException(ErrorCode.TRANSCODE_FAILED);
     }
 
     private void discard(String key) {
         try { storage.discardOutput(key); }
         catch (Exception exception) { log.warn("Unpublished conversion cleanup failed"); }
+    }
+    private boolean discardExpired(TaskEntity task) {
+        try {
+            String prefix=task.getUserId()+"/"+task.getId()+"-"+task.getRunToken();
+            storage.discardOutput(prefix+".mp4"); storage.discardOutput(prefix+".mp3"); return true;
+        } catch (Exception exception) { log.warn("Expired task file cleanup will be retried"); return false; }
     }
     private LocalDateTime now() { return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC); }
 }

@@ -8,6 +8,7 @@ import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.common.security.AccountPrincipal;
+import org.example.ai_media_workbench.common.web.MediaStreams;
 import org.example.ai_media_workbench.dto.common.PageQuery;
 import org.example.ai_media_workbench.service.MediaService;
 import org.example.ai_media_workbench.vo.common.PageVO;
@@ -21,8 +22,10 @@ import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @RestController
 @RequestMapping("/api/media")
@@ -56,6 +59,13 @@ public class MediaController {
     @PostMapping("/{mediaId}/probe")
     public ResponseEntity<Result<MediaVO>> retry(@AuthenticationPrincipal AccountPrincipal principal,@PathVariable UUID mediaId) {
         return ResponseEntity.accepted().body(Result.success(media.retryProbe(principal.userId(),mediaId.toString())));
+    }
+
+    @GetMapping("/{mediaId}/preview")
+    public ResponseEntity<StreamingResponseBody> preview(@AuthenticationPrincipal AccountPrincipal principal, @PathVariable UUID mediaId,
+                                                        @RequestHeader(value = "Range", required = false) String range) {
+        var file = media.preview(principal.userId(), mediaId.toString());
+        return MediaStreams.preview(file.path(), file.sizeBytes(), file.contentType(), file.filename(), range);
     }
 
     @DeleteMapping("/{mediaId}")

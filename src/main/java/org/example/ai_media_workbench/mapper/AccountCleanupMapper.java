@@ -31,6 +31,8 @@ public interface AccountCleanupMapper {
     /** 查询用户所属媒体和输出文件的存储键。 */
     List<String> findStorageKeys(String userId);
     int isDeletedMedia(@Param("userId") String userId, @Param("mediaId") String mediaId);
+    int isDeletedOutput(@Param("userId") String userId, @Param("outputId") String outputId);
+    List<String> findOutputStorageKeys(@Param("userId") String userId, @Param("outputId") String outputId);
     List<String> findMediaStorageKeys(@Param("userId") String userId, @Param("mediaId") String mediaId);
     LocalDateTime mediaProbeStarted(@Param("userId") String userId, @Param("mediaId") String mediaId);
     LocalDateTime latestMediaTaskLease(@Param("userId") String userId, @Param("mediaId") String mediaId);

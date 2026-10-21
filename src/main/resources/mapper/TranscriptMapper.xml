@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.ai_media_workbench.mapper.TranscriptMapper">
+    <sql id="visible">
+        t.user_id=#{userId} AND m.deleted_at IS NULL AND u.status='ACTIVE'
+    </sql>
+    <sql id="source">
+        transcript t JOIN media m ON m.id=t.media_id AND m.user_id=t.user_id JOIN app_user u ON u.id=t.user_id
+    </sql>
+    <select id="latest" resultType="org.example.ai_media_workbench.entity.TranscriptEntity">
+        SELECT t.* FROM <include refid="source"/> WHERE <include refid="visible"/> AND t.media_id=#{mediaId}
+        ORDER BY t.created_at DESC,t.id DESC LIMIT 1
+    </select>
+    <select id="owned" resultType="org.example.ai_media_workbench.entity.TranscriptEntity">
+        SELECT t.* FROM <include refid="source"/> WHERE <include refid="visible"/> AND t.id=#{id}
+    </select>
+    <select id="lockOwned" resultType="org.example.ai_media_workbench.entity.TranscriptEntity">
+        SELECT t.* FROM <include refid="source"/> WHERE <include refid="visible"/> AND t.id=#{id} FOR UPDATE
+    </select>
+    <select id="revision" resultType="org.example.ai_media_workbench.entity.TranscriptRevisionEntity">
+        SELECT r.* FROM transcript_revision r JOIN transcript t ON t.id=r.transcript_id AND t.user_id=r.user_id
+        JOIN media m ON m.id=t.media_id AND m.user_id=t.user_id JOIN app_user u ON u.id=t.user_id
+        WHERE <include refid="visible"/> AND t.id=#{id} AND r.version=#{version}
+    </select>
+    <select id="active" resultType="org.example.ai_media_workbench.entity.TaskEntity">
+        SELECT * FROM media_task WHERE user_id=#{userId} AND media_id=#{mediaId} AND kind='TRANSCRIPTION'
+            AND status IN ('QUEUED','RUNNING','CANCELLING') AND deleted_at IS NULL ORDER BY created_at,id LIMIT 1
+    </select>
+    <insert id="insert">
+        INSERT INTO transcript(id,user_id,media_id,source_task_id,version,language,original_segments_json,created_at,updated_at)
+        VALUES(#{id},#{userId},#{mediaId},#{sourceTaskId},#{version},#{language},#{originalSegmentsJson},#{createdAt},#{updatedAt})
+    </insert>
+    <insert id="insertRevision">
+        INSERT INTO transcript_revision(user_id,transcript_id,version,segments_json,created_at)
+        VALUES(#{userId},#{transcriptId},#{version},#{segmentsJson},#{createdAt})
+    </insert>
+    <update id="update">
+        UPDATE transcript SET version=#{version},updated_at=#{updatedAt} WHERE id=#{id} AND user_id=#{userId}
+    </update>
+    <select id="taskTranscript" resultType="org.example.ai_media_workbench.vo.transcript.TranscriptReference">
+        SELECT t.id AS transcript_id,1 AS version FROM <include refid="source"/>
+        WHERE <include refid="visible"/> AND t.source_task_id=#{taskId}
+    </select>
+</mapper>

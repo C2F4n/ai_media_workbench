@@ -28,11 +28,11 @@
         WHERE user_id = #{userId} AND deleted_at IS NULL
     </update>
     <insert id="insertJob">
-        INSERT INTO account_cleanup_job (id, user_id, media_id, scope_key, status, attempts, next_attempt_at, created_at, updated_at)
-        VALUES (#{id}, #{userId}, #{mediaId}, #{scopeKey}, #{status}, 0, #{nextAttemptAt}, #{createdAt}, #{updatedAt})
+        INSERT INTO account_cleanup_job (id, user_id, media_id, output_id, scope_key, status, attempts, next_attempt_at, created_at, updated_at)
+        VALUES (#{id}, #{userId}, #{mediaId}, #{outputId}, #{scopeKey}, #{status}, 0, #{nextAttemptAt}, #{createdAt}, #{updatedAt})
     </insert>
     <select id="findPending" resultType="org.example.ai_media_workbench.entity.AccountCleanupJobEntity">
-        SELECT id, user_id, media_id, scope_key, status, attempts, next_attempt_at, created_at, updated_at
+        SELECT id, user_id, media_id, output_id, scope_key, status, attempts, next_attempt_at, created_at, updated_at
         FROM account_cleanup_job
         WHERE status IN ('QUEUED', 'FAILED') AND attempts &lt; 5 AND next_attempt_at &lt;= #{now}
         ORDER BY created_at, id LIMIT 10
@@ -52,6 +52,12 @@
     </select>
     <select id="isDeletedMedia" resultType="int">
         SELECT COUNT(*) FROM media WHERE user_id=#{userId} AND id=#{mediaId} AND deleted_at IS NOT NULL
+    </select>
+    <select id="isDeletedOutput" resultType="int">
+        SELECT COUNT(*) FROM output_file WHERE user_id=#{userId} AND id=#{outputId} AND deleted_at IS NOT NULL
+    </select>
+    <select id="findOutputStorageKeys" resultType="string">
+        SELECT storage_key FROM output_file WHERE user_id=#{userId} AND id=#{outputId} AND deleted_at IS NOT NULL
     </select>
     <select id="mediaProbeStarted" resultType="java.time.LocalDateTime">
         SELECT probe_started_at FROM media WHERE user_id=#{userId} AND id=#{mediaId} AND deleted_at IS NOT NULL
