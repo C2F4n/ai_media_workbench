@@ -1,14 +1,21 @@
 package org.example.ai_media_workbench;
 
 import java.time.Duration;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.example.ai_media_workbench.properties.AccountCleanupProperties;
 import org.example.ai_media_workbench.properties.AuthProperties;
 import org.example.ai_media_workbench.properties.MediaProperties;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.config.MediaUploadConfig;
 import org.example.ai_media_workbench.properties.StorageProperties;
 import org.example.ai_media_workbench.properties.RegistrationMailProperties;
 import org.example.ai_media_workbench.service.impl.SystemServiceImpl;
 import org.example.ai_media_workbench.service.RegistrationMailSender;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -20,8 +27,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class PropertiesBindingTests {
+    @TempDir Path directory;
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
-            .withUserConfiguration(PropertyConfiguration.class);
+            .withUserConfiguration(PropertyConfiguration.class, MediaUploadConfig.class);
 
     @Test
     void defaultsBindFromTheActualApplicationConfiguration() {
@@ -30,7 +38,11 @@ class PropertiesBindingTests {
             assertThat(context.getBean(AuthProperties.class).sessionIdleTimeout()).isEqualTo(Duration.ofMinutes(30));
             assertThat(context.getBean(StorageProperties.class).root()).isEqualTo("./storage");
             assertThat(context.getBean(AccountCleanupProperties.class).intervalMs()).isEqualTo(5000);
-            assertThat(context.getBean(MediaProperties.class).maxUploadSize()).isEqualTo(DataSize.ofGigabytes(1));
+            assertThat(context.getBean(MediaProperties.class).maxUploadSize()).isEqualTo(DataSize.ofGigabytes(3));
+            assertThat(context.getBean(TranscodeProperties.class).maxOutputSize()).isEqualTo(DataSize.ofGigabytes(3));
+            var multipart = context.getBean(jakarta.servlet.MultipartConfigElement.class);
+            assertThat(multipart.getMaxFileSize()).isEqualTo(3221225472L).isGreaterThan(Integer.MAX_VALUE);
+            assertThat(multipart.getMaxRequestSize()).isEqualTo(3221225472L + 1024 * 1024);
             assertThat(context.getBean(MediaProperties.class).maxDuration()).isEqualTo(Duration.ofMinutes(15));
             assertThat(context.getBean(RegistrationMailProperties.class).enabled()).isFalse();
             assertThat(context.getEnvironment().getProperty("management.health.mail.enabled")).isEqualTo("false");
@@ -48,9 +60,10 @@ class PropertiesBindingTests {
                     mock(RegistrationMailSender.class), mock(org.example.ai_media_workbench.service.MediaProbe.class),
                     mock(org.example.ai_media_workbench.service.MediaTranscoder.class), mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),
                     mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),mock(org.example.ai_media_workbench.service.OperationPlanner.class),
-                    mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class)).getCapabilities();
+                    mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class),mock(org.example.ai_media_workbench.service.CloudCredentialService.class)).getCapabilities();
             assertThat(capabilities.registration()).isFalse();
             assertThat(capabilities.maxUploadBytes()).isEqualTo(DataSize.ofMegabytes(16).toBytes());
+            assertThat(context.getBean(jakarta.servlet.MultipartConfigElement.class).getMaxFileSize()).isEqualTo(DataSize.ofMegabytes(16).toBytes());
             assertThat(capabilities.maxDurationMs()).isEqualTo(Duration.ofMinutes(3).toMillis());
             assertThat(context.getEnvironment().getProperty("spring.servlet.multipart.max-file-size")).isEqualTo("16MB");
             assertThat(context.getBean(AccountCleanupProperties.class).enabled()).isFalse();
@@ -61,7 +74,8 @@ class PropertiesBindingTests {
             var textOnly=new SystemServiceImpl(context.getBean(AuthProperties.class),media,
                     mock(RegistrationMailSender.class),mock(org.example.ai_media_workbench.service.MediaProbe.class),
                     mock(org.example.ai_media_workbench.service.MediaTranscoder.class),mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),
-                    mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),mock(org.example.ai_media_workbench.service.OperationPlanner.class),analyzer).getCapabilities();
+                    mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),mock(org.example.ai_media_workbench.service.OperationPlanner.class),analyzer,
+                    mock(org.example.ai_media_workbench.service.CloudCredentialService.class)).getCapabilities();
             assertThat(textOnly.semanticSearch()).isTrue();
             assertThat(textOnly.clipRecommendations()).isTrue();
             assertThat(textOnly.mediaTool()).isFalse();
@@ -70,7 +84,8 @@ class PropertiesBindingTests {
             when(videoProbe.isAvailable()).thenReturn(true); when(burnTool.isSubtitleBurnAvailable()).thenReturn(true);
             var burnOnly=new SystemServiceImpl(context.getBean(AuthProperties.class),media,mock(RegistrationMailSender.class),videoProbe,burnTool,
                     mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),
-                    mock(org.example.ai_media_workbench.service.OperationPlanner.class),mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class)).getCapabilities();
+                    mock(org.example.ai_media_workbench.service.OperationPlanner.class),mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class),
+                    mock(org.example.ai_media_workbench.service.CloudCredentialService.class)).getCapabilities();
             assertThat(burnOnly.supportedOperations()).containsExactly("burn_subtitles");
             assertThat(burnOnly.asr()).isFalse();
         });
@@ -98,9 +113,47 @@ class PropertiesBindingTests {
         });
     }
 
+    @Test
+    void privateMailLoadsByDefaultCanBeDisabledAndIsExcludedFromTestProfile() throws Exception {
+        Path mail = directory.resolve("mail.properties"), config = directory.resolve("application.properties");
+        Files.writeString(mail, "app.registration-mail.enabled=${REGISTRATION_MAIL_ENABLED:true}\n"
+                + "app.registration-mail.from=fixture@example.com\nspring.mail.host=fixture.invalid\n", StandardCharsets.UTF_8);
+        String template;
+        try (var input = getClass().getResourceAsStream("/application.properties")) {
+            template = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        Files.writeString(config, template.replace("optional:file:./.local/database.properties", "optional:" + directory.resolve("absent.properties").toUri()), StandardCharsets.UTF_8);
+        try (var input = getClass().getResourceAsStream("/application-default.properties")) {
+            Files.writeString(directory.resolve("application-default.properties"), new String(input.readAllBytes(), StandardCharsets.UTF_8)
+                    .replace("optional:file:./.local/mail.properties", "optional:" + mail.toUri()), StandardCharsets.UTF_8);
+        }
+        var runner = new ApplicationContextRunner().withUserConfiguration(MailConfiguration.class)
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withPropertyValues("spring.config.location=" + config.toUri());
+        runner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(RegistrationMailProperties.class).enabled()).isTrue();
+            assertThat(context.getEnvironment().getProperty("spring.mail.host")).isEqualTo("fixture.invalid");
+        });
+        runner.withPropertyValues("REGISTRATION_MAIL_ENABLED=false").run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(RegistrationMailProperties.class).enabled()).isFalse();
+        });
+        runner.withPropertyValues("spring.profiles.active=test").run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(RegistrationMailProperties.class).enabled()).isFalse();
+            assertThat(context.getEnvironment().getProperty("spring.mail.host")).isEmpty();
+            assertThat(context.getBean(AuthProperties.class).sessionIdleTimeout()).isEqualTo(Duration.ofMinutes(30));
+        });
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    @EnableConfigurationProperties({RegistrationMailProperties.class, AuthProperties.class})
+    static class MailConfiguration {}
+
     @TestConfiguration(proxyBeanMethods = false)
     @PropertySource("classpath:application.properties")
     @EnableConfigurationProperties({AuthProperties.class, StorageProperties.class,
-            AccountCleanupProperties.class, MediaProperties.class, RegistrationMailProperties.class})
+            AccountCleanupProperties.class, MediaProperties.class, TranscodeProperties.class, RegistrationMailProperties.class})
     static class PropertyConfiguration {}
 }

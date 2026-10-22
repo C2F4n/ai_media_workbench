@@ -46,7 +46,7 @@ for (const width of [1365, 390]) test(`manual ordered workflow edits moves saves
   await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
   await expect(page.locator('#generate-ai-plan')).toBeDisabled();
   await page.locator('#workflow-step-mode').click(); await expect(page.locator('#workflow-save')).toBeEnabled();
-  await expect(page.locator('#dependency-kind')).toHaveText('本地处理');
+  await expect(page.locator('#dependency-kind')).toHaveText('服务端处理');
   await page.locator('#workflow-add').click();
   await page.getByLabel('步骤 1 操作', { exact: true }).selectOption('join_clips');
   await page.getByRole('button', { name: '步骤 1 添加区间', exact: true }).click();

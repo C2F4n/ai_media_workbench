@@ -28,7 +28,7 @@ async function fixture(page) {
     throw new Error('Unexpected fixture request: ' + request.method() + ' ' + url.pathname);
   });
   await page.goto('http://workbench.test/'); await expect(page.locator('#workbench-panel')).toBeVisible();
-  await page.locator('#header-account').click(); await expect(page.locator('.cloud-provider')).toHaveCount(3);
+  await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click(); await expect(page.locator('.cloud-provider')).toHaveCount(3);
   return writes;
 }
 
@@ -36,7 +36,7 @@ for (const width of [1365, 390]) test(`cloud credentials require the visible sav
   await page.setViewportSize({ width, height: 900 });
   const writes = await fixture(page); let confirmations = 0, accept = false;
   page.on('dialog', async (dialog) => { confirmations++; await (accept ? dialog.accept() : dialog.dismiss()); });
-  for (const [provider, name] of [['tencent', '腾讯云语音识别'], ['aliyun', '阿里云百炼语音识别'], ['deepseek', 'DeepSeek']]) {
+  for (const [provider, name] of [['tencent', '腾讯云语音识别'], ['aliyun', '阿里云百炼语音识别'], ['deepseek', '文字 AI']]) {
     const card = page.locator('#cloud-' + provider), save = card.getByRole('button', { name: '保存' + name + '配置', exact: true });
     await card.locator('select').selectOption('PERSONAL');
     const before = writes.length, beforeDialogs = confirmations;

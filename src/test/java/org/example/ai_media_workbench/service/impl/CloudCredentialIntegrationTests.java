@@ -38,6 +38,7 @@ class CloudCredentialIntegrationTests {
     @Autowired CloudCredentialService credentials; @Autowired CloudCredentialMapper mapper; @Autowired SubtitleCorrector corrector; @Autowired UserService users;
     @Autowired SpeechRecognizer recognizer;
     @MockitoBean CloudTransport transport;
+    @MockitoBean LocalAiClient local;
     private static final String PASSWORD="Testing-2026!";
     @BeforeEach void response() {
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{\"text\":\"原文\"}"))))));
@@ -65,7 +66,7 @@ class CloudCredentialIntegrationTests {
         var requests=org.mockito.ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
         assertThat(requests.getAllValues().get(0).headers().firstValue("Authorization")).contains("Bearer sk-first-personal");
         assertThat(requests.getAllValues().get(1).headers().firstValue("Authorization")).contains("Bearer sk-second-personal");
-        assertThat(credentials.effective(null,"deepseek").deepseekApiKey()).isEqualTo("sk-site-tests");
+        assertThat(credentials.effective(null,"deepseek").deepseekReady()).isFalse();
         mvc.perform(get("/api/users/me/cloud-credentials").cookie(second.cookie)).andExpect(jsonPath("data[2].version").value(1));
     }
     @Test void speechRecognitionUsesTheTaskOwnersPersonalTencentSignature() throws Exception {
@@ -113,10 +114,17 @@ class CloudCredentialIntegrationTests {
         assertThat(mapper.find(owner.id,"deepseek").getEncryptedPayload()).isNull(); assertThat(corrector.isAvailable(owner.id)).isFalse();
         mvc.perform(get("/api/system/capabilities").cookie(owner.cookie)).andExpect(header().string("Cache-Control","no-store"))
                 .andExpect(jsonPath("data.subtitleCorrection").value(false));
-        mvc.perform(get("/api/system/capabilities")).andExpect(jsonPath("data.subtitleCorrection").value(true));
+        mvc.perform(get("/api/system/capabilities")).andExpect(jsonPath("data.subtitleCorrection").value(false))
+                .andExpect(jsonPath("data.textAi.source").value("SERVER"))
+                .andExpect(jsonPath("data.textAi.unavailableReason").value(ErrorCode.LOCAL_AI_UNAVAILABLE.message()));
         save(owner,"deepseek",Map.of("expectedVersion",2,"mode","SERVER"));
-        assertThat(credentials.effective(owner.id,"deepseek").deepseekApiKey()).isEqualTo("sk-site-tests");
-        assertThat(credentials.list(owner.id).get(2).configured()).isTrue();
+        assertThat(credentials.effective(owner.id,"deepseek").deepseekReady()).isFalse();
+        assertThat(credentials.list(owner.id).get(2).available()).isFalse();
+        when(local.configured()).thenReturn(true); when(local.isAvailable()).thenReturn(true); when(local.model()).thenReturn("qwen3.5-4b");
+        assertThat(credentials.list(owner.id).get(2).available()).isTrue();
+        mvc.perform(get("/api/system/capabilities").cookie(owner.cookie)).andExpect(jsonPath("data.subtitleCorrection").value(true))
+                .andExpect(jsonPath("data.textAi.model").value("qwen3.5-4b"));
+        verify(transport,times(1)).post(any(),anyLong(),any(),any());
     }
     @Test void blankSecretUpdatesKeepTheSavedValueOnlyWhenOmittedAndConcurrentVersionsConflict() throws Exception {
         var owner=login(); save(owner,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-kept-secret","model","deepseek-flash"));
@@ -155,6 +163,21 @@ class CloudCredentialIntegrationTests {
         assertThat(credentials.available(second.id,"deepseek")).isFalse();
         assertThatThrownBy(()->credentials.effective(second.id,"deepseek")).isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.CLOUD_CREDENTIALS_UNAVAILABLE));
         assertThat(credentials.list(second.id).get(2).personalStored()).isTrue();
+        verifyNoInteractions(transport);
+    }
+    @Test void defaultLocalModelRoutesTextOnlyAndDoesNotUseSiteCloudKeys() throws Exception {
+        var owner=login(); when(local.configured()).thenReturn(true); when(local.isAvailable()).thenReturn(true);
+        when(local.model()).thenReturn("qwen3.5-4b");
+        when(local.complete(any(),any(),anyInt(),any())).thenReturn(json.readTree("{\"text\":\"本地结果\"}"));
+        assertThat(corrector.correct("原文",owner.id)).isEqualTo("本地结果");
+        assertThat(recognizer.providers(owner.id)).isEmpty();
+        mvc.perform(get("/api/users/me/cloud-credentials").cookie(owner.cookie))
+                .andExpect(jsonPath("data[0].available").value(false))
+                .andExpect(jsonPath("data[0].unavailableReason").value("本地模型不支持语音识别，请配置我的凭据"))
+                .andExpect(jsonPath("data[2].available").value(true));
+        when(local.complete(any(),any(),anyInt(),any())).thenThrow(new BusinessException(ErrorCode.LOCAL_AI_UNAVAILABLE));
+        assertThatThrownBy(()->corrector.correct("原文",owner.id))
+                .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.LOCAL_AI_UNAVAILABLE));
         verifyNoInteractions(transport);
     }
     @Test void accountDeletionPhysicallyRemovesPersonalCredentialRows() throws Exception {

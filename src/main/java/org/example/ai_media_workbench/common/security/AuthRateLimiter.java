@@ -4,6 +4,7 @@ import org.example.ai_media_workbench.common.exception.RateLimitException;
 import org.example.ai_media_workbench.properties.AuthProperties;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,16 @@ public class AuthRateLimiter {
      */
     // key 区分操作和对象（例如 login:ip:...）；同步保证并发请求不会漏计，限制键数防止内存无限增长。
     public synchronized void check(String key, int limit) {
+        acquire(key, limit, properties.rateLimitWindow());
+    }
+
+    /** 先占位防止并发穿透；只有实际完成操作才确认配额，异常退出自动返还。 */
+    public synchronized Permit reserve(String key, int limit, Duration duration) {
+        return new Permit(key, acquire(key, limit, duration));
+    }
+
+    private Window acquire(String key, int limit, Duration duration) {
+        if (limit < 1 || duration == null || duration.isZero() || duration.isNegative()) throw new IllegalArgumentException();
         Instant now = clock.instant();
         windows.entrySet().removeIf(e -> !now.isBefore(e.getValue().expiresAt));
         Window window = windows.get(key);
@@ -36,13 +47,32 @@ public class AuthRateLimiter {
             if (windows.size() >= MAX_KEYS) {
                 throw new RateLimitException(60);
             }
-            window = new Window(now.plus(properties.rateLimitWindow()));
+            window = new Window(now.plus(duration));
             windows.put(key, window);
         }
         if (window.count >= limit) {
             throw new RateLimitException(Math.max(1, window.expiresAt.getEpochSecond() - now.getEpochSecond()));
         }
         window.count++;
+        return window;
+    }
+
+    public final class Permit implements AutoCloseable {
+        private final String key;
+        private final Window window;
+        private boolean committed, closed;
+        private Permit(String key, Window window) { this.key = key; this.window = window; }
+        public void commit() {
+            synchronized (AuthRateLimiter.this) { if (!closed) committed = true; }
+        }
+        @Override public void close() {
+            synchronized (AuthRateLimiter.this) {
+                if (closed) return;
+                closed = true;
+                // 不能退还到已经过期后被同名新窗口替换的计数中。
+                if (!committed && windows.get(key) == window && --window.count == 0) windows.remove(key);
+            }
+        }
     }
 
     private static final class Window {

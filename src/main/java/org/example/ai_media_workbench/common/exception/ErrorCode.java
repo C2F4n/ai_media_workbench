@@ -32,6 +32,7 @@ public enum ErrorCode {
     UNSUPPORTED_MEDIA(HttpStatus.UNPROCESSABLE_CONTENT, "当前仅支持MP4、MOV、MKV或WebM视频"),
     TRANSCODE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "视频转换工具暂不可用"),
     AI_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "AI服务尚未配置或暂不可用，请使用明确参数"),
+    LOCAL_AI_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "本地模型不可用，请检查推理服务是否已启动、加载完成及端口配置"),
     AI_BUSY(HttpStatus.SERVICE_UNAVAILABLE, "AI服务繁忙，请稍后重试"),
     AI_PLAN_FAILED(HttpStatus.UNPROCESSABLE_CONTENT, "未生成有效处理方案，请修改要求后重试"),
     AI_ANALYSIS_FAILED(HttpStatus.UNPROCESSABLE_CONTENT, "未得到有效的字幕分析结果，请稍后重试或修改目标"),

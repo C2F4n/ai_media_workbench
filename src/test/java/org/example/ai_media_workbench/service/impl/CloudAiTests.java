@@ -81,7 +81,7 @@ class CloudAiTests {
     }
 
     @Test void deepseekUsesJsonAndReturnsOnlyValidatedTextWithoutToolsOrTimeChanges() {
-        var transport=mock(CloudTransport.class); var corrector=new DeepSeekSubtitleCorrector(new DeepSeekJsonClient(credentials(configured),transport,json),json);
+        var transport=mock(CloudTransport.class); var corrector=new DeepSeekSubtitleCorrector(textClient(transport),json);
         String content=json.writeValueAsString(Map.of("text","校对结果。"));
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content",content))))));
         assertThat(corrector.correct("原文",USER)).isEqualTo("校对结果。");
@@ -97,7 +97,7 @@ class CloudAiTests {
     }
 
     @Test void plannerUsesTheSharedJsonApiAndOnlySendsInstructionAndControlledMetadata() throws Exception {
-        var transport=mock(CloudTransport.class); var client=new DeepSeekJsonClient(credentials(configured),transport,json);
+        var transport=mock(CloudTransport.class); var client=textClient(transport);
         var planner=new DeepSeekOperationPlanner(client,json);
         String content="{\"parameters\":{\"operation\":\"mute\",\"outputFormat\":\"mp4\",\"resolutionPreset\":\"source\"}}";
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content",content))))));
@@ -130,7 +130,7 @@ class CloudAiTests {
     }
 
     @Test void plannerPromptSupportsBoundedCompositeExportsOrderedJoinsAndClarificationContext() {
-        var client=mock(DeepSeekJsonClient.class); var planner=new DeepSeekOperationPlanner(client,json);
+        var client=mock(TextAiJsonClient.class); var planner=new DeepSeekOperationPlanner(client,json);
         var parameters=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","360p",null,null,"keep",0L,5000L,null,false);
         when(client.complete(anyString(),anyString(),eq(3072),eq(ErrorCode.AI_PLAN_FAILED),eq(USER)))
                 .thenReturn(json.valueToTree(Map.of("parameters",parameters)));
@@ -152,7 +152,7 @@ class CloudAiTests {
     }
 
     @Test void transcriptAnalyzerUsesSharedBoundedJsonClientAndSendsOnlySavedSegments() throws Exception {
-        var transport=mock(CloudTransport.class); var analyzer=new DeepSeekTranscriptAnalyzer(new DeepSeekJsonClient(credentials(configured),transport,json),json);
+        var transport=mock(CloudTransport.class); var analyzer=new DeepSeekTranscriptAnalyzer(textClient(transport),json);
         var id=UUID.randomUUID(); var segments=List.of(new TranscriptSegment(id,100L,900L,"真实字幕"));
         String content=json.writeValueAsString(Map.of("matches",List.of(Map.of("startSegmentId",id,"endSegmentId",id,"score",0.9))));
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content",content))))));
@@ -240,10 +240,15 @@ class CloudAiTests {
     private org.example.ai_media_workbench.service.CloudCredentialService credentials(AiProperties settings) {
         var service=mock(org.example.ai_media_workbench.service.CloudCredentialService.class);
         when(service.effective(any(),anyString())).thenReturn(settings);
+        when(service.source(any(),anyString())).thenReturn(org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest.Mode.PERSONAL);
         when(service.available(any(),anyString())).thenAnswer(call->switch(call.getArgument(1,String.class)) {
             case "tencent" -> settings.tencentReady(); case "aliyun" -> settings.aliyunReady(); default -> settings.deepseekReady();
         });
         return service;
+    }
+    private TextAiJsonClient textClient(CloudTransport transport) {
+        var credentials=credentials(configured);
+        return new TextAiJsonClient(credentials,new DeepSeekJsonClient(credentials,transport,json),mock(LocalAiClient.class));
     }
     private HttpRequest request(String url) { return HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(3)).POST(HttpRequest.BodyPublishers.noBody()).build(); }
     private void event(CloudSpeechRecognizer.RecognitionListener listener,WebSocket socket,String event,Map<String,?> payload) {

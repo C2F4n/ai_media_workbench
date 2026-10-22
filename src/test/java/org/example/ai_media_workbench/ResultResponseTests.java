@@ -2,6 +2,9 @@ package org.example.ai_media_workbench;
 
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.DispatcherType;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import org.example.ai_media_workbench.common.exception.ApiExceptionController;
 import org.example.ai_media_workbench.common.exception.BusinessException;
@@ -30,6 +33,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -129,6 +133,22 @@ class ResultResponseTests {
         }
     }
 
+    @Test
+    void clientDisconnectDuringStreamingIsHandledWithoutWritingAnErrorBody() throws Exception {
+        var response = mvc.perform(get("/fixture/disconnect")).andReturn().getResponse();
+        // 断开连接不是服务端错误：既不能变成 500，也不能再写 Result 错误体。
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).isEmpty();
+    }
+
+    @Test
+    void failureAfterResponseCommittedDoesNotOverwriteTheStream() throws Exception {
+        var response = mvc.perform(get("/fixture/broken-stream")).andReturn().getResponse();
+        // 已经写出的字节保持原样，不回退成 500 JSON。
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).isEqualTo("partial");
+    }
+
     @RestController
     static class FixtureController {
         @GetMapping("/fixture/{scenario}")
@@ -152,5 +172,17 @@ class ResultResponseTests {
 
         @PostMapping(value = "/fixture/body", consumes = MediaType.APPLICATION_JSON_VALUE)
         Result<Map<String, String>> body(@RequestBody Map<String, String> body) { return Result.success(body); }
+
+        @GetMapping("/fixture/disconnect")
+        void disconnect() throws AsyncRequestNotUsableException {
+            throw new AsyncRequestNotUsableException("Connection reset by peer");
+        }
+
+        @GetMapping("/fixture/broken-stream")
+        void brokenStream(HttpServletResponse response) throws IOException {
+            response.getOutputStream().write("partial".getBytes(StandardCharsets.UTF_8));
+            response.flushBuffer();
+            throw new IllegalStateException("stream failed after commit");
+        }
     }
 }

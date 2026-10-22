@@ -14,21 +14,21 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
-/** 个人/站点/关闭三种来源明确隔离；个人凭据失败不回退公共额度，秘密不进入VO或任务。 */
+/** 个人/本地/关闭三种来源明确隔离；SERVER不再使用云端环境凭据，失败不自动回退。 */
 @Service
 public class CloudCredentialServiceImpl implements CloudCredentialService {
     private static final List<String> PROVIDERS=List.of("tencent","aliyun","deepseek");
     private static final AiProperties EMPTY=new AiProperties("","","","","","","deepseek-flash");
     private final CloudCredentialMapper mapper;
     private final UserMapper users;
-    private final AiProperties server;
+    private final LocalAiClient local;
     private final CloudCredentialCipher cipher;
     private final ObjectMapper json;
     private final Clock clock;
     private final AuthRateLimiter limiter;
-    public CloudCredentialServiceImpl(CloudCredentialMapper mapper,UserMapper users,AiProperties server,CloudCredentialCipher cipher,
+    public CloudCredentialServiceImpl(CloudCredentialMapper mapper,UserMapper users,LocalAiClient local,CloudCredentialCipher cipher,
                                       ObjectMapper json,Clock clock,AuthRateLimiter limiter) {
-        this.mapper=mapper; this.users=users; this.server=server; this.cipher=cipher; this.json=json; this.clock=clock; this.limiter=limiter;
+        this.mapper=mapper; this.users=users; this.local=local; this.cipher=cipher; this.json=json; this.clock=clock; this.limiter=limiter;
     }
     @Override public List<CloudCredentialVO> list(String userId) {
         active(userId,false); return PROVIDERS.stream().map(provider->view(provider,mapper.find(userId,provider))).toList();
@@ -61,28 +61,47 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
     }
     @Override public AiProperties effective(String userId,String provider) {
         provider(provider);
-        if(userId==null) return server;
+        if(userId==null) return EMPTY;
         active(userId,false); var item=mapper.find(userId,provider);
-        if(item==null || "SERVER".equals(item.getMode())) return server;
+        if(item==null || "SERVER".equals(item.getMode())) return EMPTY;
         if("OFF".equals(item.getMode())) return EMPTY;
         var settings=decode(item); if(!ready(settings,provider)) throw new BusinessException(ErrorCode.CLOUD_CREDENTIALS_UNAVAILABLE);
         return settings;
     }
     @Override public boolean available(String userId,String provider) {
+        if(source(userId,provider)==SaveCloudCredentialRequest.Mode.SERVER) return provider.equals("deepseek") && local.isAvailable();
         try { return ready(effective(userId,provider),provider); }
         catch(BusinessException failure) {
             if(failure.code()==ErrorCode.CLOUD_CREDENTIALS_UNAVAILABLE) return false;
             throw failure;
         }
     }
+    @Override public SaveCloudCredentialRequest.Mode source(String userId,String provider) {
+        provider(provider);
+        if(userId==null) return SaveCloudCredentialRequest.Mode.SERVER;
+        active(userId,false);
+        var item=mapper.find(userId,provider);
+        return item==null ? SaveCloudCredentialRequest.Mode.SERVER : SaveCloudCredentialRequest.Mode.valueOf(item.getMode());
+    }
+    @Override public org.example.ai_media_workbench.vo.system.TextAiStatusVO textStatus(String userId) {
+        if(userId!=null) active(userId,false);
+        var item=view("deepseek",userId==null ? null : mapper.find(userId,"deepseek"));
+        return new org.example.ai_media_workbench.vo.system.TextAiStatusVO(item.mode(),item.model(),item.available(),item.unavailableReason());
+    }
     private CloudCredentialVO view(String provider,CloudCredentialEntity item) {
-        String mode=item==null ? "SERVER" : item.getMode(); AiProperties settings="SERVER".equals(mode) ? server : EMPTY;
+        String mode=item==null ? "SERVER" : item.getMode(); AiProperties settings=EMPTY;
         boolean stored=item!=null && item.getEncryptedPayload()!=null;
         if(stored) try { settings=decode(item); } catch(BusinessException locked) { settings=EMPTY; }
-        return new CloudCredentialVO(provider,mode,item==null ? 0 : item.getVersion(),!"OFF".equals(mode) && ready(settings,provider),stored,
+        boolean localMode="SERVER".equals(mode), text=provider.equals("deepseek");
+        boolean configured=localMode ? text && local.configured() : !"OFF".equals(mode) && ready(settings,provider);
+        boolean available=localMode ? text && local.isAvailable() : configured;
+        String reason=available ? null : "OFF".equals(mode) ? "已停用" : localMode
+                ? text ? ErrorCode.LOCAL_AI_UNAVAILABLE.message() : "本地模型不支持语音识别，请配置我的凭据"
+                : stored ? "个人凭据不可读取，请重新配置" : "个人凭据尚未配置";
+        return new CloudCredentialVO(provider,mode,item==null ? 0 : item.getVersion(),configured,stored,
                 "PERSONAL".equals(mode) && provider.equals("tencent") ? settings.tencentAppId() : null,
                 "PERSONAL".equals(mode) && provider.equals("aliyun") ? settings.aliyunWorkspaceId() : null,
-                provider.equals("deepseek") ? settings.deepseekModel() : null,item==null ? null : item.getUpdatedAt().toInstant(ZoneOffset.UTC));
+                text ? localMode ? local.model() : settings.deepseekModel() : null,item==null ? null : item.getUpdatedAt().toInstant(ZoneOffset.UTC),available,reason);
     }
     private AiProperties decode(CloudCredentialEntity item) {
         try { return json.readValue(cipher.decrypt(item.getUserId(),item.getProvider(),item.getEncryptedPayload()),AiProperties.class); }

@@ -38,7 +38,13 @@
     <select id="taskForPlan" resultType="org.example.ai_media_workbench.entity.TaskEntity">
         SELECT * FROM media_task WHERE plan_id=#{planId} AND user_id=#{userId} AND deleted_at IS NULL
     </select>
-    <sql id="taskFilter">user_id=#{userId} AND deleted_at IS NULL <if test="mediaId != null">AND media_id=#{mediaId}</if></sql>
+    <sql id="taskFilter">user_id=#{userId} AND deleted_at IS NULL AND history_hidden_at IS NULL <if test="mediaId != null">AND media_id=#{mediaId}</if></sql>
+    <update id="hideTaskHistory">
+        UPDATE media_task SET history_hidden_at=#{now} WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL AND history_hidden_at IS NULL
+    </update>
+    <update id="markPlanDeleted">
+        UPDATE operation_plan SET deleted_at=#{now} WHERE id=#{id} AND user_id=#{userId} AND deleted_at IS NULL
+    </update>
     <select id="tasks" resultType="org.example.ai_media_workbench.entity.TaskEntity">
         SELECT * FROM media_task WHERE <include refid="taskFilter"/> ORDER BY created_at DESC,id DESC LIMIT #{limit} OFFSET #{offset}
     </select>

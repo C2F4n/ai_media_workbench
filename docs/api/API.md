@@ -1,12 +1,16 @@
 # AI音视频工作台：轻量版接口契约
 
-版本：2.17.0。日期：2026-10-21。
+版本：2.19.0。日期：2026-10-22。
 
-Apifox选择OpenAPI/Swagger，导入同目录[openapi.json](./openapi.json)。本文与OpenAPI是一套契约，共55个接口；是否可用以x-implementation-status为准。2.0移除项目、分类和projectId：登录后直接选择功能、上传素材、处理并下载，不创建隐式默认项目。
+2.19变更：重新生成方案时，instruction完整替换旧要求，不再拼接“补充”或继承旧参数。新增DELETE方案与DELETE任务记录接口，均需登录和CSRF，统一200 Result.success()。处理记录与保存方案独立成页；V11新增media_task.history_hidden_at，仅隐藏终态记录，不删除原素材、方案或结果文件。
+
+2.18变更：SERVER来源由站点公共云端配置改为本地千问，PERSONAL/OFF和已有接口路径保持兼容，无新表/迁移。方案生成、单句校对、字幕检索/片段建议共用来源路由；本地不支持语音识别。所有来源失败均不自动回退或重试，明确参数功能不依赖模型。旧章节提到DeepSeek的文字能力现在也可使用本地千问。
+
+Apifox选择OpenAPI/Swagger，导入同目录[openapi.json](./openapi.json)。本文与OpenAPI是一套契约，共57个接口；是否可用以x-implementation-status为准。2.0移除项目、分类和projectId：登录后直接选择功能、上传素材、处理并下载，不创建隐式默认项目。
 
 ## 1. 当前范围
 
-当前共41个已实现接口：账号、注册前邮箱验证、个人云端凭据、素材上传检测/预览/删除、转换/压缩/裁切/静音/MP3提取/字幕烧录/同源多段拼接、明确参数或自然语言生成的版本方案、持久化任务/取消、结果预览/下载/删除、云端字幕识别/编辑/SRT/单句校对，以及按字幕内容检索和片段建议。缺少云端凭据时关闭对应调用，已有方案仍可确认执行，已有字幕仍可编辑、导出和本地烧录。跨素材和拼接字幕重映射仍未实现。实现与本地协议测试通过不代表真实云端效果已经验收。
+当前共43个已实现接口：账号、注册前邮箱验证、个人云端凭据、素材上传检测/预览/删除、转换/压缩/裁切/静音/MP3提取/字幕烧录/同源多段拼接、明确参数或自然语言生成的版本方案、持久化任务/取消、结果预览/下载/删除、云端字幕识别/编辑/SRT/单句校对，以及按字幕内容检索和片段建议。缺少云端凭据时关闭对应调用，已有方案仍可确认执行，已有字幕仍可编辑、导出和本地烧录。跨素材和拼接字幕重映射仍未实现。实现与本地协议测试通过不代表真实云端效果已经验收。
 
 本地入口http://127.0.0.1:8088，Nginx转发8081。未配置SMTP时关闭注册，已有账号仍可登录；未安装或配置ffprobe时上传返回MEDIA_TOOL_UNAVAILABLE，不伪造素材就绪。
 
@@ -46,6 +50,8 @@ ID为UUID，时间为UTC ISO 8601，媒体时长/位置为整数毫秒，大小�
 
 注册前先请求验证码，注册提交username/email/password/emailChallengeId/emailCode及可选displayName。验证码绑定邮箱、限时限次、单次使用；更换邮箱必须重新取码。验证码不出现在接口响应或日志。SMTP不可用时关闭注册；本地测试收件箱仅用于测试，不部署到生产。
 
+发码独立采用1分钟窗口，默认同一邮箱成功发送3次、同一IP成功发送5次；在途请求先占位防并发，发送失败返还配额，503不进入前端冷却。成功后页面显示20秒重发倒计时；429按Retry-After实际剩余秒数等待。登录及账号注册等其他限流仍保持原有5分钟窗口。SMTP接受不保证最终进入收件箱，超时等失败也无法保证供应商未投递，不自动后台重发。
+
 username为4-32位字母/数字/下划线并规范化为小写；email去除首尾空白、按小写去重；displayName为1-50字符。新密码6-16个Unicode码点，允许字母、数字、符号，不强制字符类型组合；至少3种不同字符，不能全为空白或命中弱密码列表。不trim或截断，只保存随机盐Argon2id哈希。登录及旧密码核验仍接受1-128字符，兼容已有长密码，不能截断旧密码。账号重复统一ACCOUNT_ALREADY_EXISTS，不提供公开存在性查询。
 
 登录时不存在、停用、密码错误统一INVALID_CREDENTIALS，认证内部故障500。注册不自动登录。退出当前设备撤销当前会话；改密、退出全部设备和注销撤销所有会话。已登录退出需CSRF，匿名退出幂等成功。
@@ -63,7 +69,7 @@ username为4-32位字母/数字/下划线并规范化为小写；email去除首�
 | GET | /api/media/{mediaId}/preview | 200/206 | 本人兼容原视频在线预览 |
 | DELETE | /api/media/{mediaId} | 200 | 删除及关联清理 |
 
-上传只允许一个multipart字段file，不接受额外归属或路径字段。浏览器自行生成boundary。默认单文件1GiB、15分钟；限制来自MediaProperties，可通过MEDIA_MAX_UPLOAD_SIZE、MEDIA_MAX_DURATION调整，capabilities返回当前值，部署时也要核对代理上限。
+上传只允许一个multipart字段file，不接受额外归属或路径字段。浏览器自行生成boundary。默认单文件3GiB、15分钟；限制来自MediaProperties，可通过MEDIA_MAX_UPLOAD_SIZE、MEDIA_MAX_DURATION调整，capabilities返回当前值，部署时也要核对代理上限。
 
 服务端生成受控文件名、流式保存，originalFilename仅展示。上传202返回PROBING及Location，后台ffprobe检测后变READY或FAILED。不靠扩展名或浏览器Content-Type判断。当前仅视频，支持目标MP4/MOV/MKV/WebM；不接受远程URL、播放列表或用户自定义命令。
 
@@ -85,9 +91,11 @@ DELETE /api/media/{mediaId}需要登录及CSRF，不需要密码或请求体。P
 | --- | --- | --- |
 | POST / GET | /api/operation-plans | 创建方案 / 本人分页 |
 | GET / PATCH | /api/operation-plans/{planId} | 查询 / 按版本修改 |
+| DELETE | /api/operation-plans/{planId} | 删除保存的方案，不删除已生成任务或文件 |
 | POST | /api/operation-plans/{planId}/execute | 确认执行 |
 | GET | /api/tasks | 本人任务分页，可选mediaId |
 | GET | /api/tasks/{taskId} | 状态、进度及结果 |
+| DELETE | /api/tasks/{taskId} | 从记录列表移除终态任务，不删除文件 |
 | POST | /api/tasks/{taskId}/cancel | 取消 |
 | GET | /api/outputs | 本人结果分页，可选mediaId |
 | GET | /api/outputs/{outputId} | 查询 |
@@ -97,11 +105,11 @@ DELETE /api/media/{mediaId}需要登录及CSRF，不需要密码或请求体。P
 
 创建方案提供mediaId，parameters/instruction恰好一个。明确参数支持transcode、compress、trim、mute、extract_audio、burn_subtitles、join_clips、export和workflow；自然语言支持除burn_subtitles以外的操作，2.17优先用workflow表示连续处理，不自动挑选字幕。旧转换/压缩为outputFormat=mp4、resolutionPreset=source或720p、audioMode=keep；compress额外要求targetSizeBytes。旧裁切只接受operation=trim、outputFormat=mp4、startMs、endMs、audioMode=keep五字段。静音三字段，音频提取只接受operation=extract_audio、outputFormat=mp3两字段。拼接四字段、烧录六字段和组合导出见下文。未开放操作或额外参数422。状态NEEDS_INPUT/READY/EXECUTED，修改和执行使用expectedVersion，执行后冻结，重复确认复用同一任务。旧调用契约保持兼容。
 
-自然语言示例：`{"mediaId":"素材UUID","instruction":"保留前5秒，转成360p，静音后导出"}`，仍使用POST /api/operation-plans并返回201 Result，不新增接口。2.17模型优先生成workflow的trim→resize→mute→export步骤；“取前5秒和最后5秒，顺序拼接再缩放”生成join_clips→resize→export步骤。360p表示分辨率，不索要目标体积；“发回来”表示生成本站结果下载链接。仅向DeepSeek发送要求/上文、受控元信息、字节数、工具支持列表、导出格式/编码与输出大小限制；修改时额外发送当前完整参数。不会发送原视频、音轨、文件名、存储路径或凭据。单次35秒、最多3072输出token，默认每用户5分钟20次；文字调用共用最多2个并发请求，不自动付费重试。
+自然语言示例：`{"mediaId":"素材UUID","instruction":"保留前5秒，转成360p，静音后导出"}`，仍使用POST /api/operation-plans并返回201 Result，不新增接口。2.17模型优先生成workflow的trim→resize→mute→export步骤；“取前5秒和最后5秒，顺序拼接再缩放”生成join_clips→resize→export步骤。360p表示分辨率，不索要目标体积；“发回来”表示生成本站结果下载链接。仅向所选模型发送当前完整要求、受控元信息、字节数、工具支持列表、导出格式/编码与输出大小限制；修改时不发送旧要求或旧参数。不会发送原视频、音轨、文件名、存储路径或凭据。单次35秒、最多3072输出token，默认每用户5分钟20次；文字调用共用最多2个并发请求，不自动付费重试。
 
-只接受一份完整参数对象或固定问题代码；有序数组仅允许出现在workflow.steps中，不接受任意命令、路径、URL。参数经过操作及导出格式/编码白名单、类型、每步当前时长/体积、音轨与工具校验；非法模型返回422 AI_PLAN_FAILED，不创建方案或任务。要求不足返回NEEDS_INPUT、parameters=null及固定questions：OPERATION_REQUIRED、TARGET_SIZE_REQUIRED、TRIM_RANGE_REQUIRED、CLIP_RANGES_REQUIRED、UNSUPPORTED_REQUEST、CONFLICTING_REQUIREMENTS。“剪切5秒”未明确保留/删除或片段顺序应追问。NEEDS_INPUT的PATCH回答与原要求合并保存，累计最多2000码点，超限在云端调用前422 INVALID_PARAMETERS；已含完整原文不重复拼接。READY更新携带旧完整参数。成功版本+1，失败保留原版，NEEDS_INPUT不可执行。
+只接受一份完整参数对象或固定问题代码；有序数组仅允许出现在workflow.steps中，不接受任意命令、路径、URL。参数经过操作及导出格式/编码白名单、类型、每步当前时长/体积、音轨与工具校验；非法模型返回422 AI_PLAN_FAILED，不创建方案或任务。要求不足返回NEEDS_INPUT、parameters=null及固定questions：OPERATION_REQUIRED、TARGET_SIZE_REQUIRED、TRIM_RANGE_REQUIRED、CLIP_RANGES_REQUIRED、UNSUPPORTED_REQUEST、CONFLICTING_REQUIREMENTS。“剪切5秒”未明确保留/删除或片段顺序应追问。READY与NEEDS_INPUT的PATCH instruction均为完整新要求，不合并旧提示词、不向模型传旧参数；单份最多2000码点，超限在模型调用前422 INVALID_PARAMETERS。成功版本+1，失败保留原版，NEEDS_INPUT不可执行。
 
-生成方案不会入队，必须用户检查参数后显式POST execute。AI 处理页可补充要求、查看方案、确认执行及恢复最近10条方案中的最新自然语言方案；修改输入后旧确认失效。执行响应丢失可重试同一方案/版本，不重复任务。生成/修改的云端等待不持有数据库事务或账号锁，落库前重新核验账号、素材和方案版本；等待期间删除/注销或版本变更会拒绝迟到结果。模型理解仍可能有误，参数合法不代表意图必然正确。
+生成方案不会入队，必须用户检查参数后显式POST execute。AI 处理页可重写完整要求、查看方案、确认执行及恢复最近10条方案中的最新自然语言方案；修改输入后旧确认失效。执行响应丢失可重试同一方案/版本，不重复任务。生成/修改的云端等待不持有数据库事务或账号锁，落库前重新核验账号、素材和方案版本；等待期间删除/注销或版本变更会拒绝迟到结果。模型理解仍可能有误，参数合法不代表意图必然正确。
 
 以下为旧单功能参数的执行规则；新增格式与组合参数见5.1，旧调用不受影响。压缩目标为整数字节数，至少32768字节、小于原文件且不超过服务端输出上限。按时长预留容器和音轨预算，以H.264两遍编码和AAC 96kbps执行；无音轨不生成声音。预算不足在入队前422 COMPRESSION_TARGET_UNREACHABLE；完成后再次检查时长、尺寸、编码、音轨和实际大小，结果须不超过目标且小于原文件，否则任务FAILED且不发布输出。两遍共享总超时，编码日志受大小限制，并在成功、失败、取消、租约回收及账号清理时删除。不以目标大小截断视频。页面目标体积以MB展示，1MB按1048576字节换算。
 
@@ -113,7 +121,7 @@ DELETE /api/media/{mediaId}需要登录及CSRF，不需要密码或请求体。P
 
 提取音频固定读取第一条音轨，生成192kbps、44.1kHz双声道MP3，剔除视频、封面及源元数据。缺少音轨在入队前返回422 SOURCE_HAS_NO_AUDIO；缺少libmp3lame编码器返回503 AUDIO_EXTRACTION_UNAVAILABLE。capabilities按编码器独立声明extract_audio，不依赖视频编码器。输出用ffprobe重新验证MP3格式、编码、无视频流及真实音轨时长，失败为AUDIO_EXTRACTION_FAILED且不发布。首条音轨比视频短时不补静音、不按视频时长截断或拼接。音频结果contentType=audio/mpeg、文件名后缀-audio.mp3；metadata中width/height/videoCodec为null，durationMs是实际音轨时长。
 
-任务QUEUED/RUNNING/CANCELLING/CANCELLED/SUCCEEDED/FAILED，数据库队列最多20个活动任务，每个实例串行转换。默认5分钟进程超时、7分钟租约、结果最大1GiB；TRANSCODE_TIMEOUT、TRANSCODE_MAX_OUTPUT_SIZE可覆盖，租约必须大于超时加1分钟。排队工作重启后继续，过期运行任务变FAILED/TASK_INTERRUPTED，不自动重复执行；重试需新建方案。排队取消立即CANCELLED，运行取消CANCELLING，工具每300ms检查并终止；校验中的取消至多等待当前ffprobe超时。运行百分比未知为null，成功后100。仅校验成功且归属、租约仍有效时在事务中发布输出；取消、注销或失败不发布半成品。
+任务QUEUED/RUNNING/CANCELLING/CANCELLED/SUCCEEDED/FAILED，数据库队列最多20个活动任务，每个实例串行转换。默认5分钟进程超时、7分钟租约、结果最大3GiB；TRANSCODE_TIMEOUT、TRANSCODE_MAX_OUTPUT_SIZE可覆盖，租约必须大于超时加1分钟。排队工作重启后继续，过期运行任务变FAILED/TASK_INTERRUPTED，不自动重复执行；重试需新建方案。排队取消立即CANCELLED，运行取消CANCELLING，工具每300ms检查并终止；校验中的取消至多等待当前ffprobe超时。运行百分比未知为null，成功后100。仅校验成功且归属、租约仍有效时在事务中发布输出；取消、注销或失败不发布半成品。
 
 MP4与MP3结果预览均需鉴权并支持单段Range/206/Content-Range，含后缀、开放结尾；非法或多段Range忽略返回200，越界416并返回Result。下载忽略Range发送完整文件，Content-Disposition包含UTF-8文件名及ASCII回退。文件丢失或大小异常410 OUTPUT_UNAVAILABLE，其他用户资源404，URL不暴露磁盘路径。失败、取消、过期租约及注销清理同样覆盖MP3半成品。
 
@@ -122,6 +130,10 @@ DELETE /api/outputs/{outputId}需要登录及CSRF，无请求体。事务内逻�
 结果物理文件在后台清理，使用同一队列的独立OUTPUT范围，可与素材/账号清理安全重叠，重复删文件幂等。失败有界重试且可回收过期清理租约；清理禁用时等待重新启用。200不表示文件已物理删除，已下载或已发送到浏览器的数据无法追回。页面提供确认、取消和失败重试；删除后停止对应播放器，保留处理记录，并拒绝删除前轮询返回的旧文件链接。
 
 ### 5.1 组合导出（2.15）
+
+保存方案用于持久化当前处理参数，不会运行FFmpeg或生成文件。同一素材当前未执行的导出方案重复保存会更新版本；执行后再次保存可生成新的方案，服务端未设置方案总数硬上限。处理记录页的“保存的方案”提供本人分页列表、展开参数/处理要求、恢复及删除；导出、文字/有序步骤、拼接和旧单功能参数可恢复，字幕烧录须在字幕页重新确认当前版本。删除方案后列表、详情、修改和执行均404，已有任务及文件不受影响。
+
+DELETE任务记录只允许SUCCEEDED/FAILED/CANCELLED，活动状态返回409 RESOURCE_CONFLICT；本人重复删除幂等200。他人或不存在、已随素材删除的任务404。记录隐藏后，任务按ID查询和原方案重复execute仍返回原任务，文件与结果权限不变；需要释放磁盘时使用单独的结果删除接口。
 
 沿用方案创建、PATCH、查询及execute，不新增表或项目。`operation=export`在2.15开放明确参数、2.16开放自然语言，原有参数契约不变。页面保留功能栏，输出格式/编码和分辨率可选，勾选组合处理后可同时裁切、目标体积压缩、静音、另存原始音轨。保存方案不执行，不产生输出；恢复时可继续编辑，最终导出才生成任务。AI确认页展示全部裁切/分辨率/编码/体积/音轨设置；拼接按播放顺序列出每段区间与总时长。素材和结果保存在部署服务器的受控磁盘，不是第三方云盘或任意滤镜时间线。
 
@@ -142,7 +154,7 @@ DELETE /api/outputs/{outputId}需要登录及CSRF，无请求体。事务内逻�
 
 音频导出不允许视频字段、静音、目标大小或extractAudio；MP3为libmp3lame、M4A为AAC（均192kbps），WAV为PCM s16le、FLAC为flac，44.1kHz双声道。这里的无损格式不会恢复源素材已损失的音质。
 
-响应将省略字段规范化为默认值或null。capabilities新增exportFormats/exportVideoCodecs，按本机编码器报告；supportedOperations有export时可使用。所有命令来自白名单，不接收用户命令、路径或URL。多个输出共享原任务时间预算，每文件受1GiB上限约束，逐个探测验收后原子发布；任一失败/取消不发布任何结果。Task.outputs可能含视频和原始MP3，不保证顺序，使用id/contentType/filename选择；可以分别下载或删除。所有格式均纳入失败、租约回收、素材删除和账号清理。
+响应将省略字段规范化为默认值或null。capabilities新增exportFormats/exportVideoCodecs，按本机编码器报告；supportedOperations有export时可使用。所有命令来自白名单，不接收用户命令、路径或URL。多个输出共享原任务时间预算，每文件受3GiB上限约束，逐个探测验收后原子发布；任一失败/取消不发布任何结果。Task.outputs可能含视频和原始MP3，不保证顺序，使用id/contentType/filename选择；可以分别下载或删除。所有格式均纳入失败、租约回收、素材删除和账号清理。
 
 Output.previewUrl可为null。MP4/MOV的H.264/AAC、WebM的VP8/VP9/AV1加Opus/Vorbis以及MP3/M4A/WAV/FLAC提供预览；MKV和HEVC输出只下载。不支持预览时直接请求preview返回409 MEDIA_PREVIEW_UNAVAILABLE，下载仍可用；支持的预览沿用鉴权和Range。浏览器无解码器时提示下载，不声称所有设备支持。
 
@@ -204,11 +216,13 @@ capabilities.supportedOperations包含workflow才开放，要求ffprobe和本机
 | PUT | /api/users/me/cloud-credentials/{provider} | 200 Result，data为保存后的状态 |
 | DELETE | /api/users/me/cloud-credentials/{provider} | 200 Result，清除密文并设为OFF，data为新状态 |
 
-provider仅tencent/aliyun/deepseek，不支持自定义URL。全部需登录；PUT/DELETE需CSRF和JSON。响应no-store。无记录时version=0、mode=SERVER；保存后版本递增。状态字段provider/mode/version/configured/personalStored/appId/workspaceId/model/updatedAt，不含SecretId/SecretKey/API Key、密文或userId。configured只表示本地配置完整，不代表远程已验证。
+provider仅tencent/aliyun/deepseek，不支持自定义URL。全部需登录；PUT/DELETE需CSRF和JSON，响应no-store。无记录version=0、mode=SERVER，保存后版本递增。原状态字段保留，新增available和可空unavailableReason；configured表示配置完整，不能代替available。本地deepseek项的model为部署者配置的千问模型名，available取决于真实健康检查。SERVER下tencent/aliyun的configured/available均为false，原因是本地不支持语音识别。个人云端available仍仅表示凭据可读取且完整，不保证网络、权限或余额。不返回秘密、密文、回环端口或userId。
 
-PUT必填expectedVersion（非负整数）和mode（SERVER/PERSONAL/OFF）。PERSONAL：腾讯用appId/secretId/secretKey，百炼用apiKey和可选workspaceId，DeepSeek用apiKey和可选model（默认deepseek-flash）。字段格式及上限见OpenAPI；禁止跨供应商字段、控制字符与未知字段。省略或null的个人字段保留之前值，未保存过时密钥必须提供；显式空密钥校验失败。前端空密码框不提交字段。SERVER/OFF不得携带个人字段，保存后清除旧密文。DELETE请求体为`{"expectedVersion":1}`，删除后停用，不隐式使用站点额度；重新启用站点需显式PUT SERVER。
+PUT必填expectedVersion和mode（SERVER/PERSONAL/OFF）。SERVER现在表示本地模型，不再使用站点云端凭据。PERSONAL字段及校验不变：腾讯appId/secretId/secretKey，百炼apiKey/workspaceId，DeepSeek apiKey/model。省略或null保留之前值，未有旧值时必须提供密钥；显式空密钥失败。SERVER/OFF不得携带个人字段，切换时清除旧密文。DELETE请求体为`{"expectedVersion":1}`，删除后停用；启用本地需显式PUT SERVER，不自动回退。
 
-三种来源互斥，PERSONAL失败不回退站点。写入默认每用户5分钟20次，429含Retry-After；版本冲突409 CLOUD_CREDENTIALS_CONFLICT；主密钥/密文不可读503 CLOUD_CREDENTIALS_UNAVAILABLE，禁止回显敏感值。列表在单条不可解密时仍返回personalStored=true、configured=false，可删除或恢复主密钥。账号注销在同一事务物理删除凭据。主密钥、备份与HTTPS部署要求见README。
+三种来源互斥，任何来源失败都不回退。写入默认每用户5分钟20次，429含Retry-After；版本冲突409 CLOUD_CREDENTIALS_CONFLICT；密文不可读503 CLOUD_CREDENTIALS_UNAVAILABLE。列表在不可解密时仍返回personalStored=true、configured=false、available=false，可删除或恢复主密钥。账号注销在同一事务删除凭据。
+
+`capabilities.textAi={source,model,available,unavailableReason}`声明当前用户文字来源；匿名使用SERVER。服务端固定访问127.0.0.1，端口由LOCAL_AI_PORT设置，健康检查最多700ms/缓存2秒，不调用生成接口、不产生费用；本地单并发/35秒，关闭思考并要求JSON。页面每10秒刷新能力，账户页可主动刷新；未启动/加载中显示本地模型不可用。已判定不可用的业务入口仍可能返回503 AI_UNAVAILABLE；请求中途失败返回503 LOCAL_AI_UNAVAILABLE，前端两者均显示本地不可用提示。输入超上下文或非法模型结果按对应AI_PLAN_FAILED/AI_FAILED/AI_ANALYSIS_FAILED拒绝，不能执行半份方案。
 
 示例（仅虚构值）：`{"expectedVersion":0,"mode":"PERSONAL","apiKey":"sk-example-not-real","model":"deepseek-flash"}`。保存不会发起付费校验。调用服务时按会话/任务用户解密当前配置，秘密不写任务或方案；排队识别使用执行时的配置，切换或删除不能撤回已发出的请求及费用。登录和保存后应重新查询capabilities，不能跨用户缓存。
 
@@ -216,7 +230,7 @@ PUT必填expectedVersion（非负整数）和mode（SERVER/PERSONAL/OFF）。PER
 
 复用POST /api/operation-plans及execute，不新增草稿表、管理页或接口。旧parameters仅四字段：`{"operation":"join_clips","outputFormat":"mp4","clips":[{"startMs":2000,"endMs":3000},{"startMs":0,"endMs":1000}],"audioMode":"keep"}`。1至20段，每段为整数long毫秒、至少500ms，范围在本人就绪素材内，所有段时长之和最多900000ms。数组顺序就是输出顺序，允许倒序、重复和重叠；非法类型/额外字段/超时长422 INVALID_PARAMETERS。2.16允许自然语言生成同源有序区间；2.17拼接后附加缩放/静音/体积设置请使用5.2的workflow，不向旧join_clips对象追加字段。不接受路径、URL、跨素材ID或字幕参数；未定义操作应返回UNSUPPORTED_REQUEST，不得只做部分动作。
 
-输出原展示尺寸取偶数、30fps、H.264/yuv420p MP4，首条音轨AAC 48kHz双声道；有音轨素材在缺失音频的区间补静音，避免拼接后声音错位；原素材无音轨时结果也无音轨。不覆盖源视频，结果名-joined.mp4。先顺序生成临时片段，再按受控ffconcat清单拼接重编码，避免倒序/重复取段时大量高清帧滞留内存。所有阶段共享默认5分钟超时、7分钟租约；临时分段合计和最终结果分别不超过输出上限（默认各1GiB，编码期间峰值磁盘约两倍）。按帧对齐，最终时长与所选总时长差不超过max(250ms,总时长/1000)；不合格FAILED/CLIP_JOIN_FAILED且无结果。
+输出原展示尺寸取偶数、30fps、H.264/yuv420p MP4，首条音轨AAC 48kHz双声道；有音轨素材在缺失音频的区间补静音，避免拼接后声音错位；原素材无音轨时结果也无音轨。不覆盖源视频，结果名-joined.mp4。先顺序生成临时片段，再按受控ffconcat清单拼接重编码，避免倒序/重复取段时大量高清帧滞留内存。所有阶段共享默认5分钟超时、7分钟租约；临时分段合计和最终结果分别不超过输出上限（默认各3GiB，编码期间峰值磁盘约两倍）。按帧对齐，最终时长与所选总时长差不超过max(250ms,总时长/1000)；不合格FAILED/CLIP_JOIN_FAILED且无结果。
 
 方案版本、执行去重、队列、取消、权限、预览/下载和删除沿用现有处理。入队参数冻结；后续编辑不修改运行任务。临时分段和清单在终态发布前清除；失败保留运行令牌，过期租约/删除/注销清理也覆盖所有受控文件。未开放的clip-drafts接口仍为PLANNED，不能拿来调用这个轻量方案。这里不提供跨素材拼接、命名草稿管理、拼接字幕重映射/SRT导出或同次拼接烧录；源画面已有的硬字幕会随画面保留。
 
@@ -228,7 +242,7 @@ PUT必填expectedVersion（非负整数）和mode（SERVER/PERSONAL/OFF）。PER
 
 输出为H.264/yuv420p MP4、首条音轨AAC，无音轨不补音，不覆盖原素材，文件名-subtitled.mp4。固定底部居中、白字黑边、字号随输出高度缩放；支持中文、换行和自动换行，不开放自定义字体/样式命令。服务端生成纯文字ASS并用FFmpeg/libass渲染，转义用户覆盖标签及反斜线，不读取上传字幕文件、任意路径或URL。ASS时间向外取整到10ms，最终呈现按视频帧对齐，极短相邻段可能在同一帧出现。部署需提供覆盖字幕文字的系统字体；缺少中文字形可能显示方框。
 
-capabilities.supportedOperations在ffprobe、H.264/AAC编码器和ass过滤器可用时包含burn_subtitles；已有字幕烧录不需要云端凭据。工具缺失503 SUBTITLE_BURN_UNAVAILABLE；烧录或输出验收失败任务FAILED/SUBTITLE_BURN_FAILED，无可用结果。沿用单任务默认5分钟超时、7分钟租约、1GiB输出上限和取消/资源权限；取消、删除或过期运行不能发布迟到文件。输出校验尺寸、编码、音轨和完整时长，误差不超过max(250ms, 源时长/1000)。私有ASS在发布终态前删除；清理失败保留运行令牌，租约回收重试，不让敏感字幕文件失去清理线索。
+capabilities.supportedOperations在ffprobe、H.264/AAC编码器和ass过滤器可用时包含burn_subtitles；已有字幕烧录不需要云端凭据。工具缺失503 SUBTITLE_BURN_UNAVAILABLE；烧录或输出验收失败任务FAILED/SUBTITLE_BURN_FAILED，无可用结果。沿用单任务默认5分钟超时、7分钟租约、3GiB输出上限和取消/资源权限；取消、删除或过期运行不能发布迟到文件。输出校验尺寸、编码、音轨和完整时长，误差不超过max(250ms, 源时长/1000)。私有ASS在发布终态前删除；清理失败保留运行令牌，租约回收重试，不让敏感字幕文件失去清理线索。
 
 字幕页仅在查看最新已保存编辑稿、没有未保存修改时允许生成；确认后创建方案并执行。原稿/历史版本可下载SRT，但不能直接烧录；需要将修改保存为最新稿。结果复用鉴权播放、下载、取消与删除，刷新后可从处理记录恢复；执行响应丢失时重试同一方案，避免重复入队。
 

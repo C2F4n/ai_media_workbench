@@ -78,10 +78,12 @@ public class AuthController {
     @PostMapping("/registration-email-code")
     public ResponseEntity<Result<RegistrationEmailVO>> sendRegistrationCode(
             @Valid @RequestBody RegistrationEmailRequest input, HttpServletRequest request) {
-        rateLimiter.check("registration-mail:ip:" + request.getRemoteAddr(), properties.registrationAttempts());
-        // send 发送验证码并返回编号和过期时间，success 包装成功结果，body 将结果放入响应体；ok 设置状态码 200，no-store 禁止缓存。
-        return ResponseEntity.ok().header("Cache-Control", "no-store")
-                .body(Result.success(registrationEmails.send(input.email())));
+        try (var permit = rateLimiter.reserve("registration-mail:ip:" + request.getRemoteAddr(),
+                properties.registrationAttempts(), java.time.Duration.ofMinutes(1))) {
+            var result = registrationEmails.send(input.email());
+            permit.commit();
+            return ResponseEntity.ok().header("Cache-Control", "no-store").body(Result.success(result));
+        }
     }
 
     /** 通过邮箱验证码后注册账号并返回资料，不自动登录。 */

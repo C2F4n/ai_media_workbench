@@ -53,18 +53,20 @@ public class RegistrationEmailServiceImpl implements RegistrationEmailService {
         if (!auth.registrationEnabled()) throw new BusinessException(ErrorCode.REGISTRATION_DISABLED);
         if (!mail.isAvailable()) throw new BusinessException(ErrorCode.EMAIL_DELIVERY_UNAVAILABLE);
         String canonical = email.strip().toLowerCase(Locale.ROOT);
-        limiter.check("registration-mail:email:" + canonical, properties.sendAttempts());
-        String code = String.format(Locale.ROOT, "%06d", random.nextInt(1_000_000));
-        var challenge = new RegistrationEmailEntity();
-        challenge.setId(UUID.randomUUID().toString());
-        challenge.setEmail(canonical);
-        challenge.setCodeHash(encoder.encode(code));
-        challenge.setMaxAttempts(properties.maxAttempts());
-        challenge.setCreatedAt(now());
-        challenge.setExpiresAt(now().plus(properties.codeTtl()));
-        mapper.insert(challenge);
-        mail.sendCode(canonical, code, properties.codeTtl());
-        return new RegistrationEmailVO(challenge.getId(), challenge.getExpiresAt().toInstant(ZoneOffset.UTC));
+        try (var permit = limiter.reserve("registration-mail:email:" + canonical, properties.sendAttempts(), java.time.Duration.ofMinutes(1))) {
+            String code = String.format(Locale.ROOT, "%06d", random.nextInt(1_000_000));
+            var challenge = new RegistrationEmailEntity();
+            challenge.setId(UUID.randomUUID().toString());
+            challenge.setEmail(canonical);
+            challenge.setCodeHash(encoder.encode(code));
+            challenge.setMaxAttempts(properties.maxAttempts());
+            challenge.setCreatedAt(now());
+            challenge.setExpiresAt(now().plus(properties.codeTtl()));
+            mapper.insert(challenge);
+            mail.sendCode(canonical, code, properties.codeTtl());
+            permit.commit();
+            return new RegistrationEmailVO(challenge.getId(), challenge.getExpiresAt().toInstant(ZoneOffset.UTC));
+        }
     }
 
     /** 独立事务累计尝试次数，避免注册失败回滚后可以无限猜验证码。 */

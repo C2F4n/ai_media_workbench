@@ -12,6 +12,8 @@ public interface ProcessingService {
     PlanVO update(String userId, String id, UpdatePlanRequest input);
     PlanVO plan(String userId, String id);
     PageVO<PlanVO> plans(String userId, String mediaId, PageQuery query);
+    void deletePlan(String userId, String id);
+    void deleteTaskHistory(String userId, String id);
     TaskVO execute(String userId, String id, int expectedVersion);
     TaskVO task(String userId, String id);
     PageVO<TaskVO> tasks(String userId, String mediaId, PageQuery query);

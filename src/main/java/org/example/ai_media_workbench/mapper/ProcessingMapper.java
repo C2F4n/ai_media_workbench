@@ -14,6 +14,8 @@ public interface ProcessingMapper {
     OperationPlanEntity plan(@Param("userId") String userId, @Param("id") String id);
     OperationPlanEntity lockPlan(@Param("userId") String userId, @Param("id") String id);
     int updatePlan(OperationPlanEntity plan);
+    int markPlanDeleted(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
+    int hideTaskHistory(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
     List<OperationPlanEntity> plans(@Param("userId") String userId, @Param("mediaId") String mediaId,
                                    @Param("offset") long offset, @Param("limit") int limit);
     long countPlans(@Param("userId") String userId, @Param("mediaId") String mediaId);

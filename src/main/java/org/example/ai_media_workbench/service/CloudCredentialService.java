@@ -9,7 +9,9 @@ public interface CloudCredentialService {
     List<CloudCredentialVO> list(String userId);
     CloudCredentialVO save(String userId,String provider,SaveCloudCredentialRequest input);
     CloudCredentialVO delete(String userId,String provider,int expectedVersion);
-    /** userId=null仅用于匿名能力查询或协议测试，业务调用必须显式提供账号。 */
+    /** 仅PERSONAL返回可调用云端的凭据；SERVER/OFF返回空配置，业务调用必须显式提供账号。 */
     AiProperties effective(String userId,String provider);
     boolean available(String userId,String provider);
+    SaveCloudCredentialRequest.Mode source(String userId,String provider);
+    org.example.ai_media_workbench.vo.system.TextAiStatusVO textStatus(String userId);
 }

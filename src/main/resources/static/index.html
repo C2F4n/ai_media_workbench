@@ -18,7 +18,7 @@
     </a>
     <span id="header-location" class="header-label">工作台</span>
     <button id="header-account" class="icon-button" type="button" title="账户设置" aria-label="账户设置" hidden><i data-lucide="settings" aria-hidden="true"></i></button>
-    <button id="header-logout" class="button secondary compact" hidden>
+    <button id="header-logout" class="button secondary compact" title="退出登录" hidden>
       <i data-lucide="log-out" aria-hidden="true"></i>退出登录
     </button>
   </header>
@@ -80,7 +80,7 @@
             <label class="field">邮箱验证码
               <input id="register-email-code" name="emailCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="6位验证码">
             </label>
-            <button id="send-email-code" class="button secondary" type="button"><i data-lucide="mail" aria-hidden="true"></i><span>发送验证码</span></button>
+            <button id="send-email-code" class="button secondary" type="button"><i data-lucide="mail" aria-hidden="true"></i><span id="email-code-label">发送验证码</span></button>
           </div>
           <p id="email-code-notice" class="muted" role="status" hidden></p>
           <label class="field">昵称 <span class="optional">选填</span>
@@ -109,6 +109,9 @@
           <div class="sidebar-heading"><strong>处理功能</strong><div><button id="pin-sidebar" class="icon-button" type="button" title="取消固定功能栏" aria-label="取消固定功能栏" aria-pressed="true"><i data-lucide="pin" aria-hidden="true"></i></button><button id="close-sidebar" class="icon-button" type="button" title="收起功能栏" aria-label="收起功能栏"><i data-lucide="panel-left-close" aria-hidden="true"></i></button></div></div>
         <nav id="tool-navigation" class="tool-list" aria-label="处理功能">
           <span id="tool-indicator" class="tool-indicator" aria-hidden="true"></span>
+          <div class="tool-group" data-tool-group="regular">
+          <button id="regular-group-toggle" class="tool-group-toggle" type="button" aria-expanded="true" aria-controls="regular-group-body">常规处理<i data-lucide="chevron-down" aria-hidden="true"></i></button>
+          <div id="regular-group-body" class="tool-group-body"><div class="tool-group-items" role="group" aria-labelledby="regular-group-toggle">
           <button id="detect-tool" class="tool-choice active" type="button" aria-current="page"><i data-lucide="scan-line" aria-hidden="true"></i>视频检测</button>
           <button id="convert-tool" class="tool-choice" type="button"><i data-lucide="file-video" aria-hidden="true"></i>视频转换</button>
           <button id="compress-tool" class="tool-choice" type="button"><i data-lucide="minimize-2" aria-hidden="true"></i>视频压缩</button>
@@ -116,20 +119,42 @@
           <button id="trim-tool" class="tool-choice" type="button"><i data-lucide="scissors" aria-hidden="true"></i>视频裁切</button>
           <button id="join-tool" class="tool-choice" type="button"><i data-lucide="list-video" aria-hidden="true"></i>片段拼接</button>
           <button id="mute-tool" class="tool-choice" type="button"><i data-lucide="volume-x" aria-hidden="true"></i>视频静音</button>
+          </div></div></div>
+          <div class="tool-group" data-tool-group="ai">
+          <button id="ai-group-toggle" class="tool-group-toggle" type="button" aria-expanded="true" aria-controls="ai-group-body">AI协作处理<i data-lucide="chevron-down" aria-hidden="true"></i></button>
+          <div id="ai-group-body" class="tool-group-body"><div class="tool-group-items" role="group" aria-labelledby="ai-group-toggle">
           <button id="subtitle-tool" class="tool-choice" type="button"><i data-lucide="captions" aria-hidden="true"></i>字幕处理</button>
           <button id="ai-tool" class="tool-choice" type="button"><i data-lucide="sparkles" aria-hidden="true"></i>AI 处理</button>
           <button id="find-tool" class="tool-choice" type="button"><i data-lucide="search" aria-hidden="true"></i>找片段</button>
+          </div></div></div>
+          <div class="tool-group" data-tool-group="history">
+          <button id="history-group-toggle" class="tool-group-toggle" type="button" aria-expanded="true" aria-controls="history-group-body">历史记录<i data-lucide="chevron-down" aria-hidden="true"></i></button>
+          <div id="history-group-body" class="tool-group-body"><div class="tool-group-items" role="group" aria-labelledby="history-group-toggle">
+          <button id="history-tool" class="tool-choice" type="button"><i data-lucide="history" aria-hidden="true"></i>处理记录</button>
+          </div></div></div>
         </nav>
           <div class="sidebar-footer"><i data-lucide="hard-drive" aria-hidden="true"></i><span>素材与结果归属当前账户</span></div>
         </aside>
         <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" tabindex="-1" aria-label="关闭功能栏" hidden></button>
         <div id="tool-content" class="tool-content">
-        <div class="workbench-heading"><div class="workspace-title"><button id="toggle-sidebar" class="icon-button" type="button" title="收起功能栏" aria-label="收起功能栏" aria-controls="tool-sidebar" aria-expanded="true"><i data-lucide="panel-left" aria-hidden="true"></i></button><div><p class="eyebrow">个人工作台</p><h1>音视频工具</h1></div></div><span id="workspace-user" class="muted"></span></div>
-        <section id="tool-dependencies" class="tool-dependencies" aria-label="处理方式与API依赖">
-          <div class="dependency-heading"><span id="dependency-kind" class="dependency-kind">本地处理</span><strong id="dependency-title">视频检测</strong><button id="dependency-settings" class="button secondary compact" type="button" hidden><i data-lucide="settings-2" aria-hidden="true"></i>云端配置</button></div>
+        <div class="workbench-heading"><div class="workspace-title"><button id="toggle-sidebar" class="icon-button" type="button" title="收起功能栏" aria-label="收起功能栏" aria-controls="tool-sidebar" aria-expanded="true"><i data-lucide="panel-left" aria-hidden="true"></i></button><div><p class="eyebrow">媒体工作台</p><h1 id="workspace-tool-title">视频检测</h1></div></div><span id="workspace-user" class="muted"></span></div>
+        <div id="workspace-toolbar" class="workspace-toolbar">
+          <div id="workspace-phases" class="workspace-phases" role="tablist" aria-label="处理流程">
+            <span class="phase-indicator" aria-hidden="true"></span>
+            <button id="phase-import-tab" role="tab" type="button" aria-selected="true" aria-controls="phase-import" tabindex="0"><i data-lucide="folder-input" aria-hidden="true"></i><span>导入</span></button>
+            <button id="phase-edit-tab" role="tab" type="button" aria-selected="false" aria-controls="phase-edit" tabindex="-1"><i data-lucide="sliders-horizontal" aria-hidden="true"></i><span>编辑</span></button>
+            <button id="phase-export-tab" role="tab" type="button" aria-selected="false" aria-controls="phase-export" tabindex="-1"><i data-lucide="download" aria-hidden="true"></i><span>导出</span></button>
+          </div>
+          <span id="workspace-file-state" class="workspace-file-state">未选择素材</span>
+        </div>
+        <details id="tool-dependencies" class="tool-dependencies" aria-label="处理方式与API依赖">
+          <summary><i data-lucide="network" aria-hidden="true"></i><span id="dependency-kind" class="dependency-kind">服务端处理</span><span id="dependency-summary" class="dependency-summary">站点处理环境</span><i data-lucide="chevron-down" class="disclosure-chevron" aria-hidden="true"></i></summary>
+          <div class="dependency-heading"><strong id="dependency-title">视频检测</strong><button id="dependency-settings" class="button secondary compact" type="button" hidden><i data-lucide="settings-2" aria-hidden="true"></i>AI 配置</button></div>
           <dl id="dependency-services" class="dependency-services"></dl><p id="dependency-detail" class="dependency-detail"></p>
-        </section>
+        </details>
         <div id="tool-stage" class="tool-stage">
+        <section id="phase-import" class="phase-panel" role="tabpanel" aria-labelledby="phase-import-tab">
+        <div class="phase-heading"><div><p class="eyebrow">素材</p><h2>导入视频</h2></div><button id="continue-editing" class="button secondary compact" type="button" disabled><span>继续编辑</span><i data-lucide="arrow-right" aria-hidden="true"></i></button></div>
         <div class="processing-layout">
           <section class="upload-section" aria-labelledby="upload-title">
             <h2 id="upload-title">上传视频</h2>
@@ -147,6 +172,18 @@
             <div id="media-result" hidden aria-live="polite"><p id="media-result-name" class="result-filename"></p><dl id="media-metadata" class="metadata-list"></dl><video id="source-preview" controls preload="metadata" aria-label="原视频预览" hidden></video><p id="source-preview-status" class="muted" role="status" hidden></p><button id="retry-source-preview" class="icon-button" type="button" title="重新加载原视频" aria-label="重新加载原视频" hidden><i data-lucide="rotate-cw" aria-hidden="true"></i></button><p id="media-error" class="form-error" hidden></p><button id="retry-probe" class="button secondary compact" type="button" hidden><i data-lucide="rotate-cw" aria-hidden="true"></i>重新检测</button></div>
           </section>
         </div>
+        <div id="import-library-slot"></div>
+        </section>
+        <section id="phase-edit" class="phase-panel" role="tabpanel" aria-labelledby="phase-edit-tab" hidden>
+        <div class="editor-source-bar"><i data-lucide="file-video" aria-hidden="true"></i><div><strong id="editor-filename">未选择素材</strong><span id="editor-file-info">等待导入</span></div><button id="replace-source" class="icon-button" type="button" title="更换素材" aria-label="更换素材"><i data-lucide="folder-open" aria-hidden="true"></i></button></div>
+        <div class="editor-layout">
+          <aside class="editor-inspector" aria-label="素材预览">
+            <div id="editor-preview-slot" class="editor-preview-frame"><div id="editor-preview-empty" class="preview-empty"><i data-lucide="clapperboard" aria-hidden="true"></i><span>暂无可预览素材</span></div></div>
+            <div id="editor-preview-messages"></div>
+            <details id="editor-info-details" class="editor-info-details"><summary>素材信息<i data-lucide="chevron-down" aria-hidden="true"></i></summary><dl id="editor-metadata" class="metadata-list"></dl></details>
+          </aside>
+          <div class="editor-controls">
+        <section id="detect-editor" class="detect-editor" aria-labelledby="detect-editor-title"><h2 id="detect-editor-title">处理素材</h2><div class="quick-tools"><button type="button" data-tool-target="convert"><i data-lucide="file-video" aria-hidden="true"></i><span>转换格式</span><i data-lucide="chevron-right" aria-hidden="true"></i></button><button type="button" data-tool-target="trim"><i data-lucide="scissors" aria-hidden="true"></i><span>裁切片段</span><i data-lucide="chevron-right" aria-hidden="true"></i></button><button type="button" data-tool-target="subtitle"><i data-lucide="captions" aria-hidden="true"></i><span>处理字幕</span><i data-lucide="chevron-right" aria-hidden="true"></i></button><button type="button" data-tool-target="ai"><i data-lucide="sparkles" aria-hidden="true"></i><span>AI 处理</span><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></section>
         <section id="join-section" class="join-section" hidden aria-labelledby="join-title">
           <div class="section-heading"><h2 id="join-title">片段拼接</h2><button id="refresh-join" class="icon-button" type="button" title="恢复最近拼接方案" aria-label="恢复最近拼接方案"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
           <p id="join-source" class="result-filename">未选择就绪素材</p>
@@ -179,6 +216,7 @@
             <form id="ai-form">
               <label class="field">当前素材<output id="ai-source" class="conversion-source">未选择就绪素材</output></label>
               <label class="field">处理要求<textarea id="ai-instruction" rows="4" maxlength="4000" required placeholder="保留前5秒，转成360p并导出"></textarea></label>
+              <p id="ai-model-warning" class="model-warning" hidden><i data-lucide="info" aria-hidden="true"></i><span>服务端使用轻量模型，理解能力有限，复杂要求可能解析不准确，请核对方案后再执行。</span></p>
               <p id="ai-state" class="muted" role="status"></p><p id="ai-error" class="form-error" role="alert" hidden></p>
               <button id="generate-ai-plan" class="button primary" type="submit"><i data-lucide="sparkles" aria-hidden="true"></i><span id="generate-ai-label">生成方案</span></button>
             </form>
@@ -252,7 +290,24 @@
             </div>
           </div>
         </section>
-        <section class="recent-section" aria-labelledby="recent-title"><div class="section-heading"><h2 id="recent-title">最近素材</h2><button id="refresh-media" class="icon-button" type="button" title="刷新素材" aria-label="刷新素材"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div><p id="media-list-error" class="form-error" role="alert" hidden></p><p id="media-list-empty" class="empty-state">暂无素材</p><ul id="media-list" class="media-list"></ul><div class="pagination"><span id="media-total" class="muted">0 个素材</span><button id="media-prev" class="icon-button" type="button" title="上一页" aria-label="上一页" disabled><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="media-page">1</span><button id="media-next" class="icon-button" type="button" title="下一页" aria-label="下一页" disabled><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></section>
+          </div>
+        </div>
+        </section>
+        <section id="phase-export" class="phase-panel" role="tabpanel" aria-labelledby="phase-export-tab" hidden>
+          <div class="phase-heading"><div><p class="eyebrow">输出</p><h2>导出结果</h2></div><div class="phase-export-actions"><a id="export-srt" class="button primary compact" hidden><i data-lucide="download" aria-hidden="true"></i>下载 SRT</a><button id="back-to-editing" class="button secondary compact" type="button"><i data-lucide="arrow-left" aria-hidden="true"></i>返回编辑</button></div></div>
+          <div id="export-result-slot"></div>
+          <div id="export-result-empty" class="export-result-empty"><i data-lucide="film" aria-hidden="true"></i><h3 id="export-empty-title">暂无导出结果</h3><span id="export-result-summary" class="muted">尚未生成文件</span></div>
+        </section>
+        <section id="history-panel" hidden aria-label="处理记录与方案">
+          <div class="history-tabs" role="tablist" aria-label="记录分类"><button id="history-tasks-tab" type="button" role="tab" aria-selected="true" aria-controls="history-tasks-slot">处理任务</button><button id="history-plans-tab" type="button" role="tab" aria-selected="false" aria-controls="history-plans-panel" tabindex="-1">保存的方案</button></div>
+          <div id="history-tasks-slot" role="tabpanel" aria-labelledby="history-tasks-tab"></div>
+          <section id="history-plans-panel" role="tabpanel" aria-labelledby="history-plans-tab" hidden>
+            <div class="section-heading"><h2>保存的方案</h2><button id="refresh-plans" class="icon-button" type="button" title="刷新方案" aria-label="刷新方案"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+            <p id="plan-list-error" class="form-error" role="alert" hidden></p><p id="plan-list-empty" class="empty-state">暂无保存的方案</p><ul id="plan-list" class="media-list"></ul>
+            <div class="pagination"><span id="plan-total" class="muted">0 个方案</span><button id="plan-prev" class="icon-button" type="button" title="上一页方案" aria-label="上一页方案" disabled><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="plan-page">1</span><button id="plan-next" class="icon-button" type="button" title="下一页方案" aria-label="下一页方案" disabled><i data-lucide="chevron-right" aria-hidden="true"></i></button></div>
+          </section>
+        </section>
+        <section id="recent-section" class="recent-section" aria-labelledby="recent-title"><div class="section-heading"><h2 id="recent-title">素材库</h2><button id="refresh-media" class="icon-button" type="button" title="刷新素材" aria-label="刷新素材"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div><p id="media-list-error" class="form-error" role="alert" hidden></p><p id="media-list-empty" class="empty-state">暂无素材</p><ul id="media-list" class="media-list"></ul><div class="pagination"><span id="media-total" class="muted">0 个素材</span><button id="media-prev" class="icon-button" type="button" title="上一页" aria-label="上一页" disabled><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="media-page">1</span><button id="media-next" class="icon-button" type="button" title="下一页" aria-label="下一页" disabled><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></section>
         <section id="task-section" class="task-section" hidden aria-labelledby="task-list-title"><div class="section-heading"><h2 id="task-list-title">处理记录</h2><button id="refresh-tasks" class="icon-button" type="button" title="刷新任务" aria-label="刷新任务"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div><p id="task-list-error" class="form-error" role="alert" hidden></p><p id="task-list-empty" class="empty-state">暂无处理任务</p><ul id="task-list" class="media-list"></ul><div class="pagination"><span id="task-total" class="muted">0 个任务</span><button id="task-prev" class="icon-button" type="button" title="上一页任务" aria-label="上一页任务" disabled><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="task-page">1</span><button id="task-next" class="icon-button" type="button" title="下一页任务" aria-label="下一页任务" disabled><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></section>
       </div>
         </div>
@@ -268,13 +323,13 @@
         <span class="status-badge"><span class="status-dot"></span>已登录</span>
       </div>
       <div class="account-layout">
-        <aside class="account-nav" aria-label="账户分区">
-          <a href="#profile-section"><i data-lucide="user-round" aria-hidden="true"></i>账户资料</a>
-          <a href="#security-section"><i data-lucide="shield-check" aria-hidden="true"></i>账户安全</a>
-          <a href="#cloud-section"><i data-lucide="cloud" aria-hidden="true"></i>云端服务</a>
-        </aside>
+        <nav class="account-nav" role="tablist" aria-label="账户分区">
+          <button id="account-profile-tab" type="button" role="tab" aria-selected="true" aria-controls="profile-section"><i data-lucide="user-round" aria-hidden="true"></i>账户资料</button>
+          <button id="account-security-tab" type="button" role="tab" aria-selected="false" aria-controls="security-section" tabindex="-1"><i data-lucide="shield-check" aria-hidden="true"></i>账户安全</button>
+          <button id="account-cloud-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-section" tabindex="-1"><i data-lucide="cpu" aria-hidden="true"></i>AI 服务</button>
+        </nav>
         <div class="account-sections">
-          <section id="profile-section" class="account-section">
+          <section id="profile-section" class="account-section" role="tabpanel" aria-labelledby="account-profile-tab">
             <h2>账户资料</h2>
             <dl class="profile-info">
               <div><dt>用户名</dt><dd id="profile-username"></dd></div>
@@ -288,7 +343,7 @@
             </form>
             <p id="profile-error" class="form-error" role="alert" hidden></p>
           </section>
-          <section id="security-section" class="account-section">
+          <section id="security-section" class="account-section" role="tabpanel" aria-labelledby="account-security-tab" hidden>
             <h2>账户安全</h2>
             <form id="password-form">
               <label class="field">当前密码<input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required></label>
@@ -301,12 +356,12 @@
               <button id="logout-all" class="button secondary"><i data-lucide="log-out" aria-hidden="true"></i>退出所有设备</button>
             </div>
           </section>
-          <section id="cloud-section" class="account-section" aria-labelledby="cloud-title">
-            <div class="section-heading"><h2 id="cloud-title">云端服务</h2><button id="refresh-cloud" class="icon-button" type="button" title="刷新云端配置" aria-label="刷新云端配置"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
+          <section id="cloud-section" class="account-section" role="tabpanel" aria-labelledby="account-cloud-tab" hidden>
+            <div class="section-heading"><h2 id="cloud-title">AI 服务</h2><button id="refresh-cloud" class="icon-button" type="button" title="刷新 AI 服务状态" aria-label="刷新 AI 服务状态"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
             <p id="cloud-state" class="muted" role="status"></p><p id="cloud-error" class="form-error" role="alert" hidden></p>
             <div id="cloud-providers" class="cloud-providers"></div>
           </section>
-          <section class="account-section danger-section">
+          <section id="account-danger-section" class="account-section danger-section" hidden>
             <h2>注销账号</h2>
             <p class="muted">注销后无法恢复，素材和文件将被清理，用户名和邮箱将保留占用。</p>
             <button id="open-delete-dialog" class="button danger-outline"><i data-lucide="trash-2" aria-hidden="true"></i>注销账号</button>

@@ -87,6 +87,41 @@ class ProcessingIntegrationTests {
                 .when(transcoder).convert(any(), any(), any(), any(), any());
     }
 
+    @Test void plansCanBeListedAndDeletedWithoutRemovingMediaOrOtherAccountsData() throws Exception {
+        Browser owner=login(), other=login(); String mediaId=source(owner);
+        String first=create(owner,mediaId), second=create(owner,mediaId);
+        mvc.perform(delete("/api/operation-plans/"+first)).andExpect(status().isUnauthorized());
+        mvc.perform(delete("/api/operation-plans/"+first).cookie(owner.cookie())).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/operation-plans/"+first).cookie(other.cookie()).header("X-CSRF-Token",other.csrf())).andExpect(status().isNotFound());
+        mvc.perform(delete("/api/operation-plans/"+first).cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf()))
+                .andExpect(status().isOk()).andExpect(jsonPath("code").value("SUCCESS"));
+        mvc.perform(get("/api/operation-plans/"+first).cookie(owner.cookie())).andExpect(status().isNotFound());
+        execute(owner,first,1).andExpect(status().isNotFound());
+        mvc.perform(get("/api/operation-plans").cookie(owner.cookie())).andExpect(jsonPath("data.total").value(1))
+                .andExpect(jsonPath("data.items[0].id").value(second));
+        mvc.perform(get("/api/media/"+mediaId).cookie(owner.cookie())).andExpect(status().isOk());
+    }
+
+    @Test void removingTaskHistoryPreservesOutputsIdempotencyAndIndependentPlanDeletion() throws Exception {
+        Browser owner=login(), other=login(); String mediaId=source(owner), planId=create(owner,mediaId);
+        var task=processing.execute(owner.id(),planId,1);
+        mvc.perform(delete("/api/tasks/"+task.id())).andExpect(status().isUnauthorized());
+        mvc.perform(delete("/api/tasks/"+task.id()).cookie(owner.cookie())).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/tasks/"+task.id()).cookie(other.cookie()).header("X-CSRF-Token",other.csrf())).andExpect(status().isNotFound());
+        mvc.perform(delete("/api/tasks/"+task.id()).cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())).andExpect(status().isConflict());
+        worker.runOne();
+        var done=processing.task(owner.id(),task.id()); assertThat(done.outputs()).hasSize(1);
+        for (int attempt=0; attempt<2; attempt++) mvc.perform(delete("/api/tasks/"+task.id()).cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf()))
+                .andExpect(status().isOk()).andExpect(jsonPath("code").value("SUCCESS"));
+        mvc.perform(get("/api/tasks").cookie(owner.cookie())).andExpect(jsonPath("data.total").value(0));
+        mvc.perform(get("/api/tasks").param("mediaId",mediaId).cookie(owner.cookie())).andExpect(jsonPath("data.total").value(0));
+        execute(owner,planId,1).andExpect(status().isOk()).andExpect(jsonPath("data.id").value(task.id()));
+        mvc.perform(get("/api/outputs/"+done.outputs().getFirst().id()).cookie(owner.cookie())).andExpect(status().isOk());
+        mvc.perform(delete("/api/operation-plans/"+planId).cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())).andExpect(status().isOk());
+        mvc.perform(get("/api/tasks/"+task.id()).cookie(owner.cookie())).andExpect(status().isOk());
+        mvc.perform(get("/api/outputs/"+done.outputs().getFirst().id()).cookie(owner.cookie())).andExpect(status().isOk());
+    }
+
     @Test void workflowIsVersionedIdempotentPrivateAndStreamsRealStoredBytes() throws Exception {
         Browser owner = login(), other = login();
         String mediaId = source(owner);
@@ -690,7 +725,7 @@ class ProcessingIntegrationTests {
         try (var files = Files.walk(root)) { assertThat(files.noneMatch(path -> path.toString().contains(".workflow-"))).isTrue(); }
     }
 
-    @Test void aiCompositeExportKeepsAllSettingsAcrossEditsAndPublishesOnlyAfterConfirmation() throws Exception {
+    @Test void aiRegenerationUsesOnlyTheRewrittenInstructionAndPublishesOnlyAfterConfirmation() throws Exception {
         var owner=login(); String mediaId=source(owner,2_000_000);
         jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",10000,640,360,"h264",true,"aac")),mediaId);
         when(planner.isAvailable(anyString())).thenReturn(true);
@@ -702,13 +737,12 @@ class ProcessingIntegrationTests {
             assertThat(context.supportedOperations()).contains("export","join_clips");
             assertThat(context.exportFormats()).containsExactly("mp4","webm","mp3"); assertThat(context.exportVideoCodecs()).contains("h264","vp9");
             assertThat(context.maxOutputBytes()).isPositive();
-            if(context.previousParameters()==null) return new OperationPlanner.Proposal(json.valueToTree(first),List.of());
-            assertThat(context.previousParameters()).isEqualTo(first); assertThat(context.previousInstruction()).contains("360p");
-            return new OperationPlanner.Proposal(json.valueToTree(edited),List.of());
+            assertThat(context.previousParameters()).isNull(); assertThat(context.previousInstruction()).isNull();
+            return new OperationPlanner.Proposal(json.valueToTree(call.getArgument(0,String.class).contains("480p") ? edited : first),List.of());
         });
         var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"保留前5秒，压缩至360p，静音并压到120000字节，发回来"));
         assertThat(plan.parameters()).isEqualTo(first); assertThat(mapper.activeCount()).isZero();
-        var updated=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"分辨率改成480p，其他不变"));
+        var updated=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"保留前5秒，转480p，静音并压到120000字节"));
         assertThat(updated.parameters()).isEqualTo(edited); assertThat(updated.version()).isEqualTo(2); assertThat(mapper.activeCount()).isZero();
         var task=processing.execute(owner.id(),plan.id(),2); assertThat(processing.execute(owner.id(),plan.id(),2).id()).isEqualTo(task.id());
         when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov,mp4",5000,640,360,"h264",false,null));
@@ -731,7 +765,7 @@ class ProcessingIntegrationTests {
         worker.runOne(); assertThat(processing.task(owner.id(),task.id()).status().name()).isEqualTo("SUCCEEDED");
     }
 
-    @Test void ambiguousJoinFollowupRetainsTheOriginalInstructionAndCanBeRestored() throws Exception {
+    @Test void ambiguousJoinIsReplacedByTheCompleteNewInstructionWithoutAccumulatingClarifications() throws Exception {
         var owner=login(); String mediaId=source(owner);
         jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",20000,160,90,"h264",false,null)),mediaId);
         when(planner.isAvailable(anyString())).thenReturn(true);
@@ -739,14 +773,14 @@ class ProcessingIntegrationTests {
         when(planner.propose(eq(original),any(),anyString())).thenReturn(new OperationPlanner.Proposal(null,List.of(OperationPlanner.Question.CLIP_RANGES_REQUIRED)));
         var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,original));
         assertThat(plan.status().name()).isEqualTo("NEEDS_INPUT"); assertThat(plan.questions().getFirst().code()).isEqualTo("CLIP_RANGES_REQUIRED");
-        when(planner.propose(contains("补充："),any(),anyString())).thenAnswer(call->{
-            assertThat(call.getArgument(0,String.class)).contains(original,"第一段保留前5秒");
-            var context=call.getArgument(1,OperationPlanner.Context.class); assertThat(context.previousInstruction()).isEqualTo(original); assertThat(context.previousParameters()).isNull();
+        String replacement="保留前5秒，再保留最后5秒，按顺序拼接";
+        when(planner.propose(eq(replacement),any(),anyString())).thenAnswer(call->{
+            var context=call.getArgument(1,OperationPlanner.Context.class); assertThat(context.previousInstruction()).isNull(); assertThat(context.previousParameters()).isNull();
             return new OperationPlanner.Proposal(json.valueToTree(new JoinClipsParameters("join_clips","mp4",List.of(new ClipRange(0,5000),new ClipRange(15000,20000)),"keep")),List.of());
         });
-        var ready=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"第一段保留前5秒，最后5秒放后面"));
+        var ready=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,replacement));
         assertThat(ready.version()).isEqualTo(2); assertThat(ready.status().name()).isEqualTo("READY");
-        assertThat(processing.plan(owner.id(),plan.id()).instruction()).contains(original,"补充：","第一段保留前5秒");
+        assertThat(processing.plan(owner.id(),plan.id()).instruction()).isEqualTo(replacement);
         assertThat(mapper.activeCount()).isZero();
     }
 
@@ -768,13 +802,15 @@ class ProcessingIntegrationTests {
         assertThat(mapper.countPlans(owner.id(),mediaId)).isZero(); assertThat(mapper.activeCount()).isZero();
     }
 
-    @Test void accumulatedClarificationIsBoundedBeforeAnotherPaidCall() throws Exception {
+    @Test void rewrittenInstructionsDoNotAccumulateButAnOversizedNewInstructionIsRejectedBeforeAi() throws Exception {
         var owner=login(); String mediaId=source(owner); when(planner.isAvailable(anyString())).thenReturn(true);
         when(planner.propose(anyString(),any(),anyString())).thenReturn(new OperationPlanner.Proposal(null,List.of(OperationPlanner.Question.TRIM_RANGE_REQUIRED)));
         var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"a".repeat(1990)));
-        assertThatThrownBy(()->processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"b".repeat(20))))
+        var updated=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"b".repeat(20)));
+        assertThat(updated.instruction()).isEqualTo("b".repeat(20));
+        assertThatThrownBy(()->processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(2,null,"c".repeat(2001))))
                 .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.INVALID_PARAMETERS));
-        verify(planner,times(1)).propose(anyString(),any(),anyString()); assertThat(processing.plan(owner.id(),plan.id()).version()).isEqualTo(1);
+        verify(planner,times(2)).propose(anyString(),any(),anyString()); assertThat(processing.plan(owner.id(),plan.id()).version()).isEqualTo(2);
     }
 
     @Test void ambiguousRequestsPersistFixedQuestionsAndCanBeCompletedWithoutCallingAiAgain() throws Exception {
@@ -792,11 +828,11 @@ class ProcessingIntegrationTests {
         verify(planner,times(1)).propose(anyString(),any(),anyString());
     }
 
-    @Test void aiPlanUpdatesReceivePreviousParametersButRejectVersionsChangedWhileWaiting() throws Exception {
+    @Test void aiPlanReplacementsRejectVersionsChangedWhileWaiting() throws Exception {
         Browser owner=login(); String mediaId=source(owner); String planId=create(owner,mediaId);
         when(planner.isAvailable(anyString())).thenReturn(true);
         when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
-            assertThat(call.getArgument(1,OperationPlanner.Context.class).previousParameters().operation()).isEqualTo("transcode");
+            assertThat(call.getArgument(1,OperationPlanner.Context.class).previousParameters()).isNull();
             assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,json.valueToTree(new org.example.ai_media_workbench.dto.processing.MuteParameters("mute","mp4","source")),null));
             return new OperationPlanner.Proposal(json.valueToTree(new TrimParameters("trim","mp4",0L,1000L,"keep")),List.of());

@@ -11,7 +11,7 @@ import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.*;
 
-/** 文字类云端调用共用的固定域名、有界并发和JSON边界；不自动重试付费请求。 */
+/** 个人DeepSeek适配器：固定官方域名、双并发和JSON边界；不重试、不使用站点环境凭据。 */
 @Component
 public class DeepSeekJsonClient {
     private final CloudCredentialService credentials;

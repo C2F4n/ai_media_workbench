@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { serveStatic } = require('./helpers/static.cjs');
+test.beforeEach(async ({ page }) => { await serveStatic(page); });
 const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 const os = require('node:os');

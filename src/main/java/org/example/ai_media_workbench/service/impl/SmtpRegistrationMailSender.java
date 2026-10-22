@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 /** 真实 SMTP 发信；生产环境没有打印验证码或模拟成功的后门。 */
 @Service
 public class SmtpRegistrationMailSender implements RegistrationMailSender {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(SmtpRegistrationMailSender.class);
     private final ObjectProvider<JavaMailSender> senders;
     private final RegistrationMailProperties properties;
 
@@ -46,7 +47,22 @@ public class SmtpRegistrationMailSender implements RegistrationMailSender {
             senders.getObject().send(message);
         } catch (MailException exception) {
             // 不记录邮件正文、验证码、SMTP 授权码或服务商返回的敏感详情。
+            log.warn("Registration SMTP failed: category={}", failureCategory(exception));
             throw new BusinessException(ErrorCode.EMAIL_DELIVERY_UNAVAILABLE);
         }
+    }
+
+    static String failureCategory(Throwable exception) {
+        for (int depth = 0; exception != null && depth < 16; depth++) {
+            if (exception instanceof org.springframework.mail.MailAuthenticationException) return "AUTHENTICATION";
+            if (exception instanceof javax.net.ssl.SSLException) return "TLS";
+            if (exception instanceof java.net.UnknownHostException) return "DNS";
+            if (exception instanceof java.net.SocketTimeoutException) return "TIMEOUT";
+            if (exception instanceof java.net.ConnectException) return "CONNECTION";
+            Throwable cause = exception.getCause();
+            if (cause == null && exception instanceof jakarta.mail.MessagingException mail) cause = mail.getNextException();
+            exception = cause;
+        }
+        return "DELIVERY";
     }
 }

@@ -6,12 +6,12 @@ import org.example.ai_media_workbench.service.SubtitleCorrector;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
-/** 只提交单段文字，要求 JSON 并验证输出；绝不把模型输出作为可执行指令。 */
+/** 本地千问/个人DeepSeek只接收单段文字，要求JSON并验证输出；不执行模型命令。 */
 @Component
 public class DeepSeekSubtitleCorrector implements SubtitleCorrector {
-    private final DeepSeekJsonClient client;
+    private final TextAiJsonClient client;
     private final ObjectMapper json;
-    public DeepSeekSubtitleCorrector(DeepSeekJsonClient client,ObjectMapper json) {
+    public DeepSeekSubtitleCorrector(TextAiJsonClient client,ObjectMapper json) {
         this.client=client; this.json=json;
     }
     @Override public boolean isAvailable(String userId) { return client.isAvailable(userId); }
@@ -26,7 +26,8 @@ public class DeepSeekSubtitleCorrector implements SubtitleCorrector {
             TranscriptSegments.checked(List.of(new org.example.ai_media_workbench.dto.transcript.TranscriptSegment(UUID.randomUUID(),0L,1L,corrected)),1,json);
             return corrected;
         } catch (BusinessException exception) {
-            if (exception.code()==ErrorCode.AI_FAILED || exception.code()==ErrorCode.AI_BUSY || exception.code()==ErrorCode.AI_UNAVAILABLE) throw exception;
+            if (exception.code()==ErrorCode.AI_FAILED || exception.code()==ErrorCode.AI_BUSY || exception.code()==ErrorCode.AI_UNAVAILABLE
+                    || exception.code()==ErrorCode.LOCAL_AI_UNAVAILABLE) throw exception;
             throw new BusinessException(ErrorCode.AI_FAILED);
         } catch (Exception exception) { throw new BusinessException(ErrorCode.AI_FAILED); }
     }

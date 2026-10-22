@@ -20,7 +20,7 @@ public record RegistrationMailProperties(
         @NotNull Duration codeTtl,
         // 同一验证码最多允许尝试次数。
         @Positive @Max(10) int maxAttempts,
-        // 同一限流窗口内，同一邮箱最多允许的发送次数。
+        // 每一分钟，同一邮箱最多成功交给 SMTP 的发送次数；发送失败返还配额。
         @Positive int sendAttempts) {
     /** 验证码有效期必须在一分钟到一小时之间。 */
     @AssertTrue(message = "Registration code TTL must be between one minute and one hour")

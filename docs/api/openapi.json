@@ -2,8 +2,9 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI音视频工作台接口文档",
-    "version": "2.17.0",
-    "description": "轻量版契约，共55个接口，41个已实现。登录后直接使用，不创建项目或分类；素材归属用户。业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly AMW_SESSION会话Cookie，不是JWT，写请求校验CSRF。支持账号、注册邮箱验证、素材检测预览删除、转换压缩裁切静音音轨提取、持久化版本方案/任务/结果、云端字幕编辑/SRT/单句校对、字幕检索和片段建议、明确参数字幕烧录。个人腾讯/百炼/DeepSeek凭据加密保存，不回显秘密，失败不回退公共额度。2.17新增workflow有序步骤：AI理解和手动表单共享方案，支持同源选段拼接、连续裁切、缩放、静音及最终格式/编码/体积设置。按上一步时间轴校验，兼容步骤编译为滤镜与源区间；单区间融合执行，多区间采用有预算的无损缓存和一次最终有损编码。人工确认后才执行，多结果原子发布，失败/取消不发布半成品。沿用方案/任务接口，无新表，旧参数兼容。跨素材、拼接字幕重映射、任意滤镜和clip-drafts管理仍为规划。云端配置与本地替身测试不代表真实模型效果或费用已验收。"
+    "version": "2.19.0",
+    "x-source-policy": "2.18起SERVER表示本地千问，不再使用站点云端凭据；PERSONAL仍用个人DeepSeek/腾讯/百炼。所有来源失败均不回退。文字能力适用后文DeepSeek功能契约；本地单并发/35秒，健康检查700ms/缓存2秒，不支持ASR。新增textAi状态及凭据available/unavailableReason。已完成真实有序方案冒烟，但不代表长时性能、所有模型效果或云端费用验收。",
+    "description": "轻量版契约，共57个接口，43个已实现。登录后直接使用，不创建项目或分类。业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly会话Cookie，不是JWT，写请求校验CSRF。支持账号/注册邮箱验证、个人凭据、素材/方案/任务/结果、FFmpeg转换压缩裁切静音音轨提取、字幕编辑/SRT/识别/校对/检索/建议/烧录。2.17工作流支持有序裁切、同源拼接、缩放、静音和最终导出，按上一步时间轴校验，不穷举操作组合；确认后才执行，失败不发布半成品。2.18把SERVER站点配置改为本地千问：方案生成、文字校对及检索建议可使用本地模型或PERSONAL个人DeepSeek，任何来源失败均不回退。新增textAi状态、available和unavailableReason；本地health检查700ms/缓存2秒，单并发/35秒，不支持ASR。历史SERVER值、接口和表兼容。后文DeepSeek文字契约同样适用于本地模型，个人云端仍须自行配置凭据。已完成真实有序方案冒烟，不等于长时性能、所有模型效果或云端费用验收。跨素材、拼接字幕重映射、任意滤镜及clip-drafts管理仍未实现。 2.19自然语言重新生成完整替换提示词，不拼接旧文或继承旧参数；新增方案删除和任务记录移除，前端记录独立成页。"
   },
   "servers": [
     {
@@ -55,7 +56,7 @@
         ],
         "operationId": "listCloudCredentials",
         "summary": "查询本人三个云端供应商配置状态",
-        "description": "只操作会话当前用户，三种来源互斥；缺省SERVER。PERSONAL失败不回退站点。秘密加密保存且不回显，不进入任务/方案/日志。保存不发起付费校验；删除或切换不能撤回已发送请求。",
+        "description": "只操作会话当前用户，缺省SERVER现表示本地千问；PERSONAL为个人云端，OFF停用。任何来源失败均不回退。available/unavailableReason声明本地真实健康状态；本地不支持语音识别，tencent/aliyun的SERVER项不可用。个人云端仅声明配置完整，不验证余额或权限。秘密加密保存不回显，保存不发起付费校验。",
         "responses": {
           "200": {
             "description": "保存或查询成功；不回显秘密，configured仅表示本地配置完整。",
@@ -123,7 +124,7 @@
         ],
         "operationId": "saveCloudCredential",
         "summary": "保存本人云端凭据或切换来源",
-        "description": "只操作会话当前用户，三种来源互斥；缺省SERVER。PERSONAL失败不回退站点。秘密加密保存且不回显，不进入任务/方案/日志。保存不发起付费校验；删除或切换不能撤回已发送请求。 写入默认每用户5分钟20次。省略/null个人字段保留旧值；显式空密钥无效；不接受其他供应商字段及自定义URL。SERVER/OFF清除个人密文。",
+        "description": "只操作会话当前用户，SERVER现表示本地千问而非公共云端额度；PERSONAL为个人云端，OFF停用。任何来源失败均不回退。写入默认每用户5分钟20次；省略/null个人字段保留旧值，显式空密钥无效。不接受其他供应商字段及自定义URL，SERVER/OFF清除个人密文。保存不发起付费校验，不能撤回已发送请求。",
         "parameters": [
           {
             "name": "provider",
@@ -256,7 +257,7 @@
         ],
         "operationId": "deleteCloudCredential",
         "summary": "清除本人该供应商的密钥并停用",
-        "description": "只操作会话当前用户，三种来源互斥；缺省SERVER。PERSONAL失败不回退站点。秘密加密保存且不回显，不进入任务/方案/日志。保存不发起付费校验；删除或切换不能撤回已发送请求。 删除保留OFF状态和递增版本；需要公共额度时显式PUT SERVER。",
+        "description": "只操作会话当前用户，删除个人密文并保留OFF状态和递增版本。不会自动切换本地或其他服务；启用本地须显式PUT SERVER。不能撤回已发送请求。",
         "parameters": [
           {
             "name": "provider",
@@ -732,7 +733,7 @@
         ],
         "operationId": "updateOperationPlan",
         "summary": "修改待确认方案并增加版本",
-        "description": "READY/NEEDS_INPUT方案可修改，expectedVersion必须匹配；已执行方案不可修改。parameters完整替换，或instruction结合当前参数重新生成，成功版本+1，失败不改变旧方案/版本。云端等待不占用事务或账号锁，落库前再次检查素材、账号和方案版本；期间被修改409 PLAN_VERSION_CONFLICT，删除404，账号注销401。信息不足可变为NEEDS_INPUT；用户补充后可重新READY，仍需显式确认执行。非法模型参数422 AI_PLAN_FAILED，不运行任意命令。 明确parameters另支持burn_subtitles六字段，按BurnSubtitleParameters校验；要求本人素材最新字幕ID/版本，跨素材或非本人404，改稿/重识别409 TRANSCRIPT_VERSION_CONFLICT，工具缺少503 SUBTITLE_BURN_UNAVAILABLE。入队后字幕版本冻结，重复execute仍复用任务。 明确参数支持join_clips四字段，1至20段，每段至少500ms，所有区间在源素材内，总时长不超过900000ms；数组顺序即输出顺序。无草稿资源，参数在入队后冻结；不接收跨素材或字幕参数。",
+        "description": "READY/NEEDS_INPUT方案可修改，expectedVersion必须匹配；已执行方案不可修改。parameters完整替换，或instruction作为完整新要求重新生成，不拼接旧提示词，也不继承旧参数，成功版本+1，失败不改变旧方案/版本。云端等待不占用事务或账号锁，落库前再次检查素材、账号和方案版本；期间被修改409 PLAN_VERSION_CONFLICT，删除404，账号注销401。信息不足可变为NEEDS_INPUT；用户补充后可重新READY，仍需显式确认执行。非法模型参数422 AI_PLAN_FAILED，不运行任意命令。 明确parameters另支持burn_subtitles六字段，按BurnSubtitleParameters校验；要求本人素材最新字幕ID/版本，跨素材或非本人404，改稿/重识别409 TRANSCRIPT_VERSION_CONFLICT，工具缺少503 SUBTITLE_BURN_UNAVAILABLE。入队后字幕版本冻结，重复execute仍复用任务。 明确参数支持join_clips四字段，1至20段，每段至少500ms，所有区间在源素材内，总时长不超过900000ms；数组顺序即输出顺序。无草稿资源，参数在入队后冻结；不接收跨素材或字幕参数。",
         "parameters": [
           {
             "name": "planId",
@@ -951,6 +952,72 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "x-implementation-status": "IMPLEMENTED"
+      },
+      "delete": {
+        "tags": [
+          "方案"
+        ],
+        "operationId": "deleteOperationPlan",
+        "summary": "删除本人保存的方案",
+        "parameters": [
+          {
+            "name": "planId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "先GET /api/auth/csrf获取；登录后使用旋转令牌。"
+          }
+        ],
+        "description": "需要登录和CSRF，无请求体。逻辑删除本人方案；列表与详情、修改、执行入口随后404，原素材、已创建任务及结果保留。不删除文件，不取消已入队任务；不存在、已删除或他人方案404。",
+        "responses": {
+          "200": {
+            "description": "成功，统一返回Result，data为null。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultVoid"
+                },
+                "example": {
+                  "code": "SUCCESS",
+                  "message": "Success",
+                  "data": null,
+                  "requestId": "req-success",
+                  "details": []
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedContentType"
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
@@ -1415,6 +1482,75 @@
           }
         },
         "x-implementation-status": "IMPLEMENTED"
+      },
+      "delete": {
+        "tags": [
+          "任务"
+        ],
+        "operationId": "deleteTaskHistory",
+        "summary": "删除本人处理记录",
+        "parameters": [
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "先GET /api/auth/csrf获取；登录后使用旋转令牌。"
+          }
+        ],
+        "description": "需要登录和CSRF，无请求体。仅终态任务可从记录列表移除，QUEUED/RUNNING/CANCELLING返回409 RESOURCE_CONFLICT。V11迁移新增history_hidden_at，与资源删除标记分离；原素材、方案、结果文件、按ID查询及原方案重复执行的幂等响应保留。本人重复移除200，不存在、已随素材删除或他人任务404。不是磁盘清理接口。",
+        "responses": {
+          "200": {
+            "description": "成功，统一返回Result，data为null。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultVoid"
+                },
+                "example": {
+                  "code": "SUCCESS",
+                  "message": "Success",
+                  "data": null,
+                  "requestId": "req-success",
+                  "details": []
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PlanConflict"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedContentType"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "x-implementation-status": "IMPLEMENTED"
       }
     },
     "/api/outputs/{outputId}/preview": {
@@ -1743,7 +1879,7 @@
         ],
         "operationId": "getCapabilities",
         "summary": "查询实际能力与限制",
-        "description": "匿名仅报告站点能力，登录后按本人三种凭据来源计算；Cache-Control:no-store。登录或修改配置后应重新查询，不能跨用户缓存。配置不等于远程验收。",
+        "description": "匿名报告本地默认能力，登录后按本人SERVER/PERSONAL/OFF来源计算，Cache-Control:no-store。textAi包含source/model/available/unavailableReason。本地实际检查health，最多700ms/缓存2秒；页面每10秒刷新或手动刷新。加载中或不可达时文字能力关闭，手动功能不受影响。个人云端配置完整不代表网络、权限或余额已经验证。",
         "security": [],
         "responses": {
           "200": {
@@ -1786,7 +1922,7 @@
                     "semanticSearch": false,
                     "clipRecommendations": false,
                     "mediaTool": true,
-                    "maxUploadBytes": 1073741824,
+                    "maxUploadBytes": 3221225472,
                     "maxDurationMs": 900000,
                     "supportedOperations": [
                       "transcode",
@@ -5144,7 +5280,7 @@
         ],
         "operationId": "sendRegistrationEmailCode",
         "summary": "发送注册邮箱验证码，不创建账号",
-        "description": "真实SMTP发信。服务未配置或发送失败503 EMAIL_DELIVERY_UNAVAILABLE，不占用账号或邮箱。接口不返回验证码。默认同一邮箱5分钟3次、同一IP5次。10分钟有效，最多尝试5次，单次使用，绑定邮箱；重复取码不废止此前未过期的码。服务商接受邮件不保证最终进入收件箱。",
+        "description": "真实SMTP发信。服务未配置或发送失败503 EMAIL_DELIVERY_UNAVAILABLE，不占用账号或邮箱，失败返还邮箱及IP发送配额，可重试。默认同一邮箱每1分钟成功发送3次、同一IP每1分钟成功发送5次；在途请求占位防止并发越限，429携带实际剩余窗口Retry-After。前端仅成功后显示20秒重发倒计时，503不进入倒计时，429按Retry-After等待。接口不返回验证码。10分钟有效、最多尝试5次、单次使用、绑定邮箱；重复取码不废止此前未过期的码。SMTP接受不保证最终进入收件箱，超时等失败也不能保证供应商未投递。",
         "security": [],
         "parameters": [
           {
@@ -5471,7 +5607,7 @@
         ],
         "operationId": "createOperationPlan",
         "summary": "按明确参数或自然语言创建方案",
-        "description": "已实现明确参数或DeepSeek自然语言生成方案，parameters/instruction恰好一个。2.17自然语言优先生成workflow有序步骤，支持裁切、从上一步结果选段拼接、缩放、静音及最终导出；明确参数和手动步骤不依赖云端。旧transcode/compress/trim/mute/extract_audio/export/join_clips保持兼容；burn_subtitles仅明确参数，绑定本人素材最新字幕ID/版本。参数Schema、当前时间轴、类型、体积、音轨、工具能力逐步校验；非法模型结果422 AI_PLAN_FAILED且不落库。未知命令、路径、URL、跨素材或未定义步骤拒绝，不丢弃部分要求。信息不足返回NEEDS_INPUT、parameters=null及固定questions，不入队；补充回答合并原要求，累计最多2000码点。READY也不自动执行，须确认execute，入队参数冻结，重复execute复用任务。AI仅发送要求及上文、元信息/字节数/旧参数/工具和导出能力，不发送视频、音轨、文件名或路径。默认每用户5分钟20次、与校对共用最多2个云端请求、35秒超时，不自动付费重试。AI未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY。云端等待不持有数据库事务/锁，落库前重新检查账号、素材和版本，删除/注销后不接受迟到结果。",
+        "description": "已实现明确参数或DeepSeek自然语言生成方案，parameters/instruction恰好一个。2.17自然语言优先生成workflow有序步骤，支持裁切、从上一步结果选段拼接、缩放、静音及最终导出；明确参数和手动步骤不依赖云端。旧transcode/compress/trim/mute/extract_audio/export/join_clips保持兼容；burn_subtitles仅明确参数，绑定本人素材最新字幕ID/版本。参数Schema、当前时间轴、类型、体积、音轨、工具能力逐步校验；非法模型结果422 AI_PLAN_FAILED且不落库。未知命令、路径、URL、跨素材或未定义步骤拒绝，不丢弃部分要求。信息不足返回NEEDS_INPUT、parameters=null及固定questions，不入队；重新填写完整要求后重试，不合并旧文，单份最多2000码点。READY也不自动执行，须确认execute，入队参数冻结，重复execute复用任务。AI仅发送当前完整要求、元信息/字节数/工具和导出能力，不发送视频、音轨、文件名或路径。默认每用户5分钟20次、与校对共用最多2个云端请求、35秒超时，不自动付费重试。AI未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY。云端等待不持有数据库事务/锁，落库前重新检查账号、素材和版本，删除/注销后不接受迟到结果。",
         "parameters": [
           {
             "name": "X-CSRF-Token",
@@ -6217,6 +6353,17 @@
   },
   "components": {
     "schemas": {
+      "TextAiStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "model", "available", "unavailableReason"],
+        "properties": {
+          "source": {"type": "string", "enum": ["SERVER", "PERSONAL", "OFF"], "description": "SERVER=本地千问；PERSONAL=个人DeepSeek；OFF=停用。"},
+          "model": {"type": "string", "nullable": true},
+          "available": {"type": "boolean", "description": "本地以健康检查为准；个人云端只表示配置可用，不验证余额或权限。"},
+          "unavailableReason": {"type": "string", "nullable": true, "description": "不可用原因，不包含内部地址或密钥。"}
+        }
+      },
       "CloudCredential": {
         "type": "object",
         "additionalProperties": false,
@@ -6225,7 +6372,9 @@
           "mode",
           "version",
           "configured",
-          "personalStored"
+          "personalStored",
+          "available",
+          "unavailableReason"
         ],
         "properties": {
           "provider": {
@@ -6251,7 +6400,7 @@
           },
           "configured": {
             "type": "boolean",
-            "description": "本地格式完整且可读取；不代表远端网络、权限、余额已验证。"
+            "description": "配置完整且可读取，不等于服务在线；运行状态见available。本地不支持ASR。"
           },
           "personalStored": {
             "type": "boolean",
@@ -6270,11 +6419,19 @@
           "model": {
             "type": "string",
             "nullable": true,
-            "description": "仅DeepSeek返回模型名。"
+            "description": "文字AI返回模型名：SERVER为部署者配置的千问模型，PERSONAL为个人DeepSeek模型。"
           },
           "updatedAt": {
             "type": "string",
             "format": "date-time",
+            "nullable": true
+          },
+          "available": {
+            "type": "boolean",
+            "description": "SERVER文字项以本地health为准；SERVER语音项恒false。PERSONAL只表示配置完整，不验证远端网络/权限/余额。"
+          },
+          "unavailableReason": {
+            "type": "string",
             "nullable": true
           }
         }
@@ -6286,7 +6443,7 @@
           "expectedVersion",
           "mode"
         ],
-        "description": "PERSONAL仅接收当前供应商字段。腾讯appId/secretId/secretKey；百炼apiKey/workspaceId；DeepSeek apiKey/model。省略或null保留旧值；未有旧值时DeepSeek模型默认deepseek-flash，workspaceId可空，其余必需。SERVER/OFF不得附带凭据字段。",
+        "description": "SERVER现表示本地千问，不再使用站点公共云端配置。PERSONAL仅接收当前供应商字段：腾讯appId/secretId/secretKey；百炼apiKey/workspaceId；DeepSeek apiKey/model。省略或null保留旧值，DeepSeek模型默认deepseek-flash。SERVER/OFF不得附带个人字段，切换清除个人密文；失败不自动回退。",
         "properties": {
           "expectedVersion": {
             "type": "integer",
@@ -6545,7 +6702,7 @@
           "operation",
           "outputFormat"
         ],
-        "description": "2.15同源组合导出，不修改原素材。省略的字段按默认值规范化，响应返回全部字段。MP4:h264/hevc/av1；MOV:h264/hevc；MKV:全部；WebM:vp9/av1。音频禁止视频字段、静音、目标大小与另存音轨。所有输出共享任务超时，每文件1GiB上限，任意文件失败不发布结果。",
+        "description": "2.15同源组合导出，不修改原素材。省略的字段按默认值规范化，响应返回全部字段。MP4:h264/hevc/av1；MOV:h264/hevc；MKV:全部；WebM:vp9/av1。音频禁止视频字段、静音、目标大小与另存音轨。所有输出共享任务超时，每文件3GiB上限，任意文件失败不发布结果。",
         "properties": {
           "operation": {
             "type": "string",
@@ -6834,7 +6991,7 @@
             "$ref": "#/components/schemas/UpdatePlanWithInstruction"
           }
         ],
-        "description": "parameters完整替换，或instruction结合当前参数重新生成；READY/NEEDS_INPUT可修改，成功版本+1，失败不增加版本。已执行不可修改。"
+        "description": "parameters完整替换，或instruction作为完整的新要求重新生成，不拼接旧提示词、不继承旧参数；READY/NEEDS_INPUT可修改，成功版本+1，失败不增加版本。已执行不可修改。"
       },
       "ExecutePlanRequest": {
         "type": "object",
@@ -7576,7 +7733,8 @@
           "asrProviders",
           "subtitleCorrection",
           "exportFormats",
-          "exportVideoCodecs"
+          "exportVideoCodecs",
+          "textAi"
         ],
         "properties": {
           "registration": {
@@ -7590,18 +7748,18 @@
           },
           "aiPlans": {
             "type": "boolean",
-            "description": "DeepSeek凭据/模型已配置且至少一种明确参数处理工具可用；不保证远端权限、网络、余额或模型理解效果。生成后仍需确认，不自动执行。"
+            "description": "所选文字模型可用且至少一种处理工具可用。本地检查health，个人DeepSeek检查凭据格式；不保证理解效果或云端余额。方案须确认才执行。"
           },
           "asr": {
             "type": "boolean"
           },
           "semanticSearch": {
             "type": "boolean",
-            "description": "DeepSeek密钥和模型已配置；不依赖FFmpeg，但每次调用仍要求本人已保存的当前字幕，且不超过600段/128KiB。不代表网络、权限、余额或效果已验收。"
+            "description": "所选本地千问/个人DeepSeek可用；每次要求本人已保存的当前字幕且不超过600段/128KiB，本地还受部署上下文限制。不代表效果或云端余额已验收。"
           },
           "clipRecommendations": {
             "type": "boolean",
-            "description": "DeepSeek密钥和模型已配置；不依赖FFmpeg，但每次调用仍要求本人已保存的当前字幕，且不超过600段/128KiB。不代表网络、权限、余额或效果已验收。"
+            "description": "所选本地千问/个人DeepSeek可用；每次要求本人已保存的当前字幕且不超过600段/128KiB，本地还受部署上下文限制。不代表效果或云端余额已验收。"
           },
           "mediaTool": {
             "type": "boolean",
@@ -7637,7 +7795,7 @@
           },
           "subtitleCorrection": {
             "type": "boolean",
-            "description": "DeepSeek密钥和模型已配置，可生成单句文字建议；自然语言方案和内容检索分别检查对应能力字段。"
+            "description": "所选本地千问/个人DeepSeek可用，可生成单句建议；自然语言方案和内容检索分别检查对应能力字段。"
           },
           "exportFormats": {
             "type": "array",
@@ -7667,6 +7825,9 @@
                 "av1"
               ]
             }
+          },
+          "textAi": {
+            "$ref": "#/components/schemas/TextAiStatus"
           }
         }
       },
@@ -8578,7 +8739,7 @@
           "clips": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/JoinClipRange" } },
           "audioMode": { "type": "string", "enum": ["keep"] }
         },
-        "description": "已实现，仅四字段。本人同一就绪素材，1至20段，每段至少500ms，总时长最多900000ms；允许重复、重叠、倒序，不允许路径/URL/跨素材/字幕参数。固定原展示尺寸取偶数、30fps、H.264/yuv420p；首条音轨AAC 48kHz双声道，缺失区间补静音以保持同步，无音轨素材仍无音轨。结果后缀-joined.mp4，原素材不变，失败CLIP_JOIN_FAILED不发布半成品。顺序分段编码再拼接重编码，所有阶段共享默认5分钟预算，临时分段总大小和最终输出分别受输出上限约束（默认各1GiB，峰值磁盘约两倍）。时长误差最多max(250ms,总时长/1000)，按30fps对齐。发布前删除临时分段和清单，失败保留租约由回收/资源清理重试。复用方案版本及任务幂等，不增加表或接口；clip-drafts管理、跨素材和拼接字幕重映射仍未实现。"
+        "description": "已实现，仅四字段。本人同一就绪素材，1至20段，每段至少500ms，总时长最多900000ms；允许重复、重叠、倒序，不允许路径/URL/跨素材/字幕参数。固定原展示尺寸取偶数、30fps、H.264/yuv420p；首条音轨AAC 48kHz双声道，缺失区间补静音以保持同步，无音轨素材仍无音轨。结果后缀-joined.mp4，原素材不变，失败CLIP_JOIN_FAILED不发布半成品。顺序分段编码再拼接重编码，所有阶段共享默认5分钟预算，临时分段总大小和最终输出分别受输出上限约束（默认各3GiB，峰值磁盘约两倍）。时长误差最多max(250ms,总时长/1000)，按30fps对齐。发布前删除临时分段和清单，失败保留租约由回收/资源清理重试。复用方案版本及任务幂等，不增加表或接口；clip-drafts管理、跨素材和拼接字幕重映射仍未实现。"
       },
       "BurnSubtitleParameters": {
         "type": "object",
@@ -9059,7 +9220,7 @@
         }
       },
       "FileTooLarge": {
-        "description": "单文件超过1 GiB上限。",
+        "description": "单文件超过3 GiB上限。",
         "content": {
           "application/json": {
             "schema": {
@@ -9067,7 +9228,7 @@
             },
             "example": {
               "code": "FILE_TOO_LARGE",
-              "message": "单文件超过1 GiB上限。",
+              "message": "单文件超过3 GiB上限。",
               "data": null,
               "requestId": "req-error",
               "details": []

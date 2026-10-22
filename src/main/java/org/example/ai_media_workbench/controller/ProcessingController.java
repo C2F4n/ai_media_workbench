@@ -51,6 +51,16 @@ public class ProcessingController {
         var task = processing.execute(user.userId(), id.toString(), input.expectedVersion());
         return ResponseEntity.status(task.active() ? 202 : 200).body(Result.success(task));
     }
+    @DeleteMapping("/api/operation-plans/{id}")
+    public Result<Void> deletePlan(@AuthenticationPrincipal AccountPrincipal user, @PathVariable UUID id) {
+        processing.deletePlan(user.userId(), id.toString());
+        return Result.success();
+    }
+    @DeleteMapping("/api/tasks/{id}")
+    public Result<Void> deleteTaskHistory(@AuthenticationPrincipal AccountPrincipal user, @PathVariable UUID id) {
+        processing.deleteTaskHistory(user.userId(), id.toString());
+        return Result.success();
+    }
     @GetMapping("/api/tasks/{id}")
     public Result<TaskVO> task(@AuthenticationPrincipal AccountPrincipal user, @PathVariable UUID id) {
         return Result.success(processing.task(user.userId(), id.toString()));

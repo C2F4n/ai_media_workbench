@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { serveStatic } = require('./helpers/static.cjs');
+test.beforeEach(async ({ page }) => { await serveStatic(page); });
 const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -84,7 +86,7 @@ test('saved subtitle burn requires confirmation, retries one task and restores a
   await page.locator('#subtitle-version').selectOption('3'); await page.locator('#subtitle-original').check(); await expect(page.locator('#burn-subtitle')).toBeDisabled();
   await page.locator('#subtitle-original').uncheck(); await page.locator('#burn-subtitle').click();
   await expect(page.locator('#subtitle-error')).toBeVisible(); await page.locator('#burn-subtitle').click();
-  await expect(page.locator('#subtitle-result-slot #conversion-result')).toBeVisible(); await expect(page.locator('#task-status')).toHaveText('已完成');
+  await expect(page.locator('#export-result-slot #conversion-result')).toBeVisible(); await expect(page.locator('#task-status')).toHaveText('已完成');
   expect(app.state().posts).toBe(1); expect(app.state().executes).toBe(2); expect(app.state().task.parameters.transcriptVersion).toBe(3);
   await page.locator('#output-preview').evaluate((video) => video.play());
   await expect.poll(() => page.locator('#output-preview').evaluate((video) => video.currentTime)).toBeGreaterThan(0.1);
@@ -101,7 +103,7 @@ test('saved subtitle burn requires confirmation, retries one task and restores a
   // Native forced downloads bypass browser routing; the real endpoint is covered by server/media tests.
   await expect(page.locator('#download-output')).toHaveAttribute('href', /\/api\/outputs\/[^/]+\/download$/);
   await expect(page.locator('#download-output')).toHaveAttribute('download', '字幕测试-subtitled.mp4');
-  await page.reload(); await selectTool(page, 'subtitle'); await expect(page.locator('#subtitle-result-slot #conversion-result')).toBeVisible();
+  await page.reload(); await selectTool(page, 'subtitle'); await page.locator('#phase-export-tab').click(); await expect(page.locator('#export-result-slot #conversion-result')).toBeVisible();
   await expect(page.locator('#task-stage')).toContainText('字幕 v3'); expect(errors).toEqual([]);
 });
 

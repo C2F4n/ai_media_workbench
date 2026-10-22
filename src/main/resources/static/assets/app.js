@@ -11,13 +11,23 @@
   const narrowNavigation = window.matchMedia('(max-width: 900px)');
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   let navigationPreference = { pinned: true, open: true };
+  const toolGroupPreferences = { regular: true, ai: true, history: true };
   try {
     const saved = JSON.parse(localStorage.getItem('amw-navigation') || 'null');
     if (saved && typeof saved.pinned === 'boolean' && typeof saved.open === 'boolean') navigationPreference = saved;
   } catch { /* 存储被禁用时，导航仍使用默认设置。 */ }
+  try {
+    const saved = JSON.parse(localStorage.getItem('amw-tool-groups') || 'null');
+    for (const name of Object.keys(toolGroupPreferences)) if (typeof saved?.[name] === 'boolean') toolGroupPreferences[name] = saved[name];
+  } catch { /* 分组偏好不影响功能可用性。 */ }
   let navigationOpen = !narrowNavigation.matches && navigationPreference.open;
   let activeTool = 'detect', toolAnimation = null, dependencySignature = '';
+  const phaseOrder = ['import', 'edit', 'export'];
+  const toolPhases = new Map();
+  let activePhase = 'import', phaseAnimation = null;
   let registrationChallenge = null;
+  const registrationCooldowns = new Map();
+  let registrationCooldownTimer = null;
   let activePanel = 'workbench';
   let mediaPage = 1;
   let mediaTotal = 0;
@@ -28,6 +38,8 @@
   let taskTimer = null;
   let taskPage = 1;
   let taskTotal = 0;
+  let planPage = 1, planTotal = 0, planListRevision = 0, taskListRevision = 0;
+  const expandedRecords = new Set(), recordInstructions = new Map();
   let pendingPlan = null;
   let exportPlan = null, exportDirty = false, exportRevision = 0;
   let outputId = null;
@@ -85,6 +97,7 @@
     TRIM_FAILED: '视频裁切失败，请调整区间或更换素材。',
     MUTE_FAILED: '视频静音失败，请检查素材后重试。',
     AI_UNAVAILABLE: 'AI 服务尚未配置或暂不可用。',
+    LOCAL_AI_UNAVAILABLE: '服务端模型暂不可用，请稍后重试或切换我的凭据。',
     AI_BUSY: 'AI 服务繁忙，请稍后重试。',
     AI_PLAN_FAILED: '未生成有效方案，请修改处理要求后重试。',
     AI_ANALYSIS_FAILED: '未得到有效的字幕分析结果，请修改目标或稍后重试。',
@@ -115,9 +128,11 @@
     constructor(code, status, retryAfter) {
       super(code === 'RATE_LIMITED'
         ? `操作过于频繁，请在${Math.max(1, Number(retryAfter) || 60)}秒后重试。`
-        : (messages[code] || '请求未完成，请稍后重试。'));
+        : (code === 'AI_UNAVAILABLE' && capabilities?.textAi?.source === 'SERVER'
+          ? messages.LOCAL_AI_UNAVAILABLE : messages[code] || '请求未完成，请稍后重试。'));
       this.code = code;
       this.status = status;
+      this.retryAfter = Math.max(1, Number(retryAfter) || 60);
     }
   }
 
@@ -194,9 +209,21 @@
 
   // 没有邮件服务或尚未申请验证码时，不允许提交注册。
   function updateRegistrationControls() {
-    $('send-email-code').disabled = busy || !capabilities?.registration;
+    const now = Date.now();
+    for (const [email, until] of registrationCooldowns) if (until <= now) registrationCooldowns.delete(email);
+    const email = $('register-email').value.trim().toLowerCase();
+    const seconds = Math.max(0, Math.ceil(((registrationCooldowns.get(email) || 0) - now) / 1000));
+    $('send-email-code').disabled = busy || !capabilities?.registration || seconds > 0;
+    $('email-code-label').textContent = seconds > 0 ? `${seconds}秒后重发` : '发送验证码';
     $('register-submit').disabled = busy || !capabilities?.registration || !registrationChallenge;
     $('register-unavailable').hidden = !capabilities || capabilities.registration;
+    if (!registrationCooldowns.size && registrationCooldownTimer) { clearInterval(registrationCooldownTimer); registrationCooldownTimer = null; }
+  }
+
+  function registrationCooldown(email, seconds) {
+    registrationCooldowns.set(email, Date.now() + Math.max(1, seconds) * 1000);
+    if (!registrationCooldownTimer) registrationCooldownTimer = setInterval(updateRegistrationControls, 250);
+    updateRegistrationControls();
   }
 
   // 切换登录和注册表单。
@@ -331,7 +358,13 @@
     if (!input.reportValidity()) return;
     const email = input.value.trim().toLowerCase();
     operation('register-error', async () => {
-      const challenge = await request('/api/auth/registration-email-code', { method: 'POST', body: { email } });
+      let challenge;
+      try { challenge = await request('/api/auth/registration-email-code', { method: 'POST', body: { email } }); }
+      catch (error) {
+        if (error.code === 'RATE_LIMITED') registrationCooldown(email, error.retryAfter);
+        throw error;
+      }
+      registrationCooldown(email, 20);
       registrationChallenge = { ...challenge, email };
       $('register-email-code').value = '';
       $('email-code-notice').textContent = '验证码已发送，请查看邮箱。';
@@ -452,7 +485,26 @@
     $('header-location').textContent = panel === 'workbench' ? '工作台' : '账户';
     $('header-account').setAttribute('aria-expanded', String(panel === 'account'));
     syncNavigation();
+    if (panel !== 'workbench') document.querySelectorAll('#workbench-panel video, #workbench-panel audio').forEach(player => player.pause());
   }
+
+  function selectAccountTab(tab) {
+    for (const name of ['profile', 'security', 'cloud']) {
+      const active = name === tab;
+      $(`${name}-section`).hidden = !active;
+      $(`account-${name}-tab`).setAttribute('aria-selected', String(active));
+      $(`account-${name}-tab`).tabIndex = active ? 0 : -1;
+    }
+    $('account-danger-section').hidden = tab !== 'security';
+  }
+  for (const name of ['profile', 'security', 'cloud']) $(`account-${name}-tab`).addEventListener('click', () => selectAccountTab(name));
+  document.querySelector('.account-nav').addEventListener('keydown', event => {
+    const tabs = ['profile', 'security', 'cloud'], current = tabs.findIndex(name => $(`account-${name}-tab`) === document.activeElement);
+    if (current < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (current + (event.key === 'ArrowRight' ? 1 : 2)) % 3;
+    selectAccountTab(tabs[next]); $(`account-${tabs[next]}-tab`).focus();
+  });
 
   function syncMediaControls() {
     const combined = $('export-combine').checked && processingOperation !== 'extract_audio';
@@ -496,6 +548,9 @@
     $('delete-output').disabled = busy || !outputId;
     $('task-prev').disabled = busy || taskPage <= 1;
     $('task-next').disabled = busy || taskPage * 10 >= taskTotal;
+    $('plan-prev').disabled = busy || planPage <= 1;
+    $('plan-next').disabled = busy || planPage * 10 >= planTotal;
+    document.querySelectorAll('[data-record-action]').forEach(button => { button.disabled = busy || button.dataset.active === 'true'; });
     syncExportControls(needsCompression);
     syncSubtitleControls();
     syncAIControls();
@@ -503,58 +558,78 @@
     syncJoinControls();
     syncCloudControls();
     renderToolDependencies();
+    syncWorkbenchPhase();
   }
 
   const cloudProviders = [
     { id: 'tencent', name: '腾讯云语音识别', fields: [['appId', 'AppId', false, 20], ['secretId', 'SecretId', true, 128], ['secretKey', 'SecretKey', true, 256]] },
     { id: 'aliyun', name: '阿里云百炼语音识别', fields: [['apiKey', 'API Key', true, 512], ['workspaceId', 'Workspace ID', false, 80]] },
-    { id: 'deepseek', name: 'DeepSeek', fields: [['apiKey', 'API Key', true, 512], ['model', '模型', false, 80]] }
+    { id: 'deepseek', name: '文字 AI', fields: [['apiKey', 'DeepSeek API Key', true, 512], ['model', 'DeepSeek 模型', false, 80]] }
   ];
   function clearCloudSecrets() { $('cloud-providers').querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); }
   function clearCloud() {
     cloudRevision++; cloudEntries = null; cloudOwner = null; cloudLoading = false;
     $('cloud-providers').replaceChildren(); notice('cloud-state', ''); notice('cloud-error', '');
   }
+  let userCapabilitiesRevision = 0;
   async function refreshUserCapabilities() {
     const owner = currentUser?.id, revision = workspaceRevision;
     if (!owner) return;
+    const requestRevision = ++userCapabilitiesRevision;
     try {
       const item = await request('/api/system/capabilities');
-      if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+      if (currentUser?.id !== owner || workspaceRevision !== revision || requestRevision !== userCapabilitiesRevision) return;
       capabilities = item; updateRegistrationControls(); syncMediaControls();
+      const saved = cloudEntries?.find(entry => entry.provider === 'deepseek');
+      if (saved?.mode === 'SERVER' && item.textAi?.source === 'SERVER') {
+        Object.assign(saved, { available: item.textAi.available, unavailableReason: item.textAi.unavailableReason });
+        const article = $('cloud-deepseek');
+        if (article && !article.dataset.dirty) renderCloudStatus(article.querySelector('[role=status]'), saved);
+      }
     } catch (error) { if (currentUser?.id === owner && error.status === 401) showAuth(); }
   }
   function syncCloudControls() {
     $('refresh-cloud').disabled = busy || cloudLoading || !currentUser;
     $('cloud-providers').querySelectorAll('input,select,button').forEach((element) => { element.disabled = busy || cloudLoading || !currentUser; });
   }
+  function renderCloudStatus(element, saved) {
+    const available = saved.available ?? saved.configured;
+    element.textContent = saved.mode === 'OFF' ? '已停用' : saved.mode === 'SERVER'
+      ? available ? '服务端模型已就绪' : saved.provider === 'deepseek' ? messages.LOCAL_AI_UNAVAILABLE : '服务端模型不支持语音识别，请配置我的凭据'
+      : available ? '个人凭据已配置' : saved.unavailableReason || (saved.personalStored ? '个人凭据不可读取' : '个人凭据尚未配置');
+    element.classList.toggle('error', saved.mode !== 'OFF' && !available);
+  }
   function renderCloudProvider(provider) {
     const saved = cloudEntries?.find((item) => item.provider === provider.id); if (!saved) return;
     let article = $('cloud-' + provider.id);
     if (!article) { article = document.createElement('article'); article.id = 'cloud-' + provider.id; article.className = 'cloud-provider'; $('cloud-providers').append(article); }
     article.replaceChildren();
+    delete article.dataset.dirty;
     const heading = document.createElement('div'); heading.className = 'section-heading';
     const title = document.createElement('h3'); title.textContent = provider.name;
     const state = document.createElement('span'); state.className = 'cloud-provider-status muted'; state.setAttribute('role', 'status');
-    state.textContent = saved.mode === 'OFF' ? '已停用' : saved.configured ? (saved.mode === 'PERSONAL' ? '个人凭据已配置' : '站点已配置') : saved.personalStored ? '个人凭据不可读取' : '未配置';
+    renderCloudStatus(state, saved);
     heading.append(title, state); article.append(heading);
     const form = document.createElement('form'); form.autocomplete = 'off';
-    const source = document.createElement('label'); source.className = 'field'; source.textContent = '凭据来源';
+    const source = document.createElement('label'); source.className = 'field'; source.textContent = '服务来源';
     const mode = document.createElement('select'); mode.setAttribute('aria-label', provider.name + '凭据来源');
-    for (const [value, text] of [['PERSONAL', '我的凭据'], ['SERVER', '站点配置'], ['OFF', '停用']]) {
+    for (const [value, text] of [['PERSONAL', '我的凭据'], ['SERVER', provider.id === 'deepseek' ? '服务端部署 · 千问' : '服务端模型（不支持语音识别）'], ['OFF', '停用']]) {
       const option = document.createElement('option'); option.value = value; option.textContent = text; mode.append(option);
     }
     mode.value = saved.mode; source.append(mode); form.append(source);
+    const modelWarning = document.createElement('p'); modelWarning.className = 'model-warning';
+    modelWarning.textContent = '服务端使用轻量模型，理解能力有限，复杂要求可能解析不准确。';
+    modelWarning.hidden = provider.id !== 'deepseek' || mode.value !== 'SERVER'; form.append(modelWarning);
     const fields = document.createElement('div'); fields.hidden = mode.value !== 'PERSONAL';
     for (const [name, labelText, secret, max] of provider.fields) {
       const label = document.createElement('label'); label.className = 'field'; label.textContent = labelText;
       const input = document.createElement('input'); input.name = name; input.type = secret ? 'password' : 'text'; input.maxLength = max;
       input.autocomplete = secret ? 'new-password' : 'off'; input.spellcheck = false; input.setAttribute('aria-label', provider.name + ' ' + labelText);
       if (secret) { input.dataset.secret = 'true'; input.placeholder = saved.personalStored ? '已保存，留空保留' : labelText; }
-      else input.value = saved[name] || (name === 'model' ? 'deepseek-flash' : '');
-      input.addEventListener('input', () => { state.textContent = '未保存'; }); label.append(input); fields.append(label);
+      else input.value = name === 'model' && saved.mode !== 'PERSONAL' ? 'deepseek-flash' : saved[name] || (name === 'model' ? 'deepseek-flash' : '');
+      input.addEventListener('input', () => { article.dataset.dirty = 'true'; state.textContent = '未保存'; state.classList.remove('error'); }); label.append(input); fields.append(label);
     }
-    mode.addEventListener('change', () => { fields.hidden = mode.value !== 'PERSONAL'; form.querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); state.textContent = '未保存'; });
+    mode.addEventListener('change', () => { article.dataset.dirty = 'true'; fields.hidden = mode.value !== 'PERSONAL'; modelWarning.hidden = provider.id !== 'deepseek' || mode.value !== 'SERVER'; form.querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); state.textContent = '未保存'; state.classList.remove('error'); });
     form.append(fields);
     const actions = document.createElement('div'); actions.className = 'cloud-provider-actions';
     const save = document.createElement('button'); save.type = 'button'; save.className = 'button primary'; save.title = '保存配置'; save.setAttribute('aria-label', '保存' + provider.name + '配置'); save.innerHTML = '<i data-lucide="save" aria-hidden="true"></i><span>保存</span>'; actions.append(save);
@@ -581,7 +656,7 @@
       write('PUT', body);
     });
     remove.addEventListener('click', () => {
-      if (busy || !window.confirm('删除此供应商的个人凭据并停用？不会自动使用站点额度。')) return;
+      if (busy || !window.confirm('删除此供应商的个人凭据并停用？不会自动切换到服务端模型或其他服务。')) return;
       write('DELETE', { expectedVersion: saved.version });
     });
   }
@@ -592,6 +667,7 @@
       const items = await request('/api/users/me/cloud-credentials');
       if (currentUser?.id !== owner || cloudRevision !== revision) return;
       cloudEntries = items; cloudOwner = owner; cloudProviders.forEach(renderCloudProvider); icons(); notice('cloud-state', '');
+      await refreshUserCapabilities();
     } catch (error) {
       if (currentUser?.id !== owner || cloudRevision !== revision) return;
       if (error.status === 401) showAuth(); else notice('cloud-error', error.message, true);
@@ -600,6 +676,9 @@
   $('refresh-cloud').addEventListener('click', loadCloudCredentials);
 
   function resetWorkbench() {
+    planListRevision++; taskListRevision++; planPage = 1; planTotal = 0; expandedRecords.clear(); recordInstructions.clear();
+    $('plan-list').replaceChildren(); notice('plan-list-error', ''); selectAccountTab('profile');
+    toolPhases.clear(); activePhase = 'import'; activeTool = 'detect';
     clearExport();
     workspaceRevision++;
     clearAIPlan();
@@ -633,7 +712,7 @@
     $('output-preview').hidden = true; $('download-output').hidden = true; $('download-output').removeAttribute('href');
     $('delete-output').hidden = true; $('output-empty').hidden = true;
     $('output-audio').pause(); $('output-audio').removeAttribute('src'); $('output-audio').load(); $('output-audio').hidden = true;
-    selectTool('detect');
+    selectTool('detect', false);
   }
 
   function clearMediaResult() {
@@ -785,7 +864,10 @@
         const name = document.createElement('span'); name.className = 'file-name'; name.textContent = item.originalFilename;
         const size = document.createElement('span'); size.className = 'file-size'; size.textContent = sizeText(item.sizeBytes);
         const status = document.createElement('span'); status.className = 'media-status ' + (item.status === 'READY' ? 'ready' : item.status === 'FAILED' ? 'failed' : ''); status.textContent = statusText(item.status);
-        button.append(icon, name, size, status); button.addEventListener('click', () => displayMedia(item));
+        button.append(icon, name, size, status); button.addEventListener('click', () => {
+          displayMedia(item);
+          if (selectedMedia?.id === item.id && item.status === 'READY') selectWorkbenchPhase('edit');
+        });
         const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'icon-button media-remove';
         remove.title = '删除素材'; remove.setAttribute('aria-label', `删除素材 ${item.originalFilename}`); remove.disabled = busy;
         const trash = document.createElement('i'); trash.setAttribute('data-lucide', 'trash-2'); trash.setAttribute('aria-hidden', 'true');
@@ -877,17 +959,28 @@
   $('media-prev').addEventListener('click', () => { if (mediaPage > 1) { mediaPage--; loadMedia(); } });
   $('media-next').addEventListener('click', () => { if (mediaPage * 10 < mediaTotal) { mediaPage++; loadMedia(); } });
 
-  function selectTool(tool) {
+  function selectTool(tool, revealGroup = true) {
     const previousTool = activeTool;
+    toolPhases.set(previousTool, activePhase);
     activeTool = tool;
-    const processing = tool !== 'detect' && tool !== 'subtitle' && tool !== 'ai' && tool !== 'find' && tool !== 'join';
+    const group = $(`${tool}-tool`).closest('[data-tool-group]');
+    if (revealGroup && group?.dataset.collapsed === 'true') setToolGroupExpanded(group.dataset.toolGroup, true);
+    for (const item of document.querySelectorAll('[data-tool-group]')) item.dataset.active = String(item === group);
+    $('workspace-tool-title').textContent = toolNames[tool];
+    $('detect-editor').hidden = tool !== 'detect';
+    const processing = ['convert', 'compress', 'audio', 'trim', 'mute'].includes(tool);
     processingOperation = tool === 'mute' ? 'mute' : tool === 'trim' ? 'trim' : tool === 'audio' ? 'extract_audio' : tool === 'compress' ? 'compress' : 'transcode';
     for (const [id, active] of [['detect-tool', tool === 'detect'], ['convert-tool', tool === 'convert'], ['compress-tool', tool === 'compress'], ['audio-tool', tool === 'audio'], ['trim-tool', tool === 'trim'], ['mute-tool', tool === 'mute'], ['subtitle-tool', tool === 'subtitle'], ['ai-tool', tool === 'ai'], ['find-tool', tool === 'find'], ['join-tool', tool === 'join']]) {
       $(id).classList.toggle('active', active);
       if (active) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current');
     }
+    $('history-tool').classList.toggle('active', tool === 'history');
+    if (tool === 'history') $('history-tool').setAttribute('aria-current', 'page'); else $('history-tool').removeAttribute('aria-current');
+    $('history-panel').hidden = tool !== 'history';
+    $('workspace-toolbar').hidden = tool === 'history';
+    $('tool-dependencies').hidden = tool === 'history';
     $('conversion-section').hidden = !processing;
-    $('task-section').hidden = !processing && tool !== 'subtitle' && tool !== 'ai' && tool !== 'join';
+    $('task-section').hidden = false;
     $('ai-section').hidden = tool !== 'ai';
     $('find-section').hidden = tool !== 'find';
     if (tool !== 'find') $('find-preview').pause();
@@ -895,7 +988,6 @@
     if (tool !== 'join') $('join-preview').pause();
     if (tool === 'join' && selectedMedia?.status === 'READY' && joinSourceId !== selectedMedia.id) loadJoinPlan();
     if (tool === 'find' && selectedMedia?.status === 'READY') loadFindTranscript();
-    $(tool === 'join' ? 'join-result-slot' : tool === 'ai' ? 'ai-result-slot' : tool === 'subtitle' ? 'subtitle-result-slot' : 'conversion-layout').append($('conversion-result'));
     if (tool === 'ai' && selectedMedia?.status === 'READY' && aiSourceId !== selectedMedia.id) loadAIPlan();
     $('subtitle-section').hidden = tool !== 'subtitle';
     if (tool === 'subtitle' && selectedMedia?.status === 'READY' && subtitleMediaId !== selectedMedia.id) loadSubtitle();
@@ -912,6 +1004,11 @@
     $('processing-audio-mode').textContent = tool === 'mute' ? '移除音轨' : tool === 'audio' ? '第一条音轨' : '保留音轨';
     notice('conversion-error', '');
     syncMediaControls();
+    if (tool !== 'history') selectWorkbenchPhase(toolPhases.get(tool) || (tool === 'detect' ? 'import' : 'edit'), false);
+    else {
+      for (const phase of phaseOrder) $(`phase-${phase}`).hidden = true;
+      document.querySelectorAll('#tool-stage video, #tool-stage audio').forEach(player => player.pause());
+    }
     updateToolIndicator();
     if (previousTool !== tool) {
       toolAnimation?.cancel();
@@ -923,11 +1020,61 @@
         ], { duration: 220, easing: 'cubic-bezier(.2,.7,.3,1)' });
       }
     }
+    if (tool === 'history' && !$('history-plans-panel').hidden) loadPlans();
     if (navigationOpen && (!navigationPreference.pinned || narrowNavigation.matches)) setNavigationOpen(false);
   }
 
-  const toolOrder = ['detect', 'convert', 'compress', 'audio', 'trim', 'join', 'mute', 'subtitle', 'ai', 'find'];
-  const toolNames = { detect: '视频检测', convert: '视频转换', compress: '视频压缩', audio: '提取音频', trim: '视频裁切', join: '片段拼接', mute: '视频静音', subtitle: '字幕处理', ai: 'AI 处理', find: '找片段' };
+  const toolOrder = ['detect', 'convert', 'compress', 'audio', 'trim', 'join', 'mute', 'subtitle', 'ai', 'find', 'history'];
+  const toolNames = { detect: '视频检测', convert: '视频转换', compress: '视频压缩', audio: '提取音频', trim: '视频裁切', join: '片段拼接', mute: '视频静音', subtitle: '字幕处理', ai: 'AI 处理', find: '找片段', history: '处理记录' };
+
+  function syncWorkbenchPhase() {
+    const ready = selectedMedia?.status === 'READY';
+    $('continue-editing').disabled = busy || !ready;
+    $('workspace-file-state').textContent = selectedMedia ? selectedMedia.originalFilename : '未选择素材';
+    $('workspace-file-state').title = selectedMedia?.originalFilename || '';
+    $('editor-filename').textContent = selectedMedia?.originalFilename || '未选择素材';
+    const metadata = selectedMedia?.metadata;
+    $('editor-file-info').textContent = metadata ? `${(metadata.durationMs / 1000).toFixed(2)} 秒 · ${metadata.width} × ${metadata.height} · ${sizeText(selectedMedia.sizeBytes)}` : selectedMedia ? statusText(selectedMedia.status) : '等待导入';
+    $('editor-preview-empty').hidden = !!$('source-preview').getAttribute('src');
+    $('editor-metadata').replaceChildren(...(selectedMedia ? [...$('media-metadata').children].map(row => row.cloneNode(true)) : []));
+    const resultVisible = !!selectedTask && selectedTask.kind !== 'TRANSCRIPTION' && !$('conversion-result').hidden;
+    $('export-result-empty').hidden = resultVisible;
+    const srtReady = activeTool === 'subtitle' && !!subtitle && !subtitleDirty && !$('download-srt').hidden;
+    $('export-srt').hidden = !srtReady;
+    if (srtReady) { $('export-srt').setAttribute('href', $('download-srt').getAttribute('href')); $('export-srt').setAttribute('download', 'subtitles.srt'); }
+    else $('export-srt').removeAttribute('href');
+    $('export-empty-title').textContent = srtReady ? '字幕已就绪' : '暂无导出结果';
+    $('export-result-summary').textContent = srtReady ? `字幕 v${subtitle.version} · SRT` : selectedTask?.kind === 'TRANSCRIPTION' ? '字幕识别结果保存在编辑区' : '尚未生成文件';
+  }
+  function selectWorkbenchPhase(phase, animate = true) {
+    if (!phaseOrder.includes(phase)) return;
+    const previous = activePhase;
+    activePhase = phase; toolPhases.set(activeTool, phase);
+    for (const name of phaseOrder) {
+      const active = name === phase;
+      $(`phase-${name}`).hidden = !active;
+      $(`phase-${name}-tab`).setAttribute('aria-selected', String(active));
+      $(`phase-${name}-tab`).tabIndex = active ? 0 : -1;
+    }
+    $('workspace-phases').style.setProperty('--phase-index', String(phaseOrder.indexOf(phase)));
+    $('tool-stage').dataset.phase = phase;
+    for (const id of ['source-preview', 'selected-preview', 'output-preview', 'output-audio', 'find-preview', 'join-preview']) {
+      if (!$(id).closest(`#phase-${phase}`)) $(id).pause();
+    }
+    phaseAnimation?.cancel();
+    if (animate && previous !== phase && !reducedMotion.matches) {
+      const direction = phaseOrder.indexOf(phase) > phaseOrder.indexOf(previous) ? 1 : -1;
+      phaseAnimation = $(`phase-${phase}`).animate([
+        { opacity: .35, transform: `translateX(${direction * 12}px)` },
+        { opacity: 1, transform: 'translateX(0)' }
+      ], { duration: 200, easing: 'cubic-bezier(.2,.7,.3,1)' });
+    }
+    syncWorkbenchPhase();
+  }
+  function revealTask(task) {
+    displayTask(task);
+    selectWorkbenchPhase(task.kind === 'TRANSCRIPTION' ? 'edit' : 'export');
+  }
 
   function rememberNavigation() {
     try { localStorage.setItem('amw-navigation', JSON.stringify(navigationPreference)); } catch { /* 导航偏好不影响业务。 */ }
@@ -957,16 +1104,38 @@
     syncNavigation();
     if (focus) {
       if (value && (!navigationPreference.pinned || narrowNavigation.matches)) requestAnimationFrame(() => {
-        if (navigationOpen) $(`${activeTool}-tool`).focus({ preventScroll: true });
+        if (navigationOpen) {
+          const button = $(`${activeTool}-tool`), group = button.closest('[data-tool-group]');
+          (group?.dataset.collapsed === 'true' ? $(`${group.dataset.toolGroup}-group-toggle`) : button).focus({ preventScroll: true });
+        }
       });
       else if (!value) $('toggle-sidebar').focus({ preventScroll: true });
     }
   }
   function updateToolIndicator() {
     const button = $(`${activeTool}-tool`);
-    if (!button || !$('tool-navigation').getClientRects().length) return;
-    $('tool-indicator').style.transform = `translateY(${button.offsetTop}px)`;
+    const navigation = $('tool-navigation'), indicator = $('tool-indicator');
+    indicator.hidden = !button || !navigation.getClientRects().length || button.closest('[data-tool-group]')?.dataset.collapsed === 'true';
+    if (indicator.hidden) return;
+    const top = button.getBoundingClientRect().top - navigation.getBoundingClientRect().top + navigation.scrollTop;
+    indicator.style.transform = `translateY(${top}px)`;
     $('tool-indicator').style.height = `${button.offsetHeight}px`;
+  }
+  function setToolGroupExpanded(name, expanded, remember = true) {
+    const group = document.querySelector(`[data-tool-group="${name}"]`), body = $(`${name}-group-body`), toggle = $(`${name}-group-toggle`);
+    if (!expanded && body.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+    group.dataset.collapsed = String(!expanded); body.inert = !expanded; toggle.setAttribute('aria-expanded', String(expanded));
+    toolGroupPreferences[name] = expanded;
+    if (remember) {
+      try { localStorage.setItem('amw-tool-groups', JSON.stringify(toolGroupPreferences)); } catch { /* 存储受限时仍可切换分组。 */ }
+    }
+    updateToolIndicator();
+  }
+  const toolGroupObserver = new ResizeObserver(updateToolIndicator);
+  for (const name of Object.keys(toolGroupPreferences)) {
+    setToolGroupExpanded(name, toolGroupPreferences[name], false);
+    $(`${name}-group-toggle`).addEventListener('click', () => setToolGroupExpanded(name, !toolGroupPreferences[name]));
+    toolGroupObserver.observe(document.querySelector(`[data-tool-group="${name}"]`));
   }
   $('toggle-sidebar').addEventListener('click', () => setNavigationOpen(!navigationOpen));
   $('close-sidebar').addEventListener('click', () => setNavigationOpen(false));
@@ -984,7 +1153,7 @@
     if (!navigationOpen || !currentUser || activePanel !== 'workbench' || navigationPreference.pinned && !narrowNavigation.matches) return;
     if (event.key === 'Escape') { event.preventDefault(); setNavigationOpen(false); }
     if (event.key === 'Tab') {
-      const controls = [...$('tool-sidebar').querySelectorAll('button:not(:disabled)')].filter((button) => button.getClientRects().length);
+      const controls = [...$('tool-sidebar').querySelectorAll('button:not(:disabled)')].filter((button) => button.getClientRects().length && !button.closest('[inert]'));
       const first = controls[0], last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -996,46 +1165,59 @@
     name.className = 'tool-name'; name.textContent = toolNames[tool];
     for (const child of [...button.childNodes]) if (child.nodeType === Node.TEXT_NODE) child.remove();
     const kind = ['subtitle', 'ai'].includes(tool) ? 'mixed' : tool === 'find' ? 'cloud' : 'local';
-    badge.className = 'tool-dependency'; badge.dataset.kind = kind; badge.textContent = { local: '本地', cloud: '云端', mixed: '混合' }[kind]; badge.setAttribute('aria-hidden', 'true');
+    badge.className = 'tool-dependency'; badge.dataset.kind = kind; badge.textContent = { local: '站点', cloud: 'API', mixed: '混合' }[kind]; badge.setAttribute('aria-hidden', 'true');
     button.append(name, badge); button.setAttribute('aria-label', toolNames[tool]);
-    button.title = toolNames[tool] + ' · ' + (tool === 'ai' ? '文字输入：DeepSeek / 分步填写：本地' : { local: '无需第三方 API', cloud: 'DeepSeek 文本 API', mixed: '语音识别 API / DeepSeek / 本地编辑' }[kind]);
+    button.title = toolNames[tool] + ' · ' + (tool === 'ai' ? '文字输入：所选模型 / 分步填写：站点处理' : { local: '站点处理，无需第三方 API', cloud: 'DeepSeek 文本 API', mixed: '语音识别 API / 所选文字模型' }[kind]);
   }
 
   function renderToolDependencies() {
     const c = capabilities || {}, subtitleTool = activeTool === 'subtitle', cloudTool = ['ai', 'find'].includes(activeTool);
     const provider = $('asr-provider').value, providers = c.asrProviders || [];
-    const signature = JSON.stringify([activeTool, workflowMode, provider, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, providers]);
+    const localAi = c.textAi?.source === 'SERVER';
+    $('ai-model-warning').hidden = !localAi || workflowMode;
+    const textService = localAi ? '服务端部署 · 千问 ' + (c.textAi.model || 'Qwen3.5-4B') : 'DeepSeek · 文本对话 API';
+    const unavailable = c.textAi?.available === true ? '处理工具暂不可用' : localAi ? messages.LOCAL_AI_UNAVAILABLE : c.textAi?.unavailableReason || '未配置';
+    const signature = JSON.stringify([activeTool, workflowMode, provider, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, providers, c.textAi]);
     if (dependencySignature === signature) return;
     dependencySignature = signature;
-    const kind = activeTool === 'ai' && workflowMode ? 'local' : subtitleTool ? 'mixed' : cloudTool ? 'cloud' : 'local';
-    $('dependency-kind').dataset.kind = kind; $('dependency-kind').textContent = { local: '本地处理', cloud: '云端 API', mixed: '本地 + 云端' }[kind];
+    const kind = activeTool === 'ai' && workflowMode ? 'local' : subtitleTool ? 'mixed' : cloudTool ? localAi ? 'local' : 'cloud' : 'local';
+    for (const tool of ['ai', 'find']) {
+      const button = $(`${tool}-tool`), badge = button.querySelector('.tool-dependency');
+      badge.dataset.kind = localAi ? 'local' : tool === 'ai' ? 'mixed' : 'cloud';
+      badge.textContent = localAi ? '站点' : tool === 'ai' ? '混合' : 'API';
+      button.title = toolNames[tool] + ' · ' + textService;
+    }
+    $('dependency-kind').dataset.kind = kind; $('dependency-kind').textContent = { local: localAi && cloudTool && !(activeTool === 'ai' && workflowMode) ? '服务端部署' : '服务端处理', cloud: '云端 API', mixed: '站点 + API' }[kind];
+    const textTool = cloudTool && !(activeTool === 'ai' && workflowMode);
+    $('dependency-summary').textContent = textTool ? c.textAi?.available === false ? unavailable : textService : subtitleTool ? '语音识别 API / 文字模型' : '站点处理 · 无第三方 AI 调用';
+    $('dependency-summary').classList.toggle('unavailable', !!(textTool && c.textAi?.available === false));
     $('dependency-title').textContent = toolNames[activeTool];
-    $('dependency-settings').hidden = kind === 'local';
+    $('dependency-settings').hidden = kind === 'local' && !(cloudTool && !(activeTool === 'ai' && workflowMode));
     const rows = [];
     let detail = '';
     if (subtitleTool) {
       rows.push(['语音转字幕', provider === 'aliyun' ? '阿里云百炼 · Paraformer 语音识别 API' : '腾讯云 · 录音极速版语音识别 API', providers.includes(provider) ? '已配置' : '未配置或工具未就绪', providers.includes(provider)]);
-      rows.push(['文字校对', 'DeepSeek · 文本对话 API', c.subtitleCorrection ? '已配置' : '未配置', !!c.subtitleCorrection]);
-      rows.push(['编辑 / SRT', '本站后端 · 无第三方 API', '本地', true]);
-      rows.push(['已有字幕烧录', '本机 FFmpeg / libass', c.supportedOperations?.includes('burn_subtitles') ? '工具已就绪' : '工具未就绪', !!c.supportedOperations?.includes('burn_subtitles')]);
-      detail = '识别会将音轨发送给选定供应商；校对只发送选中句子的文字。已有字幕可本地编辑和导出，云端服务可能计费。';
+      rows.push(['文字校对', textService, c.subtitleCorrection ? localAi ? '已就绪' : '已配置' : unavailable, !!c.subtitleCorrection]);
+      rows.push(['编辑 / SRT', '本站后端 · 无第三方 API', '站点处理', true]);
+      rows.push(['已有字幕烧录', '服务端 FFmpeg / libass', c.supportedOperations?.includes('burn_subtitles') ? '工具已就绪' : '工具未就绪', !!c.supportedOperations?.includes('burn_subtitles')]);
+      detail = localAi ? '语音识别向选定供应商发送音轨；文字校对使用站点服务端部署的千问，不需要用户自行部署模型。' : '识别向选定供应商发送音轨，校对只发送选中句子的文字；第三方调用可能计费。';
     } else if (cloudTool) {
       if (activeTool === 'ai') {
         if (workflowMode) rows.push(['分步填写', '本站后端 · 无第三方 API', c.supportedOperations?.includes('workflow') ? '工具已就绪' : '工具未就绪', !!c.supportedOperations?.includes('workflow')]);
-        else rows.push(['指令理解', 'DeepSeek · 文本对话 API', c.aiPlans ? '已配置' : '未配置或工具未就绪', !!c.aiPlans]);
-        rows.push(['确认后执行', '本机 FFmpeg · 无第三方 API', '本地处理', true]);
-        detail = workflowMode ? '无第三方 API，不发送素材或处理参数。' : '仅发送处理要求和素材参数，不上传原视频。生成方案可能计费，确认后才执行本地处理。';
+        else rows.push(['指令理解', textService, c.aiPlans ? localAi ? '已就绪' : '已配置' : unavailable, !!c.aiPlans]);
+        rows.push(['确认后执行', '服务端 FFmpeg · 无第三方 API', '站点处理', true]);
+        detail = workflowMode ? '参数由站点服务端处理，不调用第三方 AI。' : localAi ? '使用站点服务端部署的千问，仅向模型提供文字和素材参数，不向第三方模型服务上传视频。确认方案后才执行。' : '仅发送处理要求和素材参数，不上传原视频。第三方生成方案可能计费，确认后才由站点执行。';
       } else {
-        rows.push(['内容检索', 'DeepSeek · 文本对话 API', c.semanticSearch ? '已配置' : '未配置', !!c.semanticSearch]);
-        rows.push(['片段建议', 'DeepSeek · 文本对话 API', c.clipRecommendations ? '已配置' : '未配置', !!c.clipRecommendations]);
-        detail = '需要已保存的字幕。向 DeepSeek 发送字幕文本和查找要求，不发送原视频；云端调用可能计费。';
+        rows.push(['内容检索', textService, c.semanticSearch ? localAi ? '已就绪' : '已配置' : unavailable, !!c.semanticSearch]);
+        rows.push(['片段建议', textService, c.clipRecommendations ? localAi ? '已就绪' : '已配置' : unavailable, !!c.clipRecommendations]);
+        detail = localAi ? '站点服务端部署的千问分析已保存字幕，不向第三方模型服务发送字幕或原视频。' : '向 DeepSeek 发送已保存字幕及查找要求，不发送原视频；第三方调用可能计费。';
       }
     } else {
       const operation = { convert: 'transcode', compress: 'compress', audio: 'extract_audio', trim: 'trim', join: 'join_clips', mute: 'mute' }[activeTool];
       const ready = activeTool === 'detect' ? c.mediaTool : c.supportedOperations?.includes(operation);
-      rows.push(['处理引擎', activeTool === 'detect' ? '本机 ffprobe' : '本机 FFmpeg / ffprobe', ready ? '工具已就绪' : '工具未就绪', !!ready]);
+      rows.push(['处理引擎', activeTool === 'detect' ? '服务端 ffprobe' : '服务端 FFmpeg / ffprobe', ready ? '工具已就绪' : '工具未就绪', !!ready]);
       rows.push(['第三方 API', '不需要 API Key', '无需云端 AI', true]);
-      detail = '通过本站后端处理，素材保存在部署服务器；不调用第三方 AI，也不会产生第三方 API 费用。';
+      detail = '素材由站点服务端保存和处理，不需要用户安装处理工具，不调用第三方 AI。';
     }
     $('dependency-services').replaceChildren(...rows.map(([label, service, state, ready]) => {
       const row = document.createElement('div'), dt = document.createElement('dt'), dd = document.createElement('dd'), name = document.createElement('span'), status = document.createElement('span');
@@ -1046,7 +1228,7 @@
   }
   $('asr-provider').addEventListener('change', renderToolDependencies);
   $('dependency-settings').addEventListener('click', () => {
-    setNavigationOpen(false, false); selectPanel('account');
+    setNavigationOpen(false, false); selectPanel('account'); selectAccountTab('cloud');
     $('cloud-section').scrollIntoView({ block: 'start', behavior: reducedMotion.matches ? 'instant' : 'smooth' });
     $('refresh-cloud').focus({ preventScroll: true });
   });
@@ -1131,6 +1313,9 @@
       page++;
     } while (page <= 20);
     if (!found) { notice('export-plan-state', '暂无已保存的导出方案'); return; }
+    restoreExportPlan(found);
+  }));
+  function restoreExportPlan(found) {
     const p = found.parameters; exportPlan = found; exportDirty = false;
     selectTool(['mp3', 'm4a', 'wav', 'flac'].includes(p.outputFormat) ? 'audio' : 'convert');
     if (p.videoCodec) { $('export-format').value = p.outputFormat; $('export-codec').value = p.videoCodec; }
@@ -1142,7 +1327,7 @@
     if (p.startMs !== null) { $('trim-start').value = p.startMs / 1000; $('trim-end').value = p.endMs / 1000; }
     if (p.targetSizeBytes !== null) $('compression-target').value = Number((p.targetSizeBytes / 1024 / 1024).toFixed(6));
     notice('export-plan-state', `已恢复 · v${found.version}`); syncMediaControls();
-  }));
+  }
   for (const id of ['export-format', 'export-codec', 'export-audio-format', 'export-combine', 'export-trim', 'export-compress', 'export-mute', 'export-extract', 'export-width', 'export-height', 'conversion-resolution', 'compression-target', 'trim-start', 'trim-end']) {
     $(id).addEventListener('input', () => { exportDirty = true; exportRevision++; notice('export-plan-state', '未保存'); syncMediaControls(); });
   }
@@ -1284,7 +1469,7 @@
       }
       const task = await request(`/api/operation-plans/${plan.id}/execute`, { method: 'POST', body: { expectedVersion: plan.version } });
       if (!current()) return;
-      pendingJoinPlan = null; joinDirty = false; displayTask(task); taskPage = 1; await loadTasks();
+      pendingJoinPlan = null; joinDirty = false; revealTask(task); taskPage = 1; await loadTasks();
     });
   });
 
@@ -1317,7 +1502,7 @@
       || (recommend && (!Number.isInteger(budget) || budget < 1 || budget > 900));
     $('find-submit-label').textContent = findRunning ? '分析中…' : recommend ? '生成建议' : '查找片段';
     $('find-state').textContent = findLoading ? '正在读取字幕…' : findRunning ? '正在分析字幕…' : !ready ? '未选择就绪素材'
-      : !findTranscript ? '当前素材暂无字幕。' : !configured ? 'AI 服务尚未配置。' : `字幕 v${findTranscript.version}`;
+      : !findTranscript ? '当前素材暂无字幕。' : !configured ? capabilities?.textAi?.source === 'SERVER' ? messages.LOCAL_AI_UNAVAILABLE : capabilities?.textAi?.unavailableReason || 'AI 服务尚未配置。' : `字幕 v${findTranscript.version}`;
     $('find-results').querySelectorAll('button').forEach((button) => { button.disabled = busy || button.dataset.unavailable === 'true'; });
   }
   async function loadFindTranscript() {
@@ -1422,7 +1607,7 @@
   }));
   $('find-form').addEventListener('submit', (event) => {
     event.preventDefault(); if (busy || !findTranscript) return;
-    if (!window.confirm('将向 DeepSeek 发送目标和当前已保存字幕，可能产生服务费用。继续？')) return;
+    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm('将向 DeepSeek 发送目标和当前已保存字幕，可能产生服务费用。继续？')) return;
     const owner = currentUser?.id, mediaId = selectedMedia.id, revision = workspaceRevision, token = ++findRevision;
     const snapshot = findTranscript, recommend = findMode() === 'recommend';
     operation('find-error', async () => {
@@ -1576,7 +1761,7 @@
     $('generate-ai-plan').disabled = busy || aiLoading || !ready || !capabilities?.aiPlans || !$('ai-instruction').value.trim();
     $('refresh-ai-plan').disabled = busy || aiLoading || !ready;
     $('execute-ai-plan').disabled = busy || aiLoading || aiPlanDirty || !ready || aiPlan?.mediaId !== selectedMedia?.id || aiPlan?.status !== 'READY';
-    $('ai-state').textContent = aiGenerating ? '正在生成方案…' : aiLoading ? '正在读取方案…' : !capabilities?.aiPlans ? 'AI 服务尚未配置。' : '';
+    $('ai-state').textContent = aiGenerating ? '正在生成方案…' : aiLoading ? '正在读取方案…' : !capabilities?.aiPlans ? capabilities?.textAi?.available === true ? '当前处理工具暂不可用。' : capabilities?.textAi?.source === 'SERVER' ? messages.LOCAL_AI_UNAVAILABLE : capabilities?.textAi?.unavailableReason || 'AI 服务尚未配置。' : '';
     $('generate-ai-label').textContent = aiGenerating ? '生成中…' : '生成方案';
     $('ai-result-slot').hidden = !selectedTask || selectedTask.mediaId !== selectedMedia?.id || selectedTask.kind === 'TRANSCRIPTION';
     $('workflow-source').textContent = ready ? selectedMedia.originalFilename : '未选择就绪素材';
@@ -1661,7 +1846,7 @@
     event.preventDefault();
     const instruction = $('ai-instruction').value.trim(), owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
     if (!instruction || busy) return;
-    if (!window.confirm('将向 DeepSeek 发送处理要求和视频参数，可能产生服务费用。继续？')) return;
+    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm('将向 DeepSeek 发送处理要求和视频参数，可能产生服务费用。继续？')) return;
     const token = ++aiRevision; aiSourceId = mediaId;
     operation('ai-error', async () => {
       if (Array.from(instruction).length > 2000) throw new Error('处理要求不能超过2000个字符。');
@@ -1672,7 +1857,6 @@
           method: aiPlan && aiPlan.status !== 'EXECUTED' ? 'PATCH' : 'POST', body
         });
         if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== token) return;
-        $('ai-instruction').value = plan.instruction || instruction;
         renderAIPlan(plan);
       } finally { aiGenerating = false; syncAIControls(); }
     });
@@ -1683,7 +1867,7 @@
     operation('ai-error', async () => {
       const task = await request(`/api/operation-plans/${plan.id}/execute`, { method: 'POST', body: { expectedVersion: plan.version } });
       if (currentUser?.id !== owner || workspaceRevision !== revision || aiRevision !== token || selectedMedia?.id !== plan.mediaId) return;
-      renderAIPlan({ ...plan, status: 'EXECUTED', taskId: task.id }); displayTask(task); taskPage = 1; await loadTasks();
+      renderAIPlan({ ...plan, status: 'EXECUTED', taskId: task.id }); revealTask(task); taskPage = 1; await loadTasks();
     });
   });
 
@@ -1774,10 +1958,10 @@
         label.append(input); row.append(label);
       }
       const correct = document.createElement('button'); correct.type = 'button'; correct.className = 'icon-button'; correct.dataset.correct = segment.id;
-      correct.title = 'DeepSeek 校对'; correct.setAttribute('aria-label', `校对第${index + 1}段`);
+      correct.title = capabilities?.textAi?.source === 'SERVER' ? '服务端千问校对' : 'DeepSeek 校对'; correct.setAttribute('aria-label', `校对第${index + 1}段`);
       correct.innerHTML = '<i data-lucide="wand-sparkles" aria-hidden="true"></i>';
       correct.addEventListener('click', () => {
-        if (!window.confirm('将向 DeepSeek 发送这段字幕进行校对，可能产生服务费用。继续？')) return;
+        if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm('将向 DeepSeek 发送这段字幕进行校对，可能产生服务费用。继续？')) return;
         const item = subtitle, token = subtitleRevision, owner = currentUser?.id;
         operation('subtitle-error', async () => {
           const suggestion = await request(`/api/transcripts/${item.id}/corrections`, {
@@ -1813,7 +1997,7 @@
       }
       const task = await request(`/api/operation-plans/${pendingSubtitlePlan.id}/execute`, { method: 'POST', body: { expectedVersion: pendingSubtitlePlan.version } });
       if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== item.mediaId) return;
-      pendingSubtitlePlan = null; displayTask(task); taskPage = 1; await loadTasks();
+      pendingSubtitlePlan = null; revealTask(task); taskPage = 1; await loadTasks();
     });
   });
   $('subtitle-tool').addEventListener('click', () => selectTool('subtitle'));
@@ -1925,15 +2109,153 @@
     if (outputId && $(id).error) notice('output-preview-status', '浏览器无法播放此编码，请下载后播放。');
   });
 
+  function disclosureIcon() {
+    const icon = document.createElement('i'); icon.setAttribute('data-lucide', 'chevron-down');
+    icon.className = 'disclosure-chevron'; icon.setAttribute('aria-hidden', 'true'); return icon;
+  }
+  function recordAction(label, icon, action) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'icon-button';
+    button.title = label; button.setAttribute('aria-label', label); button.dataset.recordAction = 'true';
+    const glyph = document.createElement('i'); glyph.setAttribute('data-lucide', icon); glyph.setAttribute('aria-hidden', 'true');
+    button.append(glyph); button.addEventListener('click', action); return button;
+  }
+  function recordDetails(key, title, parameters, instruction, error) {
+    const details = document.createElement('details'); details.className = 'record-details'; details.open = expandedRecords.has(key);
+    const summary = document.createElement('summary'), name = document.createElement('span'); name.className = 'record-title'; name.textContent = title;
+    summary.append(name, disclosureIcon()); details.append(summary);
+    if (instruction) { const text = document.createElement('p'); text.className = 'record-instruction'; text.textContent = instruction; details.append(text); }
+    const labels = { operation: '处理方式', outputFormat: '输出格式', videoCodec: '视频编码', resolutionPreset: '分辨率', width: '最大宽度', height: '最大高度', audioMode: '音轨',
+      startMs: '开始（毫秒）', endMs: '结束（毫秒）', targetSizeBytes: '目标体积（字节）', extractAudio: '另存音轨', clips: '拼接区间', steps: '处理步骤', transcriptId: '字幕', transcriptVersion: '字幕版本', useOriginal: '保留原文' };
+    const values = { source: '原分辨率', keep: '保留音轨', mute: '静音' };
+    const list = document.createElement('dl'); list.className = 'record-parameters';
+    for (const [key, value] of Object.entries(parameters || {})) {
+      if (value === null) continue;
+      const row = document.createElement('div'), dt = document.createElement('dt'), dd = document.createElement('dd');
+      dt.textContent = labels[key] || key;
+      dd.textContent = key === 'operation' ? taskVerb(value) : typeof value === 'boolean' ? value ? '是' : '否'
+        : typeof value === 'object' ? JSON.stringify(value, null, 2) : values[value] || String(value);
+      row.append(dt, dd); list.append(row);
+    }
+    details.append(list);
+    if (error) { const message = document.createElement('p'); message.className = 'form-error'; message.textContent = error; details.append(message); }
+    details.addEventListener('toggle', () => { if (details.open) expandedRecords.add(key); else expandedRecords.delete(key); });
+    return details;
+  }
+  function deleteRecord(kind, record) {
+    if (busy || kind === 'task' && taskActive(record)) return;
+    const text = kind === 'task' ? '删除这条处理记录？仅从记录列表移除，原素材和生成文件会保留。' : '删除这个保存的方案？已生成的任务和文件不受影响。';
+    if (!window.confirm(text)) return;
+    const owner = currentUser?.id, revision = workspaceRevision;
+    operation(kind === 'task' ? 'task-list-error' : 'plan-list-error', async () => {
+      await request(`/api/${kind === 'task' ? 'tasks' : 'operation-plans'}/${record.id}`, { method: 'DELETE' });
+      if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+      expandedRecords.delete(kind + ':' + record.id);
+      if (kind === 'task') {
+        taskListRevision++;
+        if (selectedTask?.id === record.id) clearTaskResult();
+        await loadTasks(); $('refresh-tasks').focus();
+      } else {
+        if (exportPlan?.id === record.id) { exportPlan = null; exportDirty = true; notice('export-plan-state', '方案已删除，当前参数未清空'); }
+        if (pendingPlan?.id === record.id) pendingPlan = null;
+        if (pendingJoinPlan?.id === record.id) { pendingJoinPlan = null; joinDirty = true; }
+        if (pendingSubtitlePlan?.id === record.id) pendingSubtitlePlan = null;
+        if (aiPlan?.id === record.id) { aiPlan = null; aiPlanDirty = true; $('ai-plan').hidden = true; }
+        for (const key of recordInstructions.keys()) if (key.startsWith(record.id + ':')) recordInstructions.delete(key);
+        await loadPlans(); $('refresh-plans').focus();
+      }
+    });
+  }
+  async function restoreListedPlan(plan) {
+    const dirty = exportDirty || aiPlanDirty || workflowDirty || joinDirty || subtitleDirty;
+    if (busy || dirty && !window.confirm('恢复这个方案？当前未保存的编辑可能被替换。')) return;
+    const owner = currentUser?.id, revision = workspaceRevision;
+    operation('plan-list-error', async () => {
+      const source = await request(`/api/media/${plan.mediaId}`);
+      if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+      displayMedia(source); if (selectedMedia?.id !== source.id) return;
+      const p = plan.parameters;
+      if (p?.operation === 'export') restoreExportPlan(plan);
+      else if (plan.instruction || p?.operation === 'workflow') {
+        aiRevision++; aiLoading = false; aiSourceId = source.id;
+        selectTool('ai'); setWorkflowMode(p?.operation === 'workflow');
+        if (workflowMode) fillWorkflow(p); else $('ai-instruction').value = plan.instruction || '';
+        renderAIPlan(plan);
+      } else if (p?.operation === 'join_clips') {
+        joinRevision++; joinLoading = false; joinSourceId = source.id; selectTool('join');
+        joinRows = p.clips.map(clip => joinRow(clip.startMs, clip.endMs)); joinDirty = false; pendingJoinPlan = plan.status === 'READY' ? plan : null; renderJoin();
+      } else if (p?.operation === 'burn_subtitles') {
+        selectTool('subtitle');
+      } else {
+        const tool = { transcode: 'convert', compress: 'compress', extract_audio: 'audio', trim: 'trim', mute: 'mute' }[p?.operation];
+        if (!tool) throw new Error('这个方案暂不支持恢复编辑。');
+        clearExport(); selectTool(tool); $('conversion-resolution').value = p.resolutionPreset || 'source';
+        if (p.startMs !== undefined) { $('trim-start').value = p.startMs / 1000; $('trim-end').value = p.endMs / 1000; }
+        if (p.targetSizeBytes) $('compression-target').value = p.targetSizeBytes / 1024 / 1024;
+        pendingPlan = plan.status === 'READY' ? plan : null;
+      }
+      selectWorkbenchPhase('edit'); syncMediaControls();
+      if (plan.taskId) {
+        const task = await request(`/api/tasks/${plan.taskId}`);
+        if (currentUser?.id === owner && workspaceRevision === revision && selectedMedia?.id === source.id) displayTask(task);
+      }
+    });
+  }
+  async function loadPlans() {
+    const owner = currentUser?.id, revision = workspaceRevision, page = planPage, token = ++planListRevision;
+    if (!owner) return;
+    try {
+      const result = await request(`/api/operation-plans?page=${page}&pageSize=10`);
+      if (currentUser?.id !== owner || workspaceRevision !== revision || token !== planListRevision || page !== planPage) return;
+      if (page > 1 && !result.items.length) { planPage = Math.max(1, Math.ceil(result.total / 10)); return loadPlans(); }
+      planTotal = result.total; $('plan-total').textContent = `${result.total} 个方案`; $('plan-page').textContent = String(page);
+      $('plan-list-empty').hidden = !!result.items.length; notice('plan-list-error', '');
+      $('plan-list').replaceChildren(...result.items.map(plan => {
+        const row = document.createElement('li'); row.className = 'history-row';
+        const state = plan.status === 'EXECUTED' ? '已执行' : plan.status === 'READY' ? '待执行' : '待完善';
+        const details = recordDetails('plan:' + plan.id, plan.summary || '未完成方案', plan.parameters, plan.instruction);
+        const subtitle = document.createElement('small'); subtitle.textContent = `${state} · v${plan.version} · ${plan.id.slice(0, 8)} · ${new Date(plan.createdAt).toLocaleString('zh-CN')}`;
+        details.querySelector('.record-title').append(document.createElement('br'), subtitle);
+        const restore = recordAction('恢复这个方案', 'rotate-ccw', () => restoreListedPlan(plan));
+        if (plan.parameters?.operation === 'burn_subtitles') {
+          restore.dataset.active = 'true'; restore.title = '字幕烧录方案请在字幕处理中重新确认字幕版本';
+        }
+        const remove = recordAction('删除保存的方案', 'trash-2', () => deleteRecord('plan', plan));
+        row.append(details, restore, remove); return row;
+      }));
+      icons(); syncMediaControls();
+    } catch (error) {
+      if (currentUser?.id !== owner || workspaceRevision !== revision || token !== planListRevision) return;
+      if (error.status === 401) showAuth(); else notice('plan-list-error', error.message, true);
+    }
+  }
+  function selectHistoryTab(plans) {
+    $('history-tasks-slot').hidden = plans; $('history-plans-panel').hidden = !plans;
+    $('history-tasks-tab').setAttribute('aria-selected', String(!plans)); $('history-plans-tab').setAttribute('aria-selected', String(plans));
+    $('history-tasks-tab').tabIndex = plans ? -1 : 0; $('history-plans-tab').tabIndex = plans ? 0 : -1;
+    if (plans) loadPlans(); else loadTasks();
+  }
+  $('history-tool').addEventListener('click', () => selectTool('history'));
+  $('history-tasks-tab').addEventListener('click', () => selectHistoryTab(false));
+  $('history-plans-tab').addEventListener('click', () => selectHistoryTab(true));
+  document.querySelector('.history-tabs').addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault(); const plans = event.key === 'End' || event.key !== 'Home' && $('history-plans-panel').hidden;
+    selectHistoryTab(plans); $(plans ? 'history-plans-tab' : 'history-tasks-tab').focus();
+  });
+  $('refresh-plans').addEventListener('click', loadPlans);
+  $('plan-prev').addEventListener('click', () => { if (planPage > 1) { planPage--; loadPlans(); } });
+  $('plan-next').addEventListener('click', () => { if (planPage * 10 < planTotal) { planPage++; loadPlans(); } });
+
   async function loadTasks() {
     clearTimeout(taskTimer); taskTimer = null;
+    const token = ++taskListRevision;
     const owner = currentUser?.id;
     const page = taskPage;
     const revision = workspaceRevision;
     if (!owner) return;
     try {
       const result = await request(`/api/tasks?page=${page}&pageSize=10`);
-      if (currentUser?.id !== owner || taskPage !== page || workspaceRevision !== revision) return;
+      if (currentUser?.id !== owner || taskPage !== page || workspaceRevision !== revision || taskListRevision !== token) return;
       if (page > 1 && !result.items.length) { taskPage = Math.max(1, Math.ceil(result.total / 10)); return loadTasks(); }
       notice('task-list-error', '');
       taskTotal = result.total;
@@ -1942,7 +2264,7 @@
       $('task-list').replaceChildren(...result.items.map((task) => {
         const row = document.createElement('li'); row.className = 'media-row task-row';
         const button = document.createElement('button'); button.type = 'button';
-        const icon = document.createElement('i'); icon.setAttribute('data-lucide', task.parameters?.operation === 'extract_audio' ? 'file-audio' : 'file-video'); icon.setAttribute('aria-hidden', 'true');
+        const icon = document.createElement('i'); icon.setAttribute('data-lucide', task.parameters?.operation === 'extract_audio' || task.parameters?.operation === 'export' && !task.parameters.videoCodec ? 'file-audio' : 'file-video'); icon.setAttribute('aria-hidden', 'true');
         const name = document.createElement('span'); name.className = 'file-name';
         const title = document.createElement('span'); title.textContent = task.kind === 'TRANSCRIPTION' ? '语音转字幕' : `${taskVerb(task.parameters?.operation)} ${taskFormat(task.parameters)}`;
         const time = document.createElement('small'); time.textContent = `${task.id.slice(0, 8)} · ${new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(task.createdAt))}`;
@@ -1950,7 +2272,7 @@
         const size = document.createElement('span'); size.className = 'file-size'; size.textContent = task.outputs[0] ? sizeText(task.outputs[0].sizeBytes) : '';
         const status = document.createElement('span'); status.className = 'media-status ' + (task.status === 'SUCCEEDED' ? 'ready' : task.status === 'FAILED' ? 'failed' : ''); status.textContent = taskStatus(task.status, task.kind === 'TRANSCRIPTION' ? 'transcribe' : task.parameters?.operation);
         button.append(icon, name, size, status); button.addEventListener('click', () => {
-          if (task.kind === 'TRANSCRIPTION' || ['burn_subtitles', 'join_clips', 'workflow'].includes(task.parameters?.operation)) {
+          if (task.mediaId) {
             operation('task-list-error', async () => {
               const source = await request(`/api/media/${task.mediaId}`);
               if (currentUser?.id !== owner || workspaceRevision !== revision) return;
@@ -1963,12 +2285,39 @@
               } else if (task.parameters?.operation === 'join_clips') {
                 selectTool('join'); joinRevision++; joinLoading = false; joinSourceId = task.mediaId;
                 joinRows = task.parameters.clips.map((clip) => joinRow(clip.startMs, clip.endMs)); joinDirty = false; pendingJoinPlan = null; renderJoin();
-              } else selectTool('subtitle');
-              displayTask(task);
+              } else if (task.kind === 'TRANSCRIPTION' || task.parameters?.operation === 'burn_subtitles') selectTool('subtitle');
+              else selectTool(task.parameters?.operation === 'export' && !task.parameters.videoCodec || task.parameters?.operation === 'extract_audio' ? 'audio'
+                : ({ mute: 'mute', trim: 'trim', compress: 'compress' }[task.parameters?.operation] || 'convert'));
+              revealTask(task);
             });
-          } else { selectTool(task.parameters?.operation === 'mute' ? 'mute' : task.parameters?.operation === 'trim' ? 'trim' : task.parameters?.operation === 'extract_audio' ? 'audio' : task.parameters?.operation === 'compress' ? 'compress' : 'convert'); displayTask(task); }
+          } else { selectTool(task.parameters?.operation === 'mute' ? 'mute' : task.parameters?.operation === 'trim' ? 'trim' : task.parameters?.operation === 'extract_audio' ? 'audio' : task.parameters?.operation === 'compress' ? 'compress' : 'convert'); revealTask(task); }
         });
-        row.append(button); return row;
+        const details = recordDetails('task:' + task.id, `${title.textContent} · ${status.textContent}`, task.parameters, null, task.error?.message);
+        details.querySelector('summary').replaceChildren(icon, name, size, status, disclosureIcon());
+        const instruction = document.createElement('p'); instruction.className = 'record-instruction';
+        details.append(instruction);
+        const loadInstruction = async () => {
+          if (!task.planId || !details.open) return;
+          const key = task.planId + ':' + task.planVersion;
+          if (recordInstructions.has(key)) { instruction.textContent = recordInstructions.get(key); return; }
+          instruction.textContent = '正在读取处理要求…';
+          try {
+            const plan = await request(`/api/operation-plans/${task.planId}`);
+            if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+            const text = plan.instruction || plan.summary || '';
+            recordInstructions.set(key, text); instruction.textContent = text;
+          } catch (error) {
+            if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+            instruction.textContent = error.status === 404 ? '原方案已删除，任务参数仍保留。' : '处理要求暂时无法读取。';
+          }
+        };
+        details.addEventListener('toggle', loadInstruction);
+        button.className = 'icon-button'; button.title = '打开处理结果'; button.setAttribute('aria-label', '打开处理结果');
+        button.dataset.recordAction = 'open'; button.replaceChildren(); button.innerHTML = '<i data-lucide="arrow-up-right" aria-hidden="true"></i>';
+        const remove = recordAction('删除处理记录', 'trash-2', () => deleteRecord('task', task));
+        remove.dataset.active = String(taskActive(task)); remove.disabled = busy || taskActive(task);
+        if (taskActive(task)) remove.title = '任务结束后可删除记录';
+        row.className = 'history-row'; row.append(details, button, remove); return row;
       }));
       const chosen = result.items.find((task) => task.id === selectedTask?.id);
       if (chosen) displayTask(chosen);
@@ -1978,17 +2327,17 @@
         let updated;
         try { updated = await request(`/api/tasks/${id}`); }
         catch (error) {
-          if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+          if (currentUser?.id !== owner || workspaceRevision !== revision || taskListRevision !== token) return;
           if (error.status !== 404) throw error;
           clearTaskResult(); return;
         }
-        if (currentUser?.id !== owner || selectedTask?.id !== id || taskPage !== page || workspaceRevision !== revision) return;
+        if (currentUser?.id !== owner || selectedTask?.id !== id || taskPage !== page || workspaceRevision !== revision || taskListRevision !== token) return;
         displayTask(updated);
       }
       icons(); syncMediaControls();
       if (result.items.some(taskActive) || taskActive(selectedTask)) taskTimer = setTimeout(loadTasks, 2000);
     } catch (error) {
-      if (currentUser?.id !== owner || workspaceRevision !== revision || taskPage !== page) return;
+      if (currentUser?.id !== owner || workspaceRevision !== revision || taskPage !== page || taskListRevision !== token) return;
       if (error.status === 401) showAuth();
       else { notice('task-list-error', error.message, true); taskTimer = setTimeout(loadTasks, 5000); }
     }
@@ -2012,7 +2361,7 @@
         if (!Number.isSafeInteger(parameters.targetSizeBytes) || parameters.targetSizeBytes < 32768 || parameters.targetSizeBytes >= selectedMedia.sizeBytes)
           throw new Error('目标体积需至少32 KB，并小于原文件。');
       }
-      if (usesExport()) parameters = exportParameters();
+      if (usesExport() || exportPlan?.mediaId === mediaId && exportPlan.status === 'READY' && sameParameters(exportPlan.parameters, exportParameters())) parameters = exportParameters();
       const owner = currentUser?.id, revision = workspaceRevision;
       // Retain the plan on an uncertain execute response so another click cannot enqueue a duplicate task.
       if (!pendingPlan || pendingPlan.mediaId !== mediaId || !sameParameters(pendingPlan.parameters, parameters)) {
@@ -2025,7 +2374,7 @@
       if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision) return;
       if (exportPlan?.id === pendingPlan.id) exportPlan = { ...exportPlan, status: 'EXECUTED' };
       exportDirty = false;
-      displayTask(task); pendingPlan = null; taskPage = 1; await loadTasks();
+      revealTask(task); pendingPlan = null; taskPage = 1; await loadTasks();
     });
   });
   $('cancel-task').addEventListener('click', () => operation('task-error', async () => {
@@ -2081,6 +2430,32 @@
     }
   }
 
+  // 只移动已有节点，保留表单、事件、任务轮询及未保存输入，阶段切换不重新创建业务视图。
+  $('import-library-slot').append($('recent-section'));
+  $('history-tasks-slot').append($('task-section'));
+  $('export-result-slot').append($('conversion-result'));
+  $('editor-preview-slot').append($('source-preview'));
+  $('editor-preview-messages').append($('source-preview-status'), $('retry-source-preview'));
+  $('editor-info-details').open = !narrowNavigation.matches;
+  for (const phase of phaseOrder) $(`phase-${phase}-tab`).addEventListener('click', () => selectWorkbenchPhase(phase));
+  $('workspace-phases').addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const index = phaseOrder.indexOf(activePhase);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3;
+    selectWorkbenchPhase(phaseOrder[next]); $(`phase-${phaseOrder[next]}-tab`).focus();
+  });
+  $('continue-editing').addEventListener('click', () => selectWorkbenchPhase('edit'));
+  $('replace-source').addEventListener('click', () => selectWorkbenchPhase('import'));
+  $('back-to-editing').addEventListener('click', () => selectWorkbenchPhase('edit'));
+  document.querySelectorAll('[data-tool-target]').forEach(button => button.addEventListener('click', () => selectTool(button.dataset.toolTarget)));
   icons();
+  // 只刷新状态，不自动重发模型请求；服务停止或恢复后可更新按钮和不可用提示。
+  let refreshingCapabilities = false;
+  setInterval(async () => {
+    if (!currentUser || busy || document.hidden || refreshingCapabilities) return;
+    refreshingCapabilities = true;
+    try { await refreshUserCapabilities(); } finally { refreshingCapabilities = false; }
+  }, 10000);
   boot();
 })();

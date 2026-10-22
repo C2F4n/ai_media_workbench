@@ -3,6 +3,7 @@ package org.example.ai_media_workbench.common.exception;
 import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.vo.common.ErrorDetailVO;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +19,7 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
@@ -98,16 +100,28 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(code.status()).body(Result.error(code));
     }
 
+    /** 客户端在流式响应中断开（预览拖进度条、关闭页面）；响应已不可用，不能再写状态码或 JSON。 */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    ResponseEntity<Void> clientDisconnected(AsyncRequestNotUsableException exception) {
+        // 这是正常的客户端行为，不是服务端故障，因此只留调试日志、不产生响应体。
+        log.debug("Client disconnected during streaming response: {}", exception.getMessage());
+        // 返回 null 表示请求已处理完毕且不写响应，避免二次写响应让 @ExceptionHandler 自身失败。
+        return null;
+    }
+
     /** 处理剩余异常，保留框架错误状态，未知错误返回 500。 */
     @ExceptionHandler(Exception.class)
-    ResponseEntity<Result<Void>> internal(Exception exception) {
+    ResponseEntity<Result<Void>> internal(Exception exception, HttpServletResponse response) {
         if (exception instanceof ErrorResponse error) {
             // 保留框架的 405、413 等状态及 Allow 等响应头，不让它们被兜底处理误判为 500。
+            if (response.isCommitted()) return null;
             return ResponseEntity.status(error.getStatusCode()).headers(error.getHeaders())
                     .body(Result.error(ErrorCode.forStatus(error.getStatusCode().value())));
         }
         // 不把 SQL、堆栈或异常详情返回给前端；requestId 用于关联请求排查问题。
         log.error("Request failed: {}", exception.getClass().getSimpleName());
+        // 响应已提交（例如文件流写到一半失败）时不能再写 JSON，否则会抛出第二层异常。
+        if (response.isCommitted()) return null;
         return ResponseEntity.internalServerError()
                 .body(Result.error(ErrorCode.INTERNAL_ERROR));
     }

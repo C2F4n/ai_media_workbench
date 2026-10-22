@@ -2,7 +2,7 @@ package org.example.ai_media_workbench.properties;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-/** 站点环境配置或解密后的单次个人配置；不进入能力接口、任务快照或日志。 */
+/** 解密后的单次个人云端配置；不进入能力接口、任务快照或日志，不作为站点公共额度。 */
 @ConfigurationProperties("app.ai")
 public record AiProperties(String tencentAppId, String tencentSecretId, String tencentSecretKey,
                            String aliyunApiKey, String aliyunWorkspaceId, String deepseekApiKey, String deepseekModel) {

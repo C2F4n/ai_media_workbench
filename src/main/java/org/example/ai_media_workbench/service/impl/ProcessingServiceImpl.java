@@ -82,7 +82,7 @@ public class ProcessingServiceImpl implements ProcessingService {
     public PlanVO create(String userId, CreatePlanRequest input) {
         choice(input.parameters(),input.instruction());
         var source=requireReady(userId,input.mediaId().toString());
-        var resolved=resolve(userId,input.parameters(),input.instruction(),source,null,null);
+        var resolved=resolve(userId,input.parameters(),checkedInstruction(input.instruction()),source,null,null);
         // 云端调用不持有事务/账号锁；持久化前重新鉴权和校验素材，防止等待期间被删除。
         return transactions.execute(status->{
             lockUser(userId);
@@ -100,9 +100,9 @@ public class ProcessingServiceImpl implements ProcessingService {
         var current=mapper.plan(userId,id);
         if(current==null) throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
         editable(current,input.expectedVersion());
-        var previous=current.getParametersJson()==null ? null : json.readValue(current.getParametersJson(),OperationParameters.class);
-        String instruction=clarifiedInstruction(current,input.instruction());
-        var resolved=resolve(userId,input.parameters(),instruction,requireReady(userId,current.getMediaId()),previous,current.getInstruction());
+        String instruction=checkedInstruction(input.instruction());
+        // 重新生成是完整替换要求，不拼接旧输入，也不让旧参数暗中影响新方案。
+        var resolved=resolve(userId,input.parameters(),instruction,requireReady(userId,current.getMediaId()),null,null);
         return transactions.execute(status->{
             lockUser(userId); var plan=lockedPlan(userId,id); editable(plan,input.expectedVersion());
             verify(resolved,requireReady(userId,plan.getMediaId())); apply(plan,resolved,instruction);
@@ -122,6 +122,26 @@ public class ProcessingServiceImpl implements ProcessingService {
         filter(userId, mediaId);
         return new PageVO<>(mapper.plans(userId, mediaId, query.offset(), query.getPageSize()).stream().map(views::plan).toList(),
                 query.getPage(), query.getPageSize(), mapper.countPlans(userId, mediaId));
+    }
+
+    @Override
+    @Transactional
+    public void deletePlan(String userId, String id) {
+        lockUser(userId);
+        lockedPlan(userId, id);
+        mapper.markPlanDeleted(userId, id, now());
+    }
+
+    @Override
+    @Transactional
+    public void deleteTaskHistory(String userId, String id) {
+        lockUser(userId);
+        var task = mapper.lockTask(userId, id);
+        if (task == null) throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
+        if (task.getStatus() == TaskStatus.QUEUED || task.getStatus() == TaskStatus.RUNNING || task.getStatus() == TaskStatus.CANCELLING)
+            throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
+        // 只从处理记录移除；保留执行幂等和结果权限，文件仍由单独的结果删除入口清理。
+        mapper.hideTaskHistory(userId, id, now());
     }
 
     @Override
@@ -209,12 +229,9 @@ public class ProcessingServiceImpl implements ProcessingService {
         else { plan.setParametersJson(null); plan.setSummary("请补充处理要求"); plan.setUpdatedAt(now()); }
     }
 
-    private static String clarifiedInstruction(OperationPlanEntity plan,String instruction) {
+    private static String checkedInstruction(String instruction) {
         if(instruction==null) return null;
-        String value=instruction.strip(), previous=plan.getInstruction();
-        // 待补充时保留尚未解析成参数的要求；已就绪的修改依靠previousParameters保留设置。
-        if(plan.getStatus()==PlanStatus.NEEDS_INPUT && previous!=null && !value.startsWith(previous.strip()))
-            value=previous.strip()+"\n补充："+value;
+        String value=instruction.strip();
         if(value.codePointCount(0,value.length())>2000) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
         return value;
     }

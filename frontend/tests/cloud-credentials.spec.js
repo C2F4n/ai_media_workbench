@@ -24,6 +24,7 @@ async function remove(context, username) {
 }
 async function settings(page) {
   await page.locator('#header-account').click();
+  await page.locator('#account-cloud-tab').click();
   await expect(page.locator('#cloud-providers > article')).toHaveCount(3);
 }
 
@@ -53,7 +54,7 @@ test('personal credentials are private, never echoed, versioned and explicitly d
     expect((await (await context.request.get('/api/system/capabilities')).json()).data.subtitleCorrection).toBe(true);
     const deepseek = page.locator('#cloud-deepseek');
     await deepseek.locator('input[name=model]').fill('deepseek-v4-pro');
-    await deepseek.getByRole('button', { name: '保存DeepSeek配置', exact: true }).click();
+    await deepseek.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
     await expect(deepseek.locator('[role=status]')).toHaveText('个人凭据已配置');
     await page.reload(); await settings(page);
     await expect(deepseek.locator('input[name=model]')).toHaveValue('deepseek-v4-pro');
@@ -66,7 +67,7 @@ test('personal credentials are private, never echoed, versioned and explicitly d
       headers: { 'X-CSRF-Token': await csrf(context) }, data: { expectedVersion: 2, mode: 'PERSONAL', model: 'deepseek-flash' }
     });
     expect(changed.status()).toBe(200);
-    await deepseek.getByRole('button', { name: '保存DeepSeek配置', exact: true }).click();
+    await deepseek.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
     await expect(page.locator('#cloud-error')).toHaveText('云端配置已被修改，请刷新后重试。');
     await page.locator('#refresh-cloud').click();
     await expect(deepseek.locator('input[name=model]')).toHaveValue('deepseek-flash');
@@ -80,7 +81,7 @@ test('personal credentials are private, never echoed, versioned and explicitly d
     await expect(other.locator('#cloud-deepseek select')).toHaveValue('SERVER');
     expect((await (await second.request.get('/api/users/me/cloud-credentials')).json()).data.every((item) => item.version === 0 && !item.personalStored)).toBe(true);
     expect((await (await second.request.get('/api/system/capabilities')).json()).data.subtitleCorrection).toBe(false);
-    await deepseek.getByRole('button', { name: '删除DeepSeek个人凭据', exact: true }).click();
+    await deepseek.getByRole('button', { name: '删除文字 AI个人凭据', exact: true }).click();
     await expect(deepseek.locator('[role=status]')).toHaveText('已停用');
     expect((await (await context.request.get('/api/system/capabilities')).json()).data.subtitleCorrection).toBe(false);
     await page.locator('#cloud-tencent input[name=secretKey]').fill('unsaved-key');

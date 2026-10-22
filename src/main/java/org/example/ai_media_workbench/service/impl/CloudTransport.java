@@ -20,10 +20,17 @@ public class CloudTransport implements DisposableBean {
     HttpClient client() { return client; }
 
     byte[] post(HttpRequest request, long deadline, BooleanSupplier cancelled, ErrorCode failure) {
+        return post(request, deadline, cancelled, failure, failure);
+    }
+    byte[] get(HttpRequest request, long deadline, ErrorCode failure) {
+        return post(request, deadline, () -> false, failure);
+    }
+    byte[] post(HttpRequest request, long deadline, BooleanSupplier cancelled, ErrorCode failure, ErrorCode rejected) {
         var future = client.sendAsync(request, info -> new LimitedBody(4 * 1024 * 1024));
         try {
             var response = await(future, deadline, cancelled, failure);
-            if (response.statusCode() != 200) throw new BusinessException(failure);
+            if (response.statusCode() != 200) throw new BusinessException(
+                    response.statusCode() == 400 || response.statusCode() == 413 ? rejected : failure);
             return response.body();
         } finally { future.cancel(true); }
     }

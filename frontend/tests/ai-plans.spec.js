@@ -60,6 +60,7 @@ test('AI plans clarify, preserve version context, require confirmation and retry
   await expect(page.locator('#ai-plan-questions')).toContainText('请补充压缩后的目标体积');
   await expect(page.locator('#execute-ai-plan')).toBeDisabled(); expect(app.state().task).toBeNull();
   await page.locator('#ai-instruction').fill('改成截取前1秒'); await page.locator('#generate-ai-plan').click();
+  await expect(page.locator('#ai-instruction')).toHaveValue('改成截取前1秒');
   await expect(page.locator('#ai-plan-status')).toHaveText('待确认');
   await expect(page.locator('#ai-plan-parameters')).toContainText('0.000 至 1.000 秒');
   expect(app.state().posts).toBe(1); expect(app.state().patches).toBe(1); expect(app.state().task).toBeNull();
@@ -72,11 +73,11 @@ test('AI plans clarify, preserve version context, require confirmation and retry
   await page.locator('#execute-ai-plan').click(); await expect(page.locator('#ai-error')).toBeVisible();
   await expect(page.locator('#execute-ai-plan')).toBeEnabled();
   await page.locator('#execute-ai-plan').click(); await expect(page.locator('#ai-plan-status')).toHaveText('已执行');
-  await expect(page.locator('#ai-result-slot #conversion-result')).toBeVisible();
+  await expect(page.locator('#export-result-slot #conversion-result')).toBeVisible();
   await expect(page.locator('#task-status')).toHaveText('已完成');
   expect(app.state().executes).toBe(2); expect(app.state().posts).toBe(1); expect(app.state().plan.taskId).toBe(app.state().task.id);
-  await selectTool(page, 'convert'); await expect(page.locator('#conversion-layout #conversion-result')).toBeVisible();
-  await selectTool(page, 'ai'); await expect(page.locator('#ai-result-slot #conversion-result')).toBeVisible();
+  await selectTool(page, 'convert'); await page.locator('#phase-export-tab').click(); await expect(page.locator('#export-result-slot #conversion-result')).toBeVisible();
+  await selectTool(page, 'ai'); await expect(page.locator('#export-result-slot #conversion-result')).toBeVisible();
   await page.reload(); await selectTool(page, 'ai');
   await expect(page.locator('#ai-instruction')).toHaveValue('改成截取前1秒');
   await expect(page.locator('#ai-plan-status')).toHaveText('已执行');
@@ -121,7 +122,7 @@ async function compoundFixture(page, join = false) {
     }
     if (path === '/api/operation-plans/' + planId && method === 'PATCH') {
       patches++; const input = request.postDataJSON(); expect(input.expectedVersion).toBe(plan.version);
-      plan = { ...plan, version: plan.version + 1, instruction: join ? plan.instruction + '\n补充：' + input.instruction : input.instruction,
+      plan = { ...plan, version: plan.version + 1, instruction: input.instruction,
         parameters: join ? joinParameters : { ...exportParameters, resolutionPreset: '480p' }, questions: [], status: 'READY',
         summary: join ? 'MP4 / 原分辨率 / 拼接2段 / 10000毫秒' : 'MP4 / h264 / 480p / 裁切0-5000毫秒 / 静音' };
       return ok(plan);
@@ -146,7 +147,7 @@ test('AI composite confirmation displays exact trim resolution and mute, preserv
   await expect(page.locator('#ai-plan-status')).toHaveText('待确认');
   const parameters = page.locator('#ai-plan-parameters'); await expect(parameters).toContainText('360p'); await expect(parameters).toContainText('0.000 至 5.000 秒'); await expect(parameters).toContainText('全部移除');
   expect(app.state().task).toBeNull();
-  await page.locator('#ai-instruction').fill('改成480p，其他不变'); await expect(page.locator('#execute-ai-plan')).toBeDisabled();
+  await page.locator('#ai-instruction').fill('保留前5秒，转480p并静音'); await expect(page.locator('#execute-ai-plan')).toBeDisabled();
   await page.locator('#generate-ai-plan').click(); await expect(parameters).toContainText('480p'); await expect(parameters).toContainText('0.000 至 5.000 秒');
   for (const width of [1365, 390]) {
     await page.setViewportSize({ width, height: 900 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -156,13 +157,13 @@ test('AI composite confirmation displays exact trim resolution and mute, preserv
   await page.reload(); await selectTool(page, 'ai'); await expect(parameters).toContainText('480p'); await expect(page.locator('#execute-ai-plan')).toBeDisabled();
 });
 
-test('ambiguous AI head and tail join retains its original requirement and shows both ordered intervals', async ({ page }) => {
+test('ambiguous AI head and tail join uses a rewritten instruction and shows both ordered intervals', async ({ page }) => {
   const app = await compoundFixture(page, true); page.on('dialog', (d) => d.accept());
   await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
   await page.locator('#ai-instruction').fill('剪切视频5秒和后五秒，拼接后发回来'); await page.locator('#generate-ai-plan').click();
   await expect(page.locator('#ai-plan-questions')).toContainText('拼接顺序'); await expect(page.locator('#execute-ai-plan')).toBeDisabled();
   await page.locator('#ai-instruction').fill('第一段保留前5秒，最后5秒放后面'); await page.locator('#generate-ai-plan').click();
-  await expect(page.locator('#ai-instruction')).toHaveValue(/剪切视频5秒和后五秒/);
+  await expect(page.locator('#ai-instruction')).toHaveValue('第一段保留前5秒，最后5秒放后面');
   const rows = page.locator('#ai-plan-parameters > div');
   await expect(rows.filter({ hasText: '第 1 段' })).toContainText('0.000 至 5.000 秒');
   await expect(rows.filter({ hasText: '第 2 段' })).toContainText('15.000 至 20.000 秒');

@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { serveStatic } = require('./helpers/static.cjs');
+test.beforeEach(async ({ page }) => { await serveStatic(page); });
 const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 
@@ -97,6 +99,11 @@ test('cloud subtitle workflow supports editing, versions, safe correction sugges
   const downloadPromise = page.waitForEvent('download'); await page.locator('#download-srt').click();
   const download = await downloadPromise;
   expect(fs.readFileSync(await download.path(), 'utf8')).toContain('00:00:00,100 --> 00:00:01,100');
+  await page.locator('#phase-export-tab').click();
+  await expect(page.locator('#export-srt')).toBeVisible();
+  await expect(page.locator('#export-srt')).toHaveAttribute('href', await page.locator('#download-srt').getAttribute('href'));
+  await expect(page.locator('#export-empty-title')).toHaveText('字幕已就绪');
+  await page.locator('#back-to-editing').click();
   for (const viewport of [{ width: 1365, height: 1000 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport); await page.locator('#subtitle-section').scrollIntoViewIfNeeded();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
