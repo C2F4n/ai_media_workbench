@@ -49,10 +49,11 @@
       <div id="auth-notice" class="notice" role="status" hidden></div>
 
       <div id="login-panel" role="tabpanel" aria-labelledby="login-tab">
-        <form id="login-form">
+        <form id="login-form" novalidate>
           <label class="field">用户名
-            <input id="login-username" name="username" autocomplete="username" required pattern="[a-zA-Z0-9_]{4,32}" placeholder="请输入用户名">
+            <input id="login-username" name="username" autocomplete="username" required pattern="[a-zA-Z0-9_]{4,32}" aria-describedby="login-username-help" placeholder="请输入用户名">
           </label>
+          <p id="login-username-help" class="field-help">填写登录用户名，不是昵称或邮箱。</p>
           <label class="field">密码
             <span class="password-field">
               <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="请输入密码">
@@ -69,29 +70,33 @@
 
       <div id="register-panel" role="tabpanel" aria-labelledby="register-tab" hidden>
         <p id="register-unavailable" class="notice" role="status" hidden>当前暂未开放注册。</p>
-        <form id="register-form">
+        <form id="register-form" novalidate>
           <label class="field">用户名
-            <input id="register-username" name="username" autocomplete="username" required pattern="[a-zA-Z0-9_]{4,32}" placeholder="4–32位字母、数字或下划线">
+            <input id="register-username" name="username" autocomplete="username" required pattern="[a-zA-Z0-9_]{4,32}" aria-describedby="register-username-help" placeholder="4–32位字母、数字或下划线">
           </label>
+          <p id="register-username-help" class="field-help">4–32位英文字母、数字或下划线，不含空格或中文。</p>
           <label class="field">邮箱
             <input id="register-email" name="email" type="email" autocomplete="email" maxlength="254" required placeholder="name@example.com">
           </label>
           <div class="verification-row">
             <label class="field">邮箱验证码
-              <input id="register-email-code" name="emailCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required placeholder="6位验证码">
+              <input id="register-email-code" name="emailCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required aria-describedby="register-code-help" placeholder="6位验证码">
             </label>
             <button id="send-email-code" class="button secondary" type="button"><i data-lucide="mail" aria-hidden="true"></i><span id="email-code-label">发送验证码</span></button>
           </div>
+          <p id="register-code-help" class="field-help">先发送验证码，再填写邮件中的6位数字，才能创建账户。</p>
           <p id="email-code-notice" class="muted" role="status" hidden></p>
           <label class="field">昵称 <span class="optional">选填</span>
-            <input id="register-name" name="displayName" autocomplete="nickname" placeholder="如何称呼你">
+            <input id="register-name" name="displayName" autocomplete="nickname" aria-describedby="register-name-help" placeholder="如何称呼你">
           </label>
+          <p id="register-name-help" class="field-help">最多50个字符；留空则使用用户名，可在账户资料中修改。</p>
           <label class="field">密码
             <span class="password-field">
-              <input id="register-password" name="password" type="password" autocomplete="new-password" required placeholder="6–16个字符">
+              <input id="register-password" name="password" type="password" autocomplete="new-password" required aria-describedby="register-password-help" placeholder="6–16个字符">
               <button class="icon-button password-toggle" type="button" data-password-target="register-password" aria-label="显示密码" title="显示密码"><i data-lucide="eye" aria-hidden="true"></i></button>
             </span>
           </label>
+          <p id="register-password-help" class="field-help">6–16个字符，至少3个不同字符，避免常见弱密码。不强制大小写、数字或符号组合。</p>
           <label class="field">确认密码
             <input id="register-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" required placeholder="再次输入密码">
           </label>
@@ -211,8 +216,9 @@
         </section>
         <section id="ai-section" class="ai-section" hidden aria-labelledby="ai-title">
           <div class="section-heading"><h2 id="ai-title">AI 处理</h2><button id="refresh-ai-plan" class="icon-button" type="button" title="恢复最近方案" aria-label="恢复最近方案"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
-          <div class="workflow-mode" role="group" aria-label="方案输入方式"><button id="workflow-text-mode" class="button secondary compact" type="button" aria-pressed="true">文字输入</button><button id="workflow-step-mode" class="button secondary compact" type="button" aria-pressed="false">分步填写</button></div>
+          <div id="workflow-mode" class="workflow-mode" role="group" aria-label="方案输入方式" data-mode="text"><span class="workflow-mode-indicator" aria-hidden="true"></span><button id="workflow-text-mode" type="button" aria-pressed="true" aria-controls="ai-form"><i data-lucide="text-cursor-input" aria-hidden="true"></i>文字输入</button><button id="workflow-step-mode" type="button" aria-pressed="false" aria-controls="workflow-form"><i data-lucide="list-ordered" aria-hidden="true"></i>分步填写</button></div>
           <div class="ai-layout">
+            <div id="workflow-viewport" class="workflow-viewport">
             <form id="ai-form">
               <label class="field">当前素材<output id="ai-source" class="conversion-source">未选择就绪素材</output></label>
               <label class="field">处理要求<textarea id="ai-instruction" rows="4" maxlength="4000" required placeholder="保留前5秒，转成360p并导出"></textarea></label>
@@ -220,7 +226,7 @@
               <p id="ai-state" class="muted" role="status"></p><p id="ai-error" class="form-error" role="alert" hidden></p>
               <button id="generate-ai-plan" class="button primary" type="submit"><i data-lucide="sparkles" aria-hidden="true"></i><span id="generate-ai-label">生成方案</span></button>
             </form>
-            <form id="workflow-form" hidden>
+            <form id="workflow-form" hidden inert>
               <label class="field">当前素材<output id="workflow-source" class="conversion-source">未选择就绪素材</output></label>
               <ol id="workflow-steps" class="workflow-steps"></ol>
               <button id="workflow-add" class="button secondary compact" type="button"><i data-lucide="plus" aria-hidden="true"></i>添加步骤</button>
@@ -231,6 +237,7 @@
               <p id="workflow-state" class="muted" role="status"></p><p id="workflow-error" class="form-error" role="alert" hidden></p>
               <button id="workflow-save" class="button primary" type="submit"><i data-lucide="list-checks" aria-hidden="true"></i>生成方案</button>
             </form>
+            </div>
             <div id="ai-plan" hidden>
               <div class="section-heading"><h3>处理方案</h3><span id="ai-plan-status" class="media-status"></span></div>
               <p id="ai-plan-summary" class="result-filename"></p><dl id="ai-plan-parameters" class="metadata-list"></dl><ul id="ai-plan-questions" class="ai-questions"></ul>
@@ -247,6 +254,12 @@
           <p id="subtitle-state" class="muted" role="status"></p><p id="subtitle-error" class="form-error" role="alert" hidden></p>
           <div id="subtitle-editor" hidden>
             <div class="subtitle-toolbar"><label class="field">版本<select id="subtitle-version"></select></label><label class="checkbox-field"><input id="subtitle-original" type="checkbox">识别原文</label><span id="subtitle-draft-state" class="muted" role="status"></span><button id="save-subtitle" class="icon-button save-button" type="button" title="保存字幕" aria-label="保存字幕"><i data-lucide="save" aria-hidden="true"></i></button><a id="download-srt" class="button secondary compact"><i data-lucide="download" aria-hidden="true"></i>下载 SRT</a></div>
+            <div class="subtitle-toolbar translation-toolbar"><label class="field">翻译目标语言<select id="translation-language"><option value="en">英语</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁体中文</option><option value="ja">日语</option><option value="ko">韩语</option><option value="fr">法语</option><option value="de">德语</option><option value="es">西班牙语</option><option value="ru">俄语</option><option value="pt">葡萄牙语</option></select></label><button id="translate-subtitle" class="button secondary compact" type="button"><i data-lucide="languages" aria-hidden="true"></i>翻译字幕</button><button id="cancel-translation" class="icon-button" type="button" title="停止后续翻译，已发出的请求仍可能计费" aria-label="停止翻译" hidden><i data-lucide="square" aria-hidden="true"></i></button><span id="translation-state" class="muted" role="status"></span></div>
+            <section id="translation-preview" class="translation-preview" aria-labelledby="translation-title" hidden>
+              <div class="section-heading"><h3 id="translation-title">翻译预览</h3><button id="discard-translation" class="icon-button danger-outline" type="button" title="放弃译文" aria-label="放弃译文"><i data-lucide="trash-2" aria-hidden="true"></i></button></div>
+              <div class="subtitle-toolbar"><label class="field">字幕内容<select id="translation-layout"><option value="bilingual">双语 · 原文在上</option><option value="translated">仅译文</option></select></label><button id="save-translation" class="button primary compact" type="button"><i data-lucide="save" aria-hidden="true"></i>保存为新版本</button></div>
+              <ol id="translation-segments" class="translation-segments"></ol>
+            </section>
             <ol id="subtitle-segments" class="subtitle-segments"></ol>
             <button id="burn-subtitle" class="button primary" type="button"><i data-lucide="film" aria-hidden="true"></i>生成字幕视频</button>
           </div>
@@ -345,9 +358,10 @@
           </section>
           <section id="security-section" class="account-section" role="tabpanel" aria-labelledby="account-security-tab" hidden>
             <h2>账户安全</h2>
-            <form id="password-form">
+            <form id="password-form" novalidate>
               <label class="field">当前密码<input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required></label>
-              <label class="field">新密码<input id="new-password" name="newPassword" type="password" autocomplete="new-password" required placeholder="6–16个字符"></label>
+              <p id="new-password-help" class="field-help">新密码需要6–16个字符，至少3个不同字符，避免常见弱密码，且不能与当前密码相同。</p>
+              <label class="field">新密码<input id="new-password" name="newPassword" type="password" autocomplete="new-password" required aria-describedby="new-password-help" placeholder="6–16个字符"></label>
               <label class="field">确认新密码<input id="confirm-new-password" name="confirmNewPassword" type="password" autocomplete="new-password" required></label>
               <p id="password-error" class="form-error" role="alert" hidden></p>
               <button class="button secondary" type="submit"><i data-lucide="key-round" aria-hidden="true"></i>修改密码</button>

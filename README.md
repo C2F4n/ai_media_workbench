@@ -31,7 +31,7 @@ deploy/nginx/       本地Nginx代理配置
 frontend/tests/     浏览器端到端测试
 ```
 
-轻量工作台不提供项目创建或分类，登录后直接使用工具。当前43个已实现接口覆盖账号/邮箱验证、个人云端凭据、素材上传检测/预览/删除、转换/压缩/裁切/静音/MP3提取/字幕烧录/同源多段拼接、明确参数或DeepSeek自然语言生成的版本方案、任务/取消、结果播放/下载/删除、云端字幕识别/编辑/SRT/单句校对，以及按字幕找片段和片段建议。缺少邮件/云端配置时关闭对应调用，不模拟成功；已有账号可登录、已有方案可确认执行、已有字幕可编辑导出和本地烧录。跨素材、拼接字幕重映射和命名草稿管理尚未实现。
+轻量工作台不提供项目创建或分类，登录后直接使用工具。当前44个已实现接口覆盖账号/邮箱验证、个人云端凭据、素材上传检测/预览/删除、转换/压缩/裁切/静音/MP3提取/字幕烧录/同源多段拼接、明确参数或文字模型自然语言生成的版本方案、任务/取消、结果播放/下载/删除、云端字幕识别/编辑/SRT/单句校对/翻译与双语字幕，以及按字幕找片段和片段建议。缺少邮件/云端配置时关闭对应调用，不模拟成功；已有账号可登录、已有方案可确认执行、已有字幕可编辑导出和本地烧录。跨素材、拼接字幕重映射和命名草稿管理尚未实现。
 
 密码使用带随机盐的Argon2id哈希。登录令牌不是JWT，而是Spring Session JDBC管理的不透明会话ID，通过AMW_SESSION HttpOnly Cookie发送。会话及认证身份存入数据库，服务端检查会话、到期时间和账号状态，不依赖客户端自行判断令牌有效性；页面不读取令牌，也不将其保存到localStorage。退出撤销当前令牌，修改密码、退出全部设备与注销会撤销该用户全部令牌。CSRF令牌单独保护写请求，不是登录凭证，也不是JWT刷新令牌。
 
@@ -45,6 +45,7 @@ frontend/tests/     浏览器端到端测试
 | 格式/编码/分辨率转换、压缩、裁切、同源拼接、静音、音轨提取、组合导出 | FFmpeg / ffprobe | 无 |
 | 语音转字幕 | 腾讯云录音极速版（16k_zh）或阿里云百炼Paraformer（paraformer-realtime-v2） | 语音识别ASR API，发送音轨 |
 | 字幕文字校对 | 本地千问或个人文字模型（DeepSeek/OpenAI/千问/豆包） | 本地无需云端API；仅处理选中句子 |
+| 字幕翻译 / 双语字幕 | 同一所选文字模型；SRT和烧录复用本站/FFmpeg | 个人云端发送分批字幕文字；不上传原视频 |
 | 字幕编辑、版本、SRT导出 | 本站后端/数据库 | 无 |
 | 已有字幕烧录 | FFmpeg / libass | 无，不要求重新识别 |
 | AI处理要求生成方案 | 本地千问或个人文字模型；确认后FFmpeg执行 | 本地无需云端API，不上传视频 |
@@ -109,7 +110,22 @@ MediaUploadConfig基于同一个文件上限生成Servlet限制，并额外留1M
 
 ProcessingController通过ProcessingService处理方案、版本和任务；OutputController通过OutputService处理结果与文件流。明确参数页面直接创建并确认执行，不要求用户管理项目或方案。相同版本重复执行返回同一任务，唯一约束和行锁覆盖并发，执行后冻结。自然语言使用DeepSeek生成候选方案，需用户确认才入队；未配置时AI_UNAVAILABLE，明确参数功能不受影响。
 
-TranscodeWorker每次串行处理一个任务，数据库队列最多20个活动任务。FFmpeg不经过shell，限制协议、输入格式、线程、结果大小和运行时间。默认超时5分钟、租约7分钟、输出最大3GiB，分别由TranscodeProperties及TRANSCODE_TIMEOUT、TRANSCODE_MAX_OUTPUT_SIZE配置；租约必须比超时多1分钟以上。TRANSCODE_WORKER_ENABLED可关闭调度。排队任务重启可继续，过期运行任务明确失败为TASK_INTERRUPTED，需重新提交，不暗中重复执行。取消排队立即生效；运行中先CANCELLING，再终止进程并清理临时产物。
+MediaTaskDispatcher按本机资源动态调度TranscodeWorker，视频处理与语音识别共享数据库队列，最多20个活动任务（包含等待、运行和取消中）。FFmpeg不经过shell，限制协议、输入格式、线程、结果大小和运行时间。默认超时5分钟、租约7分钟、输出最大3GiB，分别由TranscodeProperties及TRANSCODE_TIMEOUT、TRANSCODE_MAX_OUTPUT_SIZE配置；租约必须比超时多1分钟以上。TRANSCODE_WORKER_ENABLED可关闭调度。排队任务重启可继续，过期运行任务明确失败为TASK_INTERRUPTED，需重新提交，不暗中重复执行。取消排队立即生效；运行中先CANCELLING，再终止进程并清理临时产物。
+
+#### 自适应任务并发
+
+默认从1个任务开始，连续3次低CPU样本（默认不高于65%）后逐步提高并发，每3秒最多启动一个新任务。自动上限为逻辑CPU数量除以3并取整，再限制在1至4之间；例如16线程机器上限为4，并不表示始终运行4个任务。整机CPU达到85%，或可用物理内存不足3GiB时，暂停启动新任务并降低目标并发；已经运行的任务继续执行，负载恢复后逐步恢复。指标不可用时退回单并发，已知的高负载仍会阻止新任务启动。
+
+| 环境变量 | 默认值 | 含义 |
+| --- | --- | --- |
+| TASK_MAX_PARALLEL | 0 | 0自动计算上限；也可明确设置1至16 |
+| TASK_ADAPTIVE_ENABLED | true | 自动升降并发；false使用固定上限，但仍保留CPU/内存准入检查 |
+| TASK_CPU_HIGH_WATERMARK | 0.85 | 整机CPU暂停阈值，允许0.5至0.99 |
+| TASK_MEMORY_RESERVE | 2GB | 启动新任务后希望保留的内存预算 |
+| TASK_MEMORY_PER_TASK | 1GB | 每次准入要求的额外空闲内存预算，不是内存硬限制 |
+| TASK_START_INTERVAL | 3s | 新任务启动间隔，允许1s至60s |
+
+调度每秒采样[Java操作系统指标](https://docs.oracle.com/en/java/javase/21/docs/api/jdk.management/com/sun/management/OperatingSystemMXBean.html)，不是只统计Java进程；CPU/内存阈值是尽力保护，不是操作系统硬配额，无法保证瞬时负载不超标，也不监测GPU显存或磁盘I/O。每个FFmpeg进程的线程限制保持不变，本地文本AI仍单并发、云端文本AI仍双并发，独立于媒体任务上限。调度器使用私有、无等待队列的有界线程池，不替换Web下载执行器；未领取任务只保留在数据库，多个任务的领取仍由条件更新保护。该上限按应用实例生效，不是多实例共享的全局资源配额。改动无需新接口、数据表或迁移。
 
 成功结果通过同源Cookie鉴权播放和下载；播放器支持单段Range及206/416，下载始终完整200。文件路径和执行租约不会返回给前端。仅校验完成并在事务中确认账号、任务和租约后才发布结果；注销、取消或陈旧执行者不能发布半成品。任务运行时进度未知为null，不生成假的百分比，成功后才为100。
 
@@ -198,6 +214,8 @@ Cookie默认只适合本机HTTP联调；HTTPS部署设置COOKIE_SECURE=true。�
 
 注册先获取邮箱验证码，再设置初始密码，不自动登录。登录后可刷新恢复、退出当前/全部设备、修改密码与注销。注销须输入当前密码和用户名；注销后不提供恢复，用户名/已验证邮箱仍保留占用，不能直接重复注册。
 
+注册、登录和改密表单提供字段级中文提示：用户名格式、新密码6–16个字符/至少3个不同字符/避免常见弱密码、昵称上限和验证码格式。规则未改动，也不强制大小写、数字和符号组合；登录与当前密码仍兼容1–128字符历史密码。失焦或提交校验后，错误显示在对应输入框下并定位首个问题，修正后更新提示；服务端Result.details同样映射到字段。认证失败仍统一显示“用户名或密码不正确”，不泄露账号存在性。注册成功在表单解锁后聚焦登录密码框；密码、验证码和被拒绝值不包含在校验消息中。浏览器离线用例为auth-validation.spec.js，不发真实邮件或写开发库。
+
 本机开发库的保留测试账号登录名为`admin`，密码未变，不具有额外管理员权限。它不是代码或迁移自动创建的默认账号，其他环境需单独准备，生产环境不要沿用开发测试账号。
 
 ## 验证
@@ -262,9 +280,13 @@ V9新增transcript/transcript_revision，保存不可变识别稿、编辑版本
 | 腾讯语音识别 | 账户页“我的凭据”：AppId/SecretId/SecretKey | 录音极速版16k_zh，带句时间戳 |
 | 百炼语音识别 | 账户页“我的凭据”：API Key/可选Workspace ID | 北京地域paraformer-realtime-v2 |
 | 个人DeepSeek文字AI | 账户页“我的凭据”：API Key/模型（默认deepseek-flash） | Chat Completions JSON |
-| 个人OpenAI文字AI | 文字AI选择OpenAI：API Key及已开通的模型ID（必填） | 官方Chat Completions，JSON mode，store=false |
+| 个人OpenAI文字AI | 文字AI选择OpenAI：填写API Key，再选择预设或自定义模型 | 官方Chat Completions，JSON mode，store=false |
 | 个人千问文字AI | 文字AI选择“千问 / 阿里云百炼”：北京API Key/模型（默认qwen-plus）/可选Workspace ID | 官方OpenAI兼容Chat接口，非思考JSON模式 |
-| 个人豆包文字AI | 文字AI选择“豆包 / 火山方舟”：北京API Key及已开通的Model ID或Endpoint ID（ep-...，必填） | 官方Ark Chat接口，thinking.type=disabled，JSON模式 |
+| 个人豆包文字AI | 文字AI选择“豆包 / 火山方舟”：填写北京API Key，再选择预设或自定义Model ID/Endpoint ID | 官方Ark Chat接口，thinking.type=disabled，JSON模式 |
+
+模型支持预设下拉与自定义输入：选择“自定义模型”后填写供应商的模型ID（1至80位字母、数字、下划线、点、冒号、斜杠或连字符），豆包也可填Endpoint ID。预设按供应商独立维护（2026-10-23核对）：DeepSeek为`deepseek-flash`、`deepseek-v4-pro`；OpenAI为`gpt-6-sol`、`gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-luna`；千问为`qwen-plus`、`qwen-flash`、`qwen-max`；豆包为`doubao-seed-2-1-lite-260915`、`doubao-seed-2-1-pro-260915`、`doubao-seed-2-0-mini-260428`。DeepSeek和千问沿用原默认项，OpenAI和豆包需主动选择；切换模型不自动保存、不清空本供应商的密钥草稿。自定义草稿在预设/自定义及文字/语音分类切换时保留，换供应商时清空。已保存的非预设型号作为“已保存”选项保留，并可选择“自定义模型”继续编辑。接口仍接收原来的model字符串，不新增接口或迁移；预设存在不代表当前账号已获授权或有余额。
+
+预设来源：[DeepSeek模型列表](https://api-docs.deepseek.com/api/list-models/)、[OpenAI GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol)、[GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)、[GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)、[GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna)、[千问兼容接口](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions/)、[火山方舟模型列表](https://docs.volcengine.com/docs/ark/model-list?lang=zh)。这里只维护少量预设，不请求远端模型列表，不发付费探测。GPT-6 Sol、GPT-5.6 Sol/Luna及gpt-5.6别名使用reasoning_effort=none；GPT-6 Astra不支持none，使用low。保持原输出token预算和35秒超时，不自动加预算或重试。其他自定义型号不强加思考参数，必须自行确认支持当前供应商的Chat JSON协议；仅能走Responses等其他协议的型号不因可填写而自动兼容。
 
 百炼控制台是[阿里云官方平台](https://help.aliyun.com/zh/model-studio/get-api-key)，不是第三方OpenAI中转；文字适配参考[百炼兼容接口](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions/)和[OpenAI官方文档](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。只连接官方域名；百炼可选Workspace ID仅用于生成北京专属官方域名，API Key需与地域一致，不接受任意Base URL。模型必须支持对应的非流式JSON输出；未开通模型、网络或余额问题不会自动切换供应商。
 
@@ -292,9 +314,19 @@ V10的cloud_credential只存AES-256-GCM密文，随机nonce、AAD绑定用户和
 
 官方协议：[腾讯录音极速版](https://cloud.tencent.com/document/api/1093/52097)、[百炼Paraformer WebSocket](https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)。
 
+## 字幕翻译与双语字幕
+
+字幕处理内选择目标语言后翻译，复用账户所选的服务端或个人文字模型，不需要另配翻译供应商。支持中简/中繁/英/日/韩/法/德/西/俄/葡；语言表现取决于实际模型，协议测试不代表真实准确率。没有可用文字模型时只关闭翻译，不影响已有字幕编辑、SRT或烧录。
+
+只翻译已保存的最新版本；勾选“识别原文”可从不可变原稿翻译为另一语言。每批最多20段、原文2000字符和16KiB JSON，顺序调用且不重试；一次最多60批，每用户默认5分钟60批。用户先确认调用，页面显示进度；停止只阻止后续调用，已发出请求仍可能计费。所有批次成功后才展示可编辑建议，不发布半成品。
+
+可选择仅译文或原文在上的双语文本预览，确认后复用字幕PATCH保存为新版本；原稿及旧版本保留。未保存预览仅在当前页面内存，刷新、关闭或放弃会丢失，不生成任务记录。每段含双语的最终文本最多2000字符、全部JSON最多2MiB；过长时精简或改选仅译文。保存后直接下载SRT，或通过已有FFmpeg字幕烧录生成MP4，不重复翻译。预览是逐段文本，不是播放器实时字幕叠加。无新表/迁移；Transcript.language仍是ASR语言，修订未另存目标语言元数据。
+
 ## 自然语言处理
 
 2.17起AI处理页提供“文字输入”和“分步填写”两种入口，统一使用operation=workflow、steps有序数组。2.18起文字入口由所选本地千问/个人DeepSeek生成候选步骤；手动入口不调用模型，可增删、上下移动步骤。支持保留区间、从当前结果选段拼接、缩放、静音和最终导出，可重复、按序组合，不穷举A+B或A+C。旧参数和接口兼容，无新增表。
+
+桌面固定功能栏距屏幕左侧8px，不再随宽屏内容居中；窄屏继续使用可收起抽屉。页面采用炭灰导航、灰色底色与绿/蓝工具区。文字输入与分步填写横向滑动切换，容器随表单实际高度调整；快速切换会取消旧动画，系统“减少动态效果”偏好会跳过滑动。切换模式不会覆盖未提交的文字要求，显式恢复最近方案仍会先询问是否放弃当前输入；修改文字后旧方案不可直接执行。无新接口或数据库迁移。
 
 所有区间基于上一步结果：例如尾5秒与头5秒拼成10秒，再保留第3到7秒，结果4秒；连续裁切不是都针对原视频。多次缩放逐步保持比例、不放大，先360p再720p不会恢复画质。最多12步（含最后且唯一的export）、展开最多20个源区间、最终最多15分钟。最终导出设置容器/编码/目标体积，可另存完整原始音轨MP3；静音后不能再导出纯音频，原始音轨旁路不受影响。360p指分辨率，20MB才是体积目标；“剪切5秒”仍须明确区间/保留或删除。“发回来”只是本站结果下载，不发送邮件/聊天消息。
 

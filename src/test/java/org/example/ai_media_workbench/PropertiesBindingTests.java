@@ -8,6 +8,7 @@ import org.example.ai_media_workbench.properties.AccountCleanupProperties;
 import org.example.ai_media_workbench.properties.AuthProperties;
 import org.example.ai_media_workbench.properties.MediaProperties;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.properties.TaskExecutionProperties;
 import org.example.ai_media_workbench.config.MediaUploadConfig;
 import org.example.ai_media_workbench.properties.StorageProperties;
 import org.example.ai_media_workbench.properties.RegistrationMailProperties;
@@ -40,6 +41,11 @@ class PropertiesBindingTests {
             assertThat(context.getBean(AccountCleanupProperties.class).intervalMs()).isEqualTo(5000);
             assertThat(context.getBean(MediaProperties.class).maxUploadSize()).isEqualTo(DataSize.ofGigabytes(3));
             assertThat(context.getBean(TranscodeProperties.class).maxOutputSize()).isEqualTo(DataSize.ofGigabytes(3));
+            var execution=context.getBean(TaskExecutionProperties.class);
+            assertThat(execution.adaptive()).isTrue(); assertThat(execution.maxParallel()).isZero();
+            assertThat(execution.memoryReserve()).isEqualTo(DataSize.ofGigabytes(2));
+            assertThat(execution.memoryPerTask()).isEqualTo(DataSize.ofGigabytes(1));
+            assertThat(execution.cpuHighWatermark()).isEqualTo(0.85); assertThat(execution.startInterval()).isEqualTo(Duration.ofSeconds(3));
             var multipart = context.getBean(jakarta.servlet.MultipartConfigElement.class);
             assertThat(multipart.getMaxFileSize()).isEqualTo(3221225472L).isGreaterThan(Integer.MAX_VALUE);
             assertThat(multipart.getMaxRequestSize()).isEqualTo(3221225472L + 1024 * 1024);
@@ -95,7 +101,9 @@ class PropertiesBindingTests {
     void invalidConfigurationIsRejectedAtStartup() {
         for (String property : new String[]{"app.auth.login-attempts=0", "app.auth.session-idle-timeout=0s",
                 "app.storage.root=", "app.account-cleanup.interval-ms=0", "app.media.max-upload-size=0B",
-                "app.media.max-duration=-1s", "app.registration-mail.code-ttl=0s", "app.registration-mail.max-attempts=0"}) {
+                "app.media.max-duration=-1s", "app.registration-mail.code-ttl=0s", "app.registration-mail.max-attempts=0",
+                "app.task-execution.max-parallel=-1", "app.task-execution.max-parallel=17", "app.task-execution.cpu-high-watermark=1",
+                "app.task-execution.memory-reserve=-1B", "app.task-execution.memory-per-task=0B", "app.task-execution.start-interval=0s"}) {
             contextRunner.withPropertyValues(property).run(context -> assertThat(context).hasFailed());
         }
     }
@@ -154,6 +162,6 @@ class PropertiesBindingTests {
     @TestConfiguration(proxyBeanMethods = false)
     @PropertySource("classpath:application.properties")
     @EnableConfigurationProperties({AuthProperties.class, StorageProperties.class,
-            AccountCleanupProperties.class, MediaProperties.class, TranscodeProperties.class, RegistrationMailProperties.class})
+            AccountCleanupProperties.class, MediaProperties.class, TranscodeProperties.class, RegistrationMailProperties.class, TaskExecutionProperties.class})
     static class PropertyConfiguration {}
 }

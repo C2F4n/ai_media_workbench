@@ -48,7 +48,7 @@ class CloudCredentialIntegrationTests {
         var owner=login();
         save(owner,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","textProvider","openai","apiKey","sk-openai-personal","model","gpt-model-tests"));
         mvc.perform(get("/api/system/capabilities").cookie(owner.cookie)).andExpect(jsonPath("data.textAi.provider").value("openai"))
-                .andExpect(jsonPath("data.textAi.model").value("gpt-model-tests"));
+                .andExpect(jsonPath("data.textAi.model").value("gpt-model-tests")).andExpect(jsonPath("data.subtitleTranslation").value(true));
         assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
         save(owner,"deepseek",Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","bailian","apiKey","sk-bailian-personal","model","qwen-plus","workspaceId","workspace-tests"));
         assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");

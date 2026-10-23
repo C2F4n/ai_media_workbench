@@ -44,7 +44,10 @@ test('personal credentials are private, never echoed, versioned and explicitly d
       await page.locator(provider === 'deepseek' ? '#cloud-text-tab' : '#cloud-speech-tab').click();
       const card = page.locator('#cloud-' + provider);
       await card.locator('select[name=mode]').selectOption('PERSONAL');
-      for (const [key, value] of Object.entries(fields)) await card.locator('input[name="' + key + '"]').fill(value);
+      for (const [key, value] of Object.entries(fields)) {
+        if (key === 'model') await card.locator('select[name=model]').selectOption(value);
+        else await card.locator('input[name="' + key + '"]').fill(value);
+      }
       await card.getByRole('button', { name: /^保存/ }).click();
       await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
       for (const input of await card.locator('input[data-secret]').all()) await expect(input).toHaveValue('');
@@ -54,11 +57,11 @@ test('personal credentials are private, never echoed, versioned and explicitly d
     expect(await result.text()).not.toMatch(/OnlyFake|sk-fake|encryptedPayload|secretId|secretKey|apiKey/);
     expect((await (await context.request.get('/api/system/capabilities')).json()).data.subtitleCorrection).toBe(true);
     const deepseek = page.locator('#cloud-deepseek');
-    await deepseek.locator('input[name=model]').fill('deepseek-v4-pro');
+    await deepseek.locator('select[name=model]').selectOption('deepseek-v4-pro');
     await deepseek.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
     await expect(deepseek.locator('[role=status]')).toHaveText('个人凭据已配置');
     await page.reload(); await settings(page);
-    await expect(deepseek.locator('input[name=model]')).toHaveValue('deepseek-v4-pro');
+    await expect(deepseek.locator('select[name=model]')).toHaveValue('deepseek-v4-pro');
     await expect(deepseek.locator('input[name=apiKey]')).toHaveValue('');
     await deepseek.locator('input[name=apiKey]').fill('not-saved');
     await page.locator('#back-workbench').click();
@@ -71,7 +74,7 @@ test('personal credentials are private, never echoed, versioned and explicitly d
     await deepseek.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
     await expect(page.locator('#cloud-error')).toHaveText('云端配置已被修改，请刷新后重试。');
     await page.locator('#refresh-cloud').click();
-    await expect(deepseek.locator('input[name=model]')).toHaveValue('deepseek-flash');
+    await expect(deepseek.locator('select[name=model]')).toHaveValue('deepseek-flash');
     for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

@@ -1009,6 +1009,69 @@ class ProcessingIntegrationTests {
         try (var files = Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
     }
 
+    @Test void twoWorkersProcessDifferentTasksConcurrentlyWhileCancellationAndDownloadsRemainIndependent() throws Exception {
+        var owner=login(); String firstSource=source(owner),secondSource=source(owner);
+        var first=processing.execute(owner.id(),create(owner,firstSource),1);
+        var second=processing.execute(owner.id(),create(owner,secondSource),1);
+        var entered=new java.util.concurrent.CountDownLatch(2); var release=new java.util.concurrent.CountDownLatch(1);
+        doAnswer(call->{
+            entered.countDown(); assertThat(release.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            if(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+            Files.write(call.getArgument(1,Path.class),OUTPUT); return null;
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        try(var executor=Executors.newVirtualThreadPerTaskExecutor()) {
+            var a=executor.submit(()->worker.runOne()); var b=executor.submit(()->worker.runOne());
+            try {
+                assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM media_task WHERE user_id=? AND status='RUNNING'",Integer.class,owner.id())).isEqualTo(2);
+                var download=mvc.perform(get("/api/media/"+firstSource+"/preview").cookie(owner.cookie())).andExpect(request().asyncStarted()).andReturn();
+                download.getAsyncResult(2000); mvc.perform(asyncDispatch(download)).andExpect(status().isOk());
+                processing.cancel(owner.id(),first.id());
+            } finally { release.countDown(); }
+            assertThat(a.get(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue(); assertThat(b.get(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(processing.task(owner.id(),first.id()).status().name()).isEqualTo("CANCELLED");
+        assertThat(processing.task(owner.id(),second.id()).status().name()).isEqualTo("SUCCEEDED");
+        assertThat(mapper.taskOutputs(owner.id(),first.id())).isEmpty(); assertThat(mapper.taskOutputs(owner.id(),second.id())).hasSize(1);
+        verify(transcoder,times(2)).convert(any(),any(),any(),any(),any()); assertThat(worker.runOne()).isFalse();
+    }
+
+    @Test void concurrentClaimsNeverExecuteTheSameTaskTwice() throws Exception {
+        var owner=login(); var task=processing.execute(owner.id(),create(owner,source(owner)),1);
+        var entered=new java.util.concurrent.CountDownLatch(1); var release=new java.util.concurrent.CountDownLatch(1);
+        doAnswer(call->{ entered.countDown(); release.await(5,java.util.concurrent.TimeUnit.SECONDS); Files.write(call.getArgument(1,Path.class),OUTPUT); return null; })
+                .when(transcoder).convert(any(),any(),any(),any(),any());
+        try(var executor=Executors.newVirtualThreadPerTaskExecutor()) {
+            var a=executor.submit(()->worker.runOne()); var b=executor.submit(()->worker.runOne());
+            try { assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue(); }
+            finally { release.countDown(); }
+            assertThat(List.of(a.get(3,java.util.concurrent.TimeUnit.SECONDS),b.get(3,java.util.concurrent.TimeUnit.SECONDS))).containsExactlyInAnyOrder(true,false);
+        }
+        verify(transcoder,times(1)).convert(any(),any(),any(),any(),any());
+        assertThat(mapper.taskOutputs(owner.id(),task.id())).hasSize(1);
+    }
+
+    @Test void recoveryDoesNotDeleteFilesBelongingToAnExecutionStillRunningInThisProcess() throws Exception {
+        var owner=login(); var task=processing.execute(owner.id(),create(owner,source(owner)),1);
+        var entered=new java.util.concurrent.CountDownLatch(1); var release=new java.util.concurrent.CountDownLatch(1);
+        var file=new java.util.concurrent.atomic.AtomicReference<Path>();
+        doAnswer(call->{
+            Path target=call.getArgument(1,Path.class); Files.write(target,OUTPUT); file.set(target);
+            jdbc.update("UPDATE media_task SET lease_started_at=? WHERE id=?",LocalDateTime.now().minusDays(1),task.id());
+            entered.countDown(); release.await(5,java.util.concurrent.TimeUnit.SECONDS); return null;
+        }).when(transcoder).convert(any(),any(),any(),any(),any());
+        try(var executor=Executors.newVirtualThreadPerTaskExecutor()) {
+            var running=executor.submit(()->worker.runOne());
+            try {
+                assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue(); worker.recoverExpired();
+                assertThat(Files.exists(file.get())).isTrue(); assertThat(processing.task(owner.id(),task.id()).status().name()).isEqualTo("RUNNING");
+                jdbc.update("UPDATE media_task SET lease_started_at=? WHERE id=?",LocalDateTime.now(),task.id());
+            } finally { release.countDown(); }
+            assertThat(running.get(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(processing.task(owner.id(),task.id()).status().name()).isEqualTo("SUCCEEDED");
+    }
+
     private CreatePlanRequest trimInput(String mediaId,long start,long end) {
         return new CreatePlanRequest(UUID.fromString(mediaId),json.valueToTree(new TrimParameters("trim","mp4",start,end,"keep")),null);
     }

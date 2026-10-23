@@ -1,6 +1,8 @@
 # AI音视频工作台：轻量版接口契约
 
-版本：2.21.0。日期：2026-10-23。
+版本：2.22.0。日期：2026-10-23。
+
+2.22变更：新增分批字幕翻译建议POST /api/transcripts/{id}/translations及能力字段subtitleTranslation。前端支持10种目标语言、逐段编辑译文、仅译文/双语预览，确认后复用PATCH字幕另存新版本，再下载SRT或烧录视频。识别原文和旧版本保留，无新表或迁移。共58个接口，44个已实现。译文生成不等于保存，未完成或停止的批次不发布半成品，不自动重试付费请求。
 
 2.21变更：新增豆包/火山方舟文字供应商textProvider=doubao；千问入口明确为“千问 / 阿里云百炼”，仍使用bailian值并兼容已有配置。豆包使用北京官方Chat接口，必须填写API Key和已开通的Model ID或Endpoint ID，不默认代选模型。无新接口、表或迁移，仍为57个接口、43个已实现。
 
@@ -10,11 +12,11 @@
 
 2.18变更：SERVER来源由站点公共云端配置改为本地千问，PERSONAL/OFF和已有接口路径保持兼容，无新表/迁移。方案生成、单句校对、字幕检索/片段建议共用来源路由；本地不支持语音识别。所有来源失败均不自动回退或重试，明确参数功能不依赖模型。旧章节提到DeepSeek的文字能力现在也可使用本地千问。
 
-Apifox选择OpenAPI/Swagger，导入同目录[openapi.json](./openapi.json)。本文与OpenAPI是一套契约，共57个接口；是否可用以x-implementation-status为准。2.0移除项目、分类和projectId：登录后直接选择功能、上传素材、处理并下载，不创建隐式默认项目。
+Apifox选择OpenAPI/Swagger，导入同目录[openapi.json](./openapi.json)。本文与OpenAPI是一套契约，共58个接口；是否可用以x-implementation-status为准。2.0移除项目、分类和projectId：登录后直接选择功能、上传素材、处理并下载，不创建隐式默认项目。
 
 ## 1. 当前范围
 
-当前共43个已实现接口：账号、注册前邮箱验证、个人云端凭据、素材上传检测/预览/删除、转换/压缩/裁切/静音/MP3提取/字幕烧录/同源多段拼接、明确参数或自然语言生成的版本方案、持久化任务/取消、结果预览/下载/删除、云端字幕识别/编辑/SRT/单句校对，以及按字幕内容检索和片段建议。缺少云端凭据时关闭对应调用，已有方案仍可确认执行，已有字幕仍可编辑、导出和本地烧录。跨素材和拼接字幕重映射仍未实现。实现与本地协议测试通过不代表真实云端效果已经验收。
+当前共44个已实现接口：账号、注册前邮箱验证、个人云端凭据、素材上传检测/预览/删除、转换/压缩/裁切/静音/MP3提取/字幕烧录/同源多段拼接、明确参数或自然语言生成的版本方案、持久化任务/取消、结果预览/下载/删除、云端字幕识别/编辑/SRT/单句校对/翻译与双语版本，以及按字幕内容检索和片段建议。缺少云端凭据时关闭对应调用，已有方案仍可确认执行，已有字幕仍可编辑、导出和本地烧录。跨素材和拼接字幕重映射仍未实现。实现与本地协议测试通过不代表真实云端效果已经验收。
 
 本地入口http://127.0.0.1:8088，Nginx转发8081。未配置SMTP时关闭注册，已有账号仍可登录；未安装或配置ffprobe时上传返回MEDIA_TOOL_UNAVAILABLE，不伪造素材就绪。
 
@@ -59,6 +61,8 @@ ID为UUID，时间为UTC ISO 8601，媒体时长/位置为整数毫秒，大小�
 username为4-32位字母/数字/下划线并规范化为小写；email去除首尾空白、按小写去重；displayName为1-50字符。新密码6-16个Unicode码点，允许字母、数字、符号，不强制字符类型组合；至少3种不同字符，不能全为空白或命中弱密码列表。不trim或截断，只保存随机盐Argon2id哈希。登录及旧密码核验仍接受1-128字符，兼容已有长密码，不能截断旧密码。账号重复统一ACCOUNT_ALREADY_EXISTS，不提供公开存在性查询。
 
 登录时不存在、停用、密码错误统一INVALID_CREDENTIALS，认证内部故障500。注册不自动登录。退出当前设备撤销当前会话；改密、退出全部设备和注销撤销所有会话。已登录退出需CSRF，匿名退出幂等成功。
+
+账号参数校验的details提供具体中文field/message，例如password对应“密码需要6–16个字符。”、emailCode对应“邮箱验证码需要6位数字。”；不返回提交的密码、验证码或其他被拒绝值。字段明细不改变原有Result、错误码和HTTP状态。前端注册、登录及改密表单展示字段规则，失焦/提交时在对应字段下提示，提交失败定位第一项；编辑后重新校验，服务端字段错误在实际修改前保留。多个问题只在表单底部汇总数量，详细原因仍在各字段下。注册和改密按Unicode码点计数并提前提示弱密码，登录/当前密码保留1–128字符旧密码兼容，不增加字符类型组合要求。账号重复及登录失败仍不区分用户名/邮箱存在性或具体凭据错误。
 
 注销须currentPassword和confirmUsername。成功停用账号、撤销凭证、取消活动任务并软删除本人资源，持久化清理任务随后删除受控文件。账号不可恢复，用户名/邮箱保留占用；200不表示磁盘文件已经全部同步删除。
 
@@ -125,7 +129,7 @@ DELETE /api/media/{mediaId}需要登录及CSRF，不需要密码或请求体。P
 
 提取音频固定读取第一条音轨，生成192kbps、44.1kHz双声道MP3，剔除视频、封面及源元数据。缺少音轨在入队前返回422 SOURCE_HAS_NO_AUDIO；缺少libmp3lame编码器返回503 AUDIO_EXTRACTION_UNAVAILABLE。capabilities按编码器独立声明extract_audio，不依赖视频编码器。输出用ffprobe重新验证MP3格式、编码、无视频流及真实音轨时长，失败为AUDIO_EXTRACTION_FAILED且不发布。首条音轨比视频短时不补静音、不按视频时长截断或拼接。音频结果contentType=audio/mpeg、文件名后缀-audio.mp3；metadata中width/height/videoCodec为null，durationMs是实际音轨时长。
 
-任务QUEUED/RUNNING/CANCELLING/CANCELLED/SUCCEEDED/FAILED，数据库队列最多20个活动任务，每个实例串行转换。默认5分钟进程超时、7分钟租约、结果最大3GiB；TRANSCODE_TIMEOUT、TRANSCODE_MAX_OUTPUT_SIZE可覆盖，租约必须大于超时加1分钟。排队工作重启后继续，过期运行任务变FAILED/TASK_INTERRUPTED，不自动重复执行；重试需新建方案。排队取消立即CANCELLED，运行取消CANCELLING，工具每300ms检查并终止；校验中的取消至多等待当前ffprobe超时。运行百分比未知为null，成功后100。仅校验成功且归属、租约仍有效时在事务中发布输出；取消、注销或失败不发布半成品。
+任务QUEUED/RUNNING/CANCELLING/CANCELLED/SUCCEEDED/FAILED，数据库队列最多20个活动任务，每个实例按CPU和可用内存自适应有界并发处理，视频与识别共享队列。默认从1个并发逐步增加，按逻辑CPU计算上限1至4；CPU达到85%或可用内存不足3GiB时暂停启动新任务，不强停运行中的任务。新任务默认至少间隔3秒；指标不可用退回单并发。TASK_MAX_PARALLEL可指定上限，其他参数见README“自适应任务并发”；这是准入保护而非硬资源配额，不包含GPU显存监控。此调度调整不新增接口、状态或数据表。默认5分钟进程超时、7分钟租约、结果最大3GiB；TRANSCODE_TIMEOUT、TRANSCODE_MAX_OUTPUT_SIZE可覆盖，租约必须大于超时加1分钟。排队工作重启后继续，过期运行任务变FAILED/TASK_INTERRUPTED，不自动重复执行；重试需新建方案。排队取消立即CANCELLED，运行取消CANCELLING，工具每300ms检查并终止；校验中的取消至多等待当前ffprobe超时。运行百分比未知为null，成功后100。仅校验成功且归属、租约仍有效时在事务中发布输出；取消、注销或失败不发布半成品。
 
 MP4与MP3结果预览均需鉴权并支持单段Range/206/Content-Range，含后缀、开放结尾；非法或多段Range忽略返回200，越界416并返回Result。下载忽略Range发送完整文件，Content-Disposition包含UTF-8文件名及ASCII回退。文件丢失或大小异常410 OUTPUT_UNAVAILABLE，其他用户资源404，URL不暴露磁盘路径。失败、取消、过期租约及注销清理同样覆盖MP3半成品。
 
@@ -201,6 +205,7 @@ capabilities.supportedOperations包含workflow才开放，要求ffprobe和本机
 | GET / PATCH | /api/transcripts/{transcriptId} | 查询 / 编辑 |
 | GET | /api/transcripts/{transcriptId}/srt | SRT文件 |
 | POST | /api/transcripts/{transcriptId}/corrections | DeepSeek单句校对建议，200 |
+| POST | /api/transcripts/{id}/translations | 所选文字模型分批翻译建议，200 Result，尚不写入版本 |
 
 识别请求示例：`{"language":"zh-CN","provider":"tencent","force":false}`。provider只支持tencent/aliyun，省略默认tencent；force省略默认false。要求本人READY且有音轨。活动识别复用同一任务；已有字幕且未确认重识别409 TRANSCRIPT_ALREADY_EXISTS。强制重识别成功创建新字幕并切换最新稿，失败不覆盖旧稿。新提交每用户默认5分钟10次，共享最多20个活动任务的队列；复用活动任务不扣次数。QUEUED/RUNNING的parameters=null，kind=TRANSCRIPTION；成功后outputs=[]，transcript为不可变识别稿的transcriptId/version=1引用。未知进度null，成功100。
 
@@ -224,6 +229,10 @@ provider仅tencent/aliyun/deepseek，不支持自定义URL。全部需登录；P
 
 PUT必填expectedVersion和mode（SERVER/PERSONAL/OFF）。SERVER表示服务端模型，不使用站点云端凭据。语音识别槽位维持腾讯appId/secretId/secretKey、百炼apiKey/workspaceId。文字槽位路径仍是deepseek，PERSONAL接收textProvider（deepseek/openai/bailian/doubao）、apiKey、model；仅bailian接受可选workspaceId。省略textProvider保留旧供应商，没有旧值时按deepseek。相同供应商省略/null字段可保留旧值，切换供应商必须提供新apiKey；OpenAI模型ID必填，豆包Model ID或Endpoint ID必填（均通过model字段传递），千问/百炼默认qwen-plus，DeepSeek默认deepseek-flash。显式空密钥失败。SERVER/OFF不得携带个人字段，切换时清除旧密文。DELETE请求体为`{"expectedVersion":1}`，删除后停用，不自动回退。
 
+前端model支持供应商联动的预设下拉和“自定义模型”输入框；OpenAI和豆包未选模型、自定义留空或不符合原model格式时禁止保存。OpenAI预设更新为gpt-6-sol/gpt-6-astra/gpt-5.6-sol/gpt-5.6-luna；已保存的非预设型号仍保留且可编辑。输入首尾空白在保存时去除，仅向API发送实际model值，不发送界面占位值或customModel草稿字段。API的model仍为原字符串格式而非预设enum，兼容已有客户端与Endpoint ID，模型选择本身不新增接口或迁移。选择模型本身不保存、不发起云端请求，仍需点击保存并确认。
+
+OpenAI已核对的gpt-6-sol、gpt-5.6-sol、gpt-5.6-luna及gpt-5.6别名使用reasoning_effort=none；gpt-6-astra使用low（不支持none）。保留原max_completion_tokens预算、store=false、35秒超时及JSON输出验证。其他自定义型号不强加思考参数；自定义只改变模型ID，不改变供应商固定官方地址或自动适配其他协议。
+
 三种来源互斥，任何来源失败都不回退。写入默认每用户5分钟20次，429含Retry-After；版本冲突409 CLOUD_CREDENTIALS_CONFLICT；密文不可读503 CLOUD_CREDENTIALS_UNAVAILABLE。列表在不可解密时仍返回personalStored=true、configured=false、available=false，可删除或恢复主密钥。账号注销在同一事务删除凭据。
 
 `capabilities.textAi={source,provider,model,available,unavailableReason}`声明当前用户文字来源；provider为local/deepseek/openai/bailian/doubao，匿名使用SERVER和local。服务端固定回环地址，健康检查最多700ms/缓存2秒，不产生云端费用；推理单并发，超时由LOCAL_AI_TIMEOUT_SECONDS配置。个人文字调用共用2个并发槽、35秒单次超时和4MiB响应上限，不回退、不自动重试。页面每10秒刷新能力，失败显示当前供应商；个人available只表示配置可读取且完整，不代表真实网络、模型权限或余额已验证。非法、拒答或截断结果按AI_PLAN_FAILED/AI_FAILED/AI_ANALYSIS_FAILED拒绝。
@@ -233,6 +242,18 @@ OpenAI固定POST https://api.openai.com/v1/chat/completions，使用max_completi
 豆包固定POST https://ark.cn-beijing.volces.com/api/v3/chat/completions，Bearer API Key鉴权，使用max_tokens、thinking.type=disabled及response_format.type=json_object。必须选用支持非思考JSON输出的已开通模型，不支持应用Bot ID、Coding Plan专用接口或任意中转地址。豆包仅增加文字适配，不提供豆包语音识别、图片/视频生成。参考[火山方舟结构化输出](https://docs.volcengine.com/docs/ark/structured-output-beta?lang=zh)。
 
 示例（仅虚构值）：`{"expectedVersion":0,"mode":"PERSONAL","textProvider":"doubao","apiKey":"ark-example-not-real","model":"ep-example-not-real"}`。保存不会发起付费校验。调用服务时按会话/任务用户解密当前配置，秘密不写任务或方案；排队识别使用执行时的配置，切换或删除不能撤回已发出的请求及费用。登录和保存后应重新查询capabilities，不能跨用户缓存。
+
+### 字幕翻译与双语版本
+
+POST /api/transcripts/{id}/translations需登录、CSRF和JSON，响应200 Result<TranscriptTranslation>及no-store。请求expectedVersion必须为该素材最新字幕的当前版本；targetLanguage为zh-CN/zh-TW/en/ja/ko/fr/de/es/ru/pt；segmentIds为1至20个现存UUID，按源字幕顺序且不重复；useOriginal默认false，为true时使用不可变识别原文而非当前修订。只接收ID，不接受伪造原文、时间或提示词。
+
+每批原文最多2000 Unicode字符、所选segments的UTF-8 JSON最多16KiB。超限422 TRANSCRIPT_TRANSLATION_TOO_LARGE；非法字段或ID顺序422 INVALID_PARAMETERS；非本人或删除404；版本变化或重新识别409 TRANSCRIPT_VERSION_CONFLICT；模型不可用503 AI_UNAVAILABLE/LOCAL_AI_UNAVAILABLE，繁忙503 AI_BUSY。每用户默认5分钟60批，限流429含Retry-After。复用服务端或本人云端文字路由、并发和超时，不自动重试、不回退；调用前后重新检查账号、素材、最新字幕ID和版本，不持数据库事务等模型。
+
+响应data={transcriptId,transcriptVersion,targetLanguage,segments}。segments只含本批译文及服务器绑定的id/startMs/endMs；模型返回数量、顺序、ID、字段、文本不合法或被截断时422 AI_TRANSLATION_FAILED，不截断假装成功。每段译文复用最多2000字符、无空行或控制字符的字幕边界；不返回秘密、不创建任务/翻译资源或磁盘文件，也不更新字幕版本。
+
+前端按20段/2000字符顺序分批，一次最多60批，超过上限在调用前拒绝；展示总进度，所有批次完成且最新版本仍匹配才展示可编辑译文。停止只阻止后续调用并丢弃建议，已发出的请求不可撤回且仍可能计费。失败、刷新或关闭前未保存的预览不持久化；重试需用户主动操作并可能重新计费。当前预览支持仅译文或原文在上的双语文本，不是视频画面字幕叠加。
+
+用户确认后将译文或“所选原文+换行+译文”作为普通segments提交既有PATCH /api/transcripts/{id}，expectedVersion防止覆盖并生成新版本，旧版本和识别原文保持不变。保存前再次读取最新字幕，时间轴沿用源段；每段合计最多2000字符、总JSON最多2MiB，不满足时可改选仅译文或精简。原有Transcript.language仍表示识别语言，不将其误当作修订目标语言。保存成功后可下载该版本SRT，或复用burn_subtitles生成MP4；导出、烧录不再次调用翻译模型。后续可勾选识别原文翻译为另一语言。未新增表或迁移，API不存储翻译目标或输出布局元数据。
 
 ### 同源多段拼接
 

@@ -23,6 +23,8 @@ async function workspace(page) {
 test('vertical navigation labels API dependencies, slides in both directions and remembers docking', async ({ page }, testInfo) => {
   const errors = []; page.on('pageerror', (e) => errors.push(e.message));
   await workspace(page);
+  await expect(page.locator('.app-header')).toHaveCSS('background-color', 'rgb(32, 61, 70)');
+  await expect(page.locator('.brand')).toHaveCSS('color', 'rgb(243, 249, 250)');
   const positions = await page.locator('.tool-choice').evaluateAll((items) => items.map((e) => ({ x: e.getBoundingClientRect().x, y: e.getBoundingClientRect().y })));
   expect(new Set(positions.map((p) => p.x)).size).toBe(1);
   expect(positions.every((p, i) => !i || p.y > positions[i - 1].y)).toBe(true);
@@ -50,8 +52,14 @@ test('vertical navigation labels API dependencies, slides in both directions and
   await expect(page.locator('#dependency-title')).toHaveText('视频裁切'); await expect(page.locator('#toggle-sidebar')).toBeFocused();
   await page.locator('#toggle-sidebar').click(); await page.locator('#pin-sidebar').click();
   await expect(page.locator('#sidebar-backdrop')).toBeHidden(); await expect(page.locator('#pin-sidebar')).toHaveAttribute('aria-pressed', 'true');
-  for (const width of [1365, 1001]) {
+  for (const width of [1920, 1365, 1001]) {
     await page.setViewportSize({ width, height: 900 });
+    const sidebar = await page.locator('#tool-sidebar').boundingBox(), content = await page.locator('#tool-content').boundingBox();
+    expect(sidebar.x).toBe(8); expect(content.x).toBeGreaterThan(sidebar.x + sidebar.width);
+    await page.evaluate(() => window.scrollTo(0, 160));
+    expect((await page.locator('#tool-sidebar').boundingBox()).x).toBe(8);
+    expect((await page.locator('#tool-sidebar').boundingBox()).y).toBe(80);
+    await page.evaluate(() => window.scrollTo(0, 0));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('sidebar-desktop-' + width + '.png'), fullPage: true });
   }
@@ -60,6 +68,7 @@ test('vertical navigation labels API dependencies, slides in both directions and
 
 test('mobile drawer closes on selection, backdrop or Escape and links to cloud configuration', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 }); await workspace(page);
+  await expect(page.locator('#header-logout')).toHaveCSS('color', 'rgb(237, 246, 248)');
   await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
   await page.locator('#toggle-sidebar').click(); await expect(page.locator('#tool-sidebar')).toHaveAttribute('aria-modal', 'true');
   await expect(page.locator('#detect-tool')).toBeFocused();

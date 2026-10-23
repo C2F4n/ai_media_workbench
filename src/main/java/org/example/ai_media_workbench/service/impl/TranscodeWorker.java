@@ -32,13 +32,12 @@ import org.example.ai_media_workbench.service.MediaTranscoder;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
-/** One conversion per worker. No database locks are held while FFmpeg is running. */
+/** 只在领取与恢复时持本机锁；处理阶段允许有界并发，不持数据库事务等FFmpeg或云端I/O。 */
 @Component
 public class TranscodeWorker {
     private static final Logger log = LoggerFactory.getLogger(TranscodeWorker.class);
@@ -54,6 +53,7 @@ public class TranscodeWorker {
     private final TransactionTemplate transactions;
     private final TranscriptionWorker transcription;
     private final org.example.ai_media_workbench.service.TranscriptService transcripts;
+    private final java.util.Set<String> localRuns=new java.util.HashSet<>();
 
     public TranscodeWorker(ProcessingMapper mapper, MediaMapper media, UserMapper users, LocalMediaStorage storage,
                            MediaTranscoder transcoder, MediaProbe probe, TranscodeProperties properties,
@@ -66,22 +66,38 @@ public class TranscodeWorker {
         this.transcripts = transcripts;
     }
 
-    @Scheduled(fixedDelay = 1000)
-    public void scheduledRun() { if (properties.workerEnabled()) runOne(); }
+    public boolean runOne() {
+        if(Thread.currentThread().isInterrupted()) return false;
+        var task=claimNext();
+        if(task==null) return false;
+        try { process(task); return true; }
+        finally { synchronized(this) { localRuns.remove(task.getRunToken()); } }
+    }
 
-    public synchronized boolean runOne() {
+    /** 即使负载过高不再接新任务，也必须继续恢复崩溃遗留的租约。 */
+    public synchronized void recoverExpired() {
         var cutoff = now().minus(properties.lease());
         for (var old : mapper.expired(cutoff)) {
+            if(localRuns.contains(old.getRunToken())) continue;
             if (old.getRunToken() != null && !discardExpired(old)) continue;
             mapper.expire(old.getId(), cutoff, now());
         }
+    }
+
+    private synchronized TaskEntity claimNext() {
+        recoverExpired();
         var pending = mapper.pending();
-        if (pending.isEmpty()) return false;
+        if (pending.isEmpty()) return null;
         var task = pending.getFirst();
         task.setRunToken(UUID.randomUUID().toString());
-        if (mapper.claim(task.getId(), task.getRunToken(), now()) != 1) return false;
+        if (mapper.claim(task.getId(), task.getRunToken(), now()) != 1) return null;
+        localRuns.add(task.getRunToken());
+        return task;
+    }
+
+    private void process(TaskEntity task) {
         if (task.getKind() == org.example.ai_media_workbench.entity.enums.TaskKind.TRANSCRIPTION) {
-            transcription.process(task); return true;
+            transcription.process(task); return;
         }
         LocalMediaStorage.OutputTarget target = null;
         LocalMediaStorage.OutputTarget audioTarget = null;
@@ -198,7 +214,6 @@ public class TranscodeWorker {
             if (!published && target != null) discard(target.key());
             if (!published && audioTarget != null) discard(audioTarget.key());
         }
-        return true;
     }
 
     private boolean finish(TaskEntity task, java.util.List<OutputEntity> outputs, ErrorCode error) {

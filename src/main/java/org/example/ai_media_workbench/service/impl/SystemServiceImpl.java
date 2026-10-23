@@ -55,6 +55,7 @@ public class SystemServiceImpl implements SystemService {
         return new CapabilitiesVO(registration, registration, false, planner.isAvailable(userId) && !operations.isEmpty(), !providers.isEmpty(), analyzer.isAvailable(userId),
                 analyzer.isAvailable(userId), probe.isAvailable(), media.maxUploadSize().toBytes(), media.maxDuration().toMillis(),
                 List.copyOf(operations), providers, corrector.isAvailable(userId),
-                probe.isAvailable() ? transcoder.exportFormats() : List.of(), probe.isAvailable() ? transcoder.exportVideoCodecs() : List.of(), credentials.textStatus(userId));
+                probe.isAvailable() ? transcoder.exportFormats() : List.of(), probe.isAvailable() ? transcoder.exportVideoCodecs() : List.of(), credentials.textStatus(userId),
+                credentials.available(userId,"deepseek"));
     }
 }

@@ -101,3 +101,68 @@ test('invalid later ranges are rejected locally and AI workflows can be edited w
   expect(app.state().patches[0].parameters.steps.at(-1)).toEqual({ operation: 'export', outputFormat: 'flac', videoCodec: null, targetSizeBytes: null, extractAudio: false });
   expect(dialogs).toBe(1); expect(app.state().executes).toBe(0);
 });
+
+for (const width of [1920, 1365, 390]) test(`input modes slide both ways, fit different heights and preserve text drafts at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 1000 });
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  page.on('dialog', dialog => dialog.accept());
+  const app = await fixture(page, true);
+  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
+  const draft = '保留讲解的前五秒，转成360p后导出';
+  await page.locator('#ai-instruction').fill(draft);
+  await page.evaluate(() => {
+    window.modeFrames = [];
+    for (const id of ['ai-form', 'workflow-form']) {
+      const form = document.getElementById(id), original = form.animate.bind(form);
+      form.animate = (frames, options) => { window.modeFrames.push({ id, from: frames[0].transform, to: frames.at(-1).transform }); return original(frames, options); };
+    }
+    window.scrollTo(0, 0);
+  });
+  await page.screenshot({ path: testInfo.outputPath(`ai-text-${width}.png`), fullPage: true, animations: 'disabled' });
+  const textHeight = (await page.locator('#workflow-viewport').boundingBox()).height;
+  await page.locator('#workflow-step-mode').click();
+  await expect(page.locator('#ai-form')).toBeHidden(); await expect(page.locator('#workflow-form')).toBeVisible();
+  expect(await page.locator('#ai-form').evaluate(element => element.inert)).toBe(true);
+  expect(await page.evaluate(() => window.modeFrames.slice(0, 2))).toEqual([
+    { id: 'ai-form', from: 'translateX(0)', to: 'translateX(-110%)' },
+    { id: 'workflow-form', from: 'translateX(110%)', to: 'translateX(0)' }
+  ]);
+  for (let i = 0; i < 4; i++) await page.locator('#workflow-add').click();
+  const frame = await page.locator('#workflow-viewport').boundingBox(), form = await page.locator('#workflow-form').boundingBox();
+  expect(frame.height).toBeGreaterThan(textHeight);
+  expect(form.y + form.height).toBeLessThanOrEqual(frame.y + frame.height);
+  if (width > 900) {
+    await page.evaluate(() => window.scrollTo(0, 500));
+    const inspector = await page.locator('.editor-inspector').boundingBox(), toolbar = await page.locator('.workspace-toolbar').boundingBox();
+    expect(inspector.y).toBeGreaterThanOrEqual(toolbar.y + toolbar.height + 8);
+  }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: testInfo.outputPath(`ai-steps-${width}.png`), fullPage: true, animations: 'disabled' });
+  await page.locator('#workflow-text-mode').click();
+  await expect(page.locator('#workflow-form')).toBeHidden(); await expect(page.locator('#ai-form')).toBeVisible();
+  await expect(page.locator('#ai-instruction')).toHaveValue(draft);
+  expect(await page.evaluate(() => window.modeFrames.slice(-2))).toEqual([
+    { id: 'workflow-form', from: 'translateX(0)', to: 'translateX(110%)' },
+    { id: 'ai-form', from: 'translateX(-110%)', to: 'translateX(0)' }
+  ]);
+  expect(Math.abs((await page.locator('#workflow-viewport').boundingBox()).height - textHeight)).toBeLessThan(2);
+  for (let i = 0; i < 3; i++) {
+    await page.locator('#workflow-step-mode').click(); await page.locator('#workflow-text-mode').click();
+  }
+  await expect(page.locator('#workflow-form')).toBeHidden(); await expect(page.locator('#ai-instruction')).toHaveValue(draft);
+  expect(await page.locator('.mode-outgoing').count()).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(app.state().posts).toHaveLength(0); expect(app.state().executes).toBe(0); expect(errors).toEqual([]);
+});
+
+test('reduced motion skips input panel and indicator animations, including preference changes mid-transition', async ({ page }) => {
+  await fixture(page, true); await page.goto('/'); await selectTool(page, 'ai');
+  await page.locator('#workflow-step-mode').click();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(page.locator('#ai-form')).toBeHidden();
+  await expect.poll(() => page.locator('#workflow-viewport').evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0);
+  await page.locator('#workflow-text-mode').click(); await expect(page.locator('#workflow-form')).toBeHidden();
+  expect(await page.locator('#workflow-mode').evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0);
+  expect(await page.locator('#workflow-viewport').evaluate(element => element.getAnimations({ subtree: true }).length)).toBe(0);
+  expect(await page.locator('#workflow-form').evaluate(element => element.inert)).toBe(true);
+});

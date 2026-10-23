@@ -299,7 +299,8 @@ class AuthIntegrationTests {
         mvc.perform(post("/api/auth/login").cookie(anonymous.cookie()).header("X-CSRF-Token", anonymous.csrf())
                 .contentType(MediaType.APPLICATION_JSON).content("{\"username\":\"!\",\"password\":\"secret-input\"}"))
                 .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("INVALID_PARAMETERS"))
-                .andExpect(jsonPath("data").isEmpty()).andExpect(jsonPath("details[0].field").value("username"));
+                .andExpect(jsonPath("data").isEmpty()).andExpect(jsonPath("details[0].field").value("username"))
+                .andExpect(jsonPath("details[0].message").value("用户名需要4–32位英文字母、数字或下划线，不能包含空格或中文。"));
     }
 
     @Test
@@ -337,7 +338,9 @@ class AuthIntegrationTests {
                         .content(json.writeValueAsString(Map.of("username", username, "email", email, "password", rejected,
                                 "emailChallengeId", proof.id(), "emailCode", proof.code()))))
                         .andExpect(status().isUnprocessableEntity())
-                        .andExpect(jsonPath("code").value("INVALID_PARAMETERS"));
+                        .andExpect(jsonPath("code").value("INVALID_PARAMETERS"))
+                        .andExpect(jsonPath("details[0].field").value("password"))
+                        .andExpect(jsonPath("details[0].message").value("密码需要6–16个字符。"));
                 assertThat(userMapper.findByUsername(username)).isNull();
             }
             mvc.perform(post("/api/auth/register").cookie(browser.cookie())

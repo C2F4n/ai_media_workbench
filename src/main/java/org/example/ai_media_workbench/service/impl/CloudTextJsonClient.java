@@ -34,6 +34,10 @@ public class CloudTextJsonClient {
             body.put("messages",List.of(Map.of("role","system","content",prompt),Map.of("role","user","content",content)));
             if ("openai".equals(properties.textProvider())) {
                 body.put("max_completion_tokens",maxTokens); body.put("store",false);
+                // 已核对的GPT预设限制思考开销；未知自定义型号不强加可能不兼容的参数。
+                if (java.util.Set.of("gpt-6-sol","gpt-5.6-sol","gpt-5.6-luna","gpt-5.6").contains(properties.deepseekModel()))
+                    body.put("reasoning_effort","none");
+                else if ("gpt-6-astra".equals(properties.deepseekModel())) body.put("reasoning_effort","low");
             } else {
                 body.put("max_tokens",maxTokens);
                 if ("deepseek".equals(properties.textProvider()) || "doubao".equals(properties.textProvider()))

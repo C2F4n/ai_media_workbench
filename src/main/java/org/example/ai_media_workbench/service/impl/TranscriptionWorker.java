@@ -17,7 +17,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
-/** 由同一个有界队列串行调度；云端 I/O 不持有数据库锁，字幕与成功状态原子发布。 */
+/** 由同一个数据库队列有界并发调度；云端I/O不持有数据库锁，字幕与成功状态原子发布。 */
 @Component
 public class TranscriptionWorker {
     private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(TranscriptionWorker.class);

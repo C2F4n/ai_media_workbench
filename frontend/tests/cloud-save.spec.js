@@ -4,10 +4,10 @@ const path = require('node:path');
 const { selectTool } = require('./helpers/navigation.cjs');
 
 // 所有页面资源和API均拦截为测试数据，不启动服务，也不接触真实凭据。
-async function fixture(page) {
+async function fixture(page, savedText = {}) {
   const root = path.resolve(__dirname, '../../src/main/resources/static'), writes = [];
   const names = ['tencent', 'aliyun', 'deepseek'];
-  let entries = names.map((provider) => ({ provider, mode: 'SERVER', version: 0, configured: false, personalStored: false, model: provider === 'deepseek' ? 'deepseek-flash' : null }));
+  let entries = names.map((provider) => ({ provider, mode: 'SERVER', version: 0, configured: false, personalStored: false, model: provider === 'deepseek' ? 'deepseek-flash' : null, ...(provider === 'deepseek' ? savedText : {}) }));
   await page.route('http://workbench.test/**', async (route) => {
     const request = route.request(), url = new URL(request.url());
     if (!url.pathname.startsWith('/api/')) {
@@ -66,16 +66,16 @@ for (const width of [1365, 390]) test(`cloud credentials require the visible sav
 for (const width of [1365, 390]) test(`OpenAI and Bailian settings are classified and never reuse a different vendors key at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 900 }); const writes = await fixture(page); page.on('dialog', dialog => dialog.accept());
   const card = page.locator('#cloud-deepseek'), mode = card.locator('select[name=mode]'), vendor = card.locator('select[name=textProvider]');
-  const key = card.locator('input[name=apiKey]'), model = card.locator('input[name=model]'), workspace = card.locator('input[name=workspaceId]');
+  const key = card.locator('input[name=apiKey]'), model = card.locator('select[name=model]'), workspace = card.locator('input[name=workspaceId]');
   const save = card.getByRole('button', { name: '保存文字 AI配置', exact: true });
   await expect(card).toBeVisible(); await expect(page.locator('#cloud-tencent')).toBeHidden();
   await mode.selectOption('PERSONAL'); await key.fill('sk-old-draft'); await vendor.selectOption('openai');
   await expect(key).toHaveValue(''); await expect(model).toHaveValue(''); await expect(key).toHaveAttribute('required', '');
   await expect(workspace).toBeHidden(); await expect(card.locator('[aria-label="官方接口地址"]')).toHaveText('https://api.openai.com/v1/chat/completions');
   await save.click(); expect(writes).toHaveLength(0);
-  await key.fill('sk-openai-fixture'); await model.fill('gpt-fixture'); await model.press('Enter'); expect(writes).toHaveLength(0);
+  await key.fill('sk-openai-fixture'); await model.selectOption('gpt-6-sol'); await model.press('Enter'); expect(writes).toHaveLength(0);
   await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
-  expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'PERSONAL', textProvider: 'openai', apiKey: 'sk-openai-fixture', model: 'gpt-fixture' });
+  expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'PERSONAL', textProvider: 'openai', apiKey: 'sk-openai-fixture', model: 'gpt-6-sol' });
   await expect(key).toHaveValue(''); await expect(vendor).toHaveValue('openai');
   await vendor.selectOption('bailian'); await expect(key).toHaveValue(''); await expect(model).toHaveValue('qwen-plus');
   await save.click(); expect(writes).toHaveLength(1);
@@ -100,26 +100,122 @@ for (const width of [1365, 390]) test(`OpenAI and Bailian settings are classifie
 for (const width of [1365, 390]) test(`Doubao uses its own key and explicit model and survives reload at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 900 }); const writes = await fixture(page); page.on('dialog', dialog => dialog.accept());
   const card = page.locator('#cloud-deepseek'), vendor = card.locator('select[name=textProvider]');
-  const key = card.locator('input[name=apiKey]'), model = card.locator('input[name=model]'), workspace = card.locator('input[name=workspaceId]');
+  const key = card.locator('input[name=apiKey]'), model = card.locator('select[name=model]'), workspace = card.locator('input[name=workspaceId]');
   const save = card.getByRole('button', { name: '保存文字 AI配置', exact: true });
   await card.locator('select[name=mode]').selectOption('PERSONAL');
   await vendor.selectOption('bailian'); await key.fill('sk-qwen-draft'); await workspace.fill('old-workspace');
   await vendor.selectOption('doubao');
   await expect(vendor.locator('option:checked')).toHaveText('豆包 / 火山方舟');
   await expect(key).toHaveValue(''); await expect(key).toHaveAttribute('required', '');
-  await expect(model).toHaveValue(''); await expect(model).toHaveAttribute('placeholder', '填写 Model ID 或 Endpoint ID（ep-...）');
+  await expect(model).toHaveValue(''); await expect(model.locator('option:checked')).toHaveText('请选择模型');
   await expect(workspace).toBeHidden(); await expect(workspace).toHaveValue('');
   await expect(card.locator('[aria-label="官方接口地址"]')).toHaveText('https://ark.cn-beijing.volces.com/api/v3/chat/completions');
   await key.fill('ark-fixture-not-real'); await save.click(); expect(writes).toHaveLength(0);
-  await model.fill('ep-fixture'); await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
-  expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'PERSONAL', textProvider: 'doubao', apiKey: 'ark-fixture-not-real', model: 'ep-fixture' });
+  await model.selectOption('doubao-seed-2-1-lite-260915'); await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
+  expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'PERSONAL', textProvider: 'doubao', apiKey: 'ark-fixture-not-real', model: 'doubao-seed-2-1-lite-260915' });
   await expect(key).toHaveValue('');
   await page.reload(); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
-  await expect(vendor).toHaveValue('doubao'); await expect(model).toHaveValue('ep-fixture'); await expect(key).toHaveValue('');
-  await model.fill('doubao-model-fixture'); await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
-  expect(writes[1].body).toEqual({ expectedVersion: 1, mode: 'PERSONAL', textProvider: 'doubao', model: 'doubao-model-fixture' });
+  await expect(vendor).toHaveValue('doubao'); await expect(model).toHaveValue('doubao-seed-2-1-lite-260915'); await expect(key).toHaveValue('');
+  await model.selectOption('doubao-seed-2-1-pro-260915'); await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
+  expect(writes[1].body).toEqual({ expectedVersion: 1, mode: 'PERSONAL', textProvider: 'doubao', model: 'doubao-seed-2-1-pro-260915' });
   await page.screenshot({ path: testInfo.outputPath(`doubao-${width}.png`), fullPage: true, animations: 'disabled' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.locator('#back-workbench').click(); await selectTool(page, 'ai');
   await expect(page.locator('#dependency-summary')).toContainText('豆包 / 火山方舟');
+});
+
+for (const width of [1365, 390]) test(`model presets follow the vendor and preserve drafts at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 }); const writes = await fixture(page);
+  const card = page.locator('#cloud-deepseek'), vendor = card.locator('select[name=textProvider]'), model = card.locator('select[name=model]');
+  await card.locator('select[name=mode]').selectOption('PERSONAL');
+  await expect(card.locator('input[name=model]')).toHaveCount(0);
+  for (const [provider, models] of Object.entries({
+    deepseek: ['deepseek-flash', 'deepseek-v4-pro'], openai: ['gpt-6-sol', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna'],
+    bailian: ['qwen-plus', 'qwen-flash', 'qwen-max'],
+    doubao: ['doubao-seed-2-1-lite-260915', 'doubao-seed-2-1-pro-260915', 'doubao-seed-2-0-mini-260428']
+  })) {
+    await vendor.selectOption(provider);
+    expect(await model.locator('option:not([disabled])').evaluateAll(options => options.map(option => option.value))).toEqual([...models, '__custom__']);
+    await card.locator('input[name=apiKey]').fill('fake-draft-key');
+    for (const id of models) await model.selectOption(id);
+    await expect(card.locator('[role=status]')).toHaveText('未保存');
+    await expect(card.locator('input[name=apiKey]')).toHaveValue('fake-draft-key');
+    await page.locator('#cloud-speech-tab').click(); await page.locator('#cloud-text-tab').click();
+    await expect(model).toHaveValue(models.at(-1)); expect(writes).toHaveLength(0);
+  }
+});
+
+for (const width of [1365, 390]) test(`saved non-preset model stays selectable without leaking to another vendor at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 });
+  const legacy = 'ep-existing-' + 'x'.repeat(60);
+  const writes = await fixture(page, { mode: 'PERSONAL', version: 4, configured: true, personalStored: true, textProvider: 'doubao', model: legacy });
+  page.on('dialog', dialog => dialog.accept());
+  const card = page.locator('#cloud-deepseek'), vendor = card.locator('select[name=textProvider]'), model = card.locator('select[name=model]');
+  await expect(model).toHaveValue(legacy); await expect(model.locator('option:checked')).toHaveText('已保存：' + legacy);
+  await page.reload(); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await expect(model).toHaveValue(legacy);
+  await card.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
+  await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
+  expect(writes[0].body).toEqual({ expectedVersion: 4, mode: 'PERSONAL', textProvider: 'doubao', model: legacy });
+  await vendor.selectOption('openai'); await expect(model).toHaveValue('');
+  await expect(model.locator(`option[value="${legacy}"]`)).toHaveCount(0);
+  await vendor.selectOption('doubao'); await model.selectOption(legacy);
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  await page.screenshot({ path: testInfo.outputPath(`model-select-${width}.png`), fullPage: true, animations: 'disabled' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(writes).toHaveLength(1);
+});
+
+test('server and off modes never submit the hidden model or require a personal selection', async ({ page }) => {
+  const writes = await fixture(page), card = page.locator('#cloud-deepseek'), mode = card.locator('select[name=mode]');
+  const save = card.getByRole('button', { name: '保存文字 AI配置', exact: true });
+  await mode.selectOption('PERSONAL'); await card.locator('select[name=textProvider]').selectOption('openai');
+  await expect(card.locator('select[name=model]')).toHaveValue('');
+  await mode.selectOption('OFF'); await save.click(); await expect(card.locator('[role=status]')).toHaveText('已停用');
+  expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'OFF' });
+  await mode.selectOption('SERVER'); await save.click(); await expect(mode).toHaveValue('SERVER');
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1].body).toEqual({ expectedVersion: 1, mode: 'SERVER' });
+});
+
+for (const width of [1365, 390]) test(`custom model input validates saves and reloads for every vendor at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 }); const writes = await fixture(page); let confirmations = 0;
+  page.on('dialog', dialog => { confirmations++; return dialog.accept(); });
+  const card = page.locator('#cloud-deepseek'), vendor = card.locator('select[name=textProvider]'), model = card.locator('select[name=model]');
+  const custom = card.getByRole('textbox', { name: '自定义模型 ID', exact: true }), key = card.locator('input[name=apiKey]');
+  const save = card.getByRole('button', { name: '保存文字 AI配置', exact: true });
+  await card.locator('select[name=mode]').selectOption('PERSONAL');
+  for (const [index, provider] of ['deepseek', 'openai', 'bailian', 'doubao'].entries()) {
+    await vendor.selectOption(provider); await expect(custom).toBeHidden(); await model.selectOption('__custom__');
+    await expect(custom).toBeVisible(); await expect(custom).toHaveValue(''); await expect(custom).toHaveAttribute('maxlength', '80');
+    await key.fill('fake-custom-' + provider); await save.click(); expect(writes).toHaveLength(index); expect(confirmations).toBe(index);
+    await custom.fill('not a model?'); await save.click(); expect(writes).toHaveLength(index); expect(confirmations).toBe(index);
+    const id = provider === 'doubao' ? 'ep-custom-browser' : 'custom-' + provider + '/model:v2';
+    await custom.fill(' ' + id + ' '); await custom.press('Enter'); expect(writes).toHaveLength(index);
+    await page.locator('#cloud-speech-tab').click(); await page.locator('#cloud-text-tab').click();
+    await expect(custom).toHaveValue(' ' + id + ' '); await expect(key).toHaveValue('fake-custom-' + provider);
+    await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
+    expect(writes[index].body).toEqual({ expectedVersion: index, mode: 'PERSONAL', textProvider: provider, apiKey: 'fake-custom-' + provider, model: id, ...(provider === 'bailian' ? { workspaceId: '' } : {}) });
+    await expect(key).toHaveValue(''); await expect(model).toHaveValue(id);
+    await model.selectOption('__custom__'); await expect(custom).toHaveValue(id);
+  }
+  await page.reload(); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await expect(model).toHaveValue('ep-custom-browser'); await model.selectOption('__custom__'); await expect(custom).toHaveValue('ep-custom-browser');
+  await expect(custom).toHaveAttribute('placeholder', 'Model ID 或 Endpoint ID（ep-...）');
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  await page.screenshot({ path: testInfo.outputPath(`custom-model-${width}.png`), fullPage: true, animations: 'disabled' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('invalid custom draft does not block presets or server mode and never enters their payloads', async ({ page }) => {
+  const writes = await fixture(page); page.on('dialog', dialog => dialog.accept());
+  const card = page.locator('#cloud-deepseek'), mode = card.locator('select[name=mode]'), model = card.locator('select[name=model]');
+  const custom = card.locator('input[name=customModel]'), save = card.getByRole('button', { name: '保存文字 AI配置', exact: true });
+  await mode.selectOption('PERSONAL'); await model.selectOption('__custom__'); await custom.fill('invalid draft?');
+  await model.selectOption('deepseek-v4-pro'); await expect(custom).toBeHidden(); await card.locator('input[name=apiKey]').fill('fake-preset-key');
+  await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
+  expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'PERSONAL', textProvider: 'deepseek', apiKey: 'fake-preset-key', model: 'deepseek-v4-pro' });
+  await model.selectOption('__custom__'); await custom.fill('invalid draft?'); await mode.selectOption('SERVER');
+  await save.click(); await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1].body).toEqual({ expectedVersion: 1, mode: 'SERVER' });
 });

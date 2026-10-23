@@ -222,6 +222,22 @@ class CloudAiTests {
         }
     }
 
+    @Test void openaiPresetsLimitReasoningWithoutAddingUnsupportedOptionsToCustomModels() throws Exception {
+        for (String model : List.of("gpt-6-sol","gpt-6-astra","gpt-5.6-sol","gpt-5.6-luna","gpt-5.6","gpt-5.4-mini","gpt-4.1","custom-model")) {
+            var settings=new AiProperties("","","","","","sk-tests",model,"openai");
+            var transport=mock(CloudTransport.class); var client=new CloudTextJsonClient(credentials(settings),transport,json);
+            when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{}"))))));
+            client.complete("Return JSON","text",123,ErrorCode.AI_FAILED,USER);
+            var captured=ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(1)).post(captured.capture(),anyLong(),any(),any());
+            var body=requestBody(captured.getValue());
+            assertThat(body.path("model").asText()).isEqualTo(model); assertThat(body.path("max_completion_tokens").asInt()).isEqualTo(123);
+            if (model.equals("gpt-6-astra")) assertThat(body.path("reasoning_effort").asText()).isEqualTo("low");
+            else if (List.of("gpt-6-sol","gpt-5.6-sol","gpt-5.6-luna","gpt-5.6").contains(model)) assertThat(body.path("reasoning_effort").asText()).isEqualTo("none");
+            else assertThat(body.has("reasoning_effort")).isFalse();
+            assertThat(body.has("max_tokens")).isFalse(); assertThat(body.path("store").asBoolean()).isFalse();
+        }
+    }
+
     @Test void bailianWorkspaceIsAnIdentifierNotAnArbitraryUrlAndInvalidSettingsNeverCallTransport() {
         var transport=mock(CloudTransport.class);
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{\"text\":\"ok\"}"))))));

@@ -56,6 +56,8 @@
   let subtitleDirty = false;
   let subtitleLoading = false;
   let subtitleTaskLoaded = null;
+  let translationDraft = null;
+  let translationRun = null;
   let pendingSubtitlePlan = null;
   let joinRows = [], joinSourceId = null, joinRevision = 0, joinLoading = false, joinDirty = false, pendingJoinPlan = null, joinPreviewRange = null;
   let aiPlan = null;
@@ -65,6 +67,7 @@
   let aiPlanDirty = false;
   let aiGenerating = false;
   let workflowMode = false, workflowSteps = [], workflowDirty = false;
+  let workflowAnimations = [], workflowHeightAnimation = null, workflowTransition = 0, workflowTransitionEnd = 0;
   let findTranscript = null;
   let findMediaId = null;
   let findRevision = 0;
@@ -81,9 +84,9 @@
     CURRENT_PASSWORD_INVALID: '当前密码不正确。',
     ACCOUNT_ALREADY_EXISTS: '用户名或邮箱已被使用，请更换后重试。',
     INVALID_REQUEST: '请完整填写表单。',
-    INVALID_PARAMETERS: '请检查输入内容和确认用户名。',
+    INVALID_PARAMETERS: '输入有误，请检查格式、长度及必填项。',
     PASSWORD_UNCHANGED: '新密码不能与当前密码相同。',
-    WEAK_PASSWORD: '密码过于简单，请换用不易猜测的密码。',
+    WEAK_PASSWORD: '密码过于简单：至少使用3个不同字符，且不要使用常见弱密码。',
     REGISTRATION_DISABLED: '当前暂未开放注册。',
     EMAIL_DELIVERY_UNAVAILABLE: '验证邮件暂时无法发送，请稍后重试。',
     EMAIL_VERIFICATION_INVALID: '验证码无效、已过期或尝试次数已用尽，请重新获取。',
@@ -103,6 +106,8 @@
     AI_ANALYSIS_FAILED: '未得到有效的字幕分析结果，请修改目标或稍后重试。',
     TRANSCRIPT_ANALYSIS_TOO_LARGE: '字幕超过本次分析上限，请使用较短素材。',
     AI_FAILED: '文字校对失败，请稍后重试或手动修改。',
+    AI_TRANSLATION_FAILED: '字幕翻译结果无效或不完整，原字幕未修改。',
+    TRANSCRIPT_TRANSLATION_TOO_LARGE: '本批字幕超过翻译上限，请减少字幕内容。',
     ASR_UNAVAILABLE: '所选语音识别服务尚未配置或暂不可用。',
     ASR_FAILED: '语音识别失败，请检查服务配置或稍后重试。',
     ASR_NO_SPEECH: '没有识别到有效语音。',
@@ -125,7 +130,7 @@
   };
 
   class ApiError extends Error {
-    constructor(code, status, retryAfter) {
+    constructor(code, status, retryAfter, details = []) {
       super(code === 'RATE_LIMITED'
         ? `操作过于频繁，请在${Math.max(1, Number(retryAfter) || 60)}秒后重试。`
         : (code === 'AI_UNAVAILABLE' && capabilities?.textAi?.source === 'SERVER'
@@ -133,6 +138,7 @@
       this.code = code;
       this.status = status;
       this.retryAfter = Math.max(1, Number(retryAfter) || 60);
+      this.details = Array.isArray(details) ? details.filter(detail => typeof detail?.field === 'string' && typeof detail?.message === 'string').slice(0, 20) : [];
     }
   }
 
@@ -172,7 +178,7 @@
         await refreshCsrf();
         return request(path, options, true);
       }
-      throw new ApiError(result.code, response.status, response.headers.get('Retry-After'));
+      throw new ApiError(result.code, response.status, response.headers.get('Retry-After'), result.details);
     }
     return result.data;
   }
@@ -249,6 +255,9 @@
       button.setAttribute('aria-label', '显示密码');
       button.innerHTML = '<i data-lucide="eye" aria-hidden="true"></i>';
     });
+    for (const ids of Object.values(accountFormFields)) for (const id of ids) {
+      setAccountFieldError($(id), ''); delete $(id).dataset.touched;
+    }
     icons();
   }
 
@@ -256,7 +265,7 @@
   function showAuth(message = '') {
     currentUser = null;
     clearCloud();
-    if (capabilities) capabilities = { ...capabilities, aiPlans: false, asr: false, asrProviders: [], semanticSearch: false, clipRecommendations: false, subtitleCorrection: false };
+    if (capabilities) capabilities = { ...capabilities, aiPlans: false, asr: false, asrProviders: [], semanticSearch: false, clipRecommendations: false, subtitleCorrection: false, subtitleTranslation: false };
     resetWorkbench();
     $('delete-dialog').close();
     clearPasswords();
@@ -300,28 +309,133 @@
   }
 
   // 执行表单操作，统一处理等待状态和错误提示。
-  async function operation(errorId, action) {
+  async function operation(errorId, action, successFocus = null) {
     // 表单操作统一管理等待、错误和解锁；finally 确保请求失败后按钮也能恢复。
     notice(errorId, '');
     setBusy(true);
+    let focusAfterError = null;
     try {
       await action();
+      if (successFocus) focusAfterError = $(successFocus);
     } catch (error) {
       if (error.code === 'UNAUTHENTICATED') {
         showAuth();
         notice('auth-notice', error.message, true);
         await refreshCsrf().catch(() => {});
-      } else notice(errorId, error.message, true);
+      } else {
+        const issues = accountServerErrors(errorId, error);
+        notice(errorId, issues.length ? accountErrorSummary(issues) : error.message, true);
+        focusAfterError = issues[0]?.input;
+      }
     } finally {
       setBusy(false);
+      focusAfterError?.focus();
     }
   }
 
-  // 检查新密码长度及两次输入是否一致。
+  // 与后端相同按Unicode码点计数；前端提前提示，后端仍独立执行最终校验。
+  const weakPasswords = new Set(['passwordpassword', 'password123456789', '123456789012345', 'qwertyuiopasdfgh']);
+  function newPasswordIssue(password) {
+    if (!password) return '请输入密码。';
+    const characters = Array.from(password);
+    if (characters.length < 6 || characters.length > 16) return '密码需要6–16个字符。';
+    if (!password.trim() || new Set(characters).size < 3 || weakPasswords.has(password.toLowerCase())) return messages.WEAK_PASSWORD;
+    return '';
+  }
   function validateNewPassword(password, confirmation) {
-    const length = Array.from(password).length;
-    if (length < 6 || length > 16) throw new Error('密码需要6–16个字符。');
+    const issue = newPasswordIssue(password);
+    if (issue) throw new Error(issue);
     if (password !== confirmation) throw new Error('两次输入的密码不一致。');
+  }
+
+  const accountFormFields = {
+    'login-error': ['login-username', 'login-password'],
+    'register-error': ['register-username', 'register-email', 'register-email-code', 'register-name', 'register-password', 'register-confirm-password'],
+    'password-error': ['current-password', 'new-password', 'confirm-new-password']
+  };
+  const accountFieldRules = {
+    'login-username': input => usernameIssue(input.value),
+    'register-username': input => usernameIssue(input.value),
+    'login-password': input => existingPasswordIssue(input.value, '密码'),
+    'current-password': input => existingPasswordIssue(input.value, '当前密码'),
+    'register-email': input => {
+      if (!input.value.trim()) return '请输入邮箱。';
+      if (!/^[\x00-\x7f]+$/.test(input.value)) return '邮箱只支持英文字符，请检查是否使用了中文或全角符号。';
+      if (input.value.trim().length > 254) return '邮箱最多254个字符。';
+      return input.validity.typeMismatch ? '请输入有效的邮箱地址，例如 name@example.com。' : '';
+    },
+    'register-email-code': input => {
+      if (!registrationChallenge || registrationChallenge.email !== $('register-email').value.trim().toLowerCase()) return '请先获取当前邮箱的验证码。';
+      if (Date.parse(registrationChallenge.expiresAt) <= Date.now()) return '验证码已过期，请重新获取。';
+      return /^[0-9]{6}$/.test(input.value) ? '' : '邮箱验证码需要6位数字。';
+    },
+    'register-name': input => Array.from(input.value.trim()).length > 50 ? '昵称最多50个字符。' : '',
+    'register-password': input => newPasswordIssue(input.value),
+    'new-password': input => newPasswordIssue(input.value) || (input.value === $('current-password').value ? messages.PASSWORD_UNCHANGED : ''),
+    'register-confirm-password': input => !input.value ? '请再次输入密码。' : input.value !== $('register-password').value ? '两次输入的密码不一致。' : '',
+    'confirm-new-password': input => !input.value ? '请再次输入新密码。' : input.value !== $('new-password').value ? '两次输入的密码不一致。' : ''
+  };
+  function usernameIssue(value) {
+    return !value ? '请输入用户名。' : /^[a-zA-Z0-9_]{4,32}$/.test(value) ? '' : '用户名需要4–32位英文字母、数字或下划线，不能包含空格或中文。';
+  }
+  function existingPasswordIssue(value, label) {
+    return !value ? `请输入${label}。` : Array.from(value).length > 128 ? `${label}最多128个字符。` : '';
+  }
+  function setAccountFieldError(input, message) {
+    const error = $(`${input.id}-error`);
+    error.textContent = message; error.hidden = !message;
+    if (message) input.setAttribute('aria-invalid', 'true');
+    else { input.removeAttribute('aria-invalid'); delete input.dataset.serverError; }
+  }
+  function validateAccountFields(errorId, ids = accountFormFields[errorId]) {
+    const issues = [];
+    for (const id of ids) {
+      const input = $(id), message = accountFieldRules[id](input);
+      setAccountFieldError(input, message); if (message) issues.push({ input, message });
+    }
+    notice(errorId, accountErrorSummary(issues), true);
+    issues[0]?.input.focus();
+    return !issues.length;
+  }
+  function accountErrorSummary(issues) {
+    return issues.length > 1 ? `有${issues.length}项需要修改，请查看标红输入框下方的提示。` : issues[0]?.message || '';
+  }
+  function accountServerErrors(errorId, error) {
+    const ids = accountFormFields[errorId];
+    if (!ids) return [];
+    let details = ['INVALID_PARAMETERS', 'INVALID_REQUEST'].includes(error.code) ? error.details || [] : [];
+    const field = error.code === 'WEAK_PASSWORD' ? (errorId === 'register-error' ? 'password' : 'newPassword')
+      : error.code === 'EMAIL_VERIFICATION_INVALID' ? 'emailCode'
+      : error.code === 'CURRENT_PASSWORD_INVALID' ? 'currentPassword'
+      : error.code === 'PASSWORD_UNCHANGED' ? 'newPassword' : null;
+    if (field) details = [{ field, message: error.message }];
+    const issues = [];
+    for (const id of ids) {
+      const input = $(id), detail = details.find(item => item.field === input.name || item.field === 'emailChallengeId' && input.name === 'emailCode');
+      if (detail) { setAccountFieldError(input, detail.message); input.dataset.serverError = 'true'; issues.push({ input, message: detail.message }); }
+    }
+    return issues;
+  }
+  for (const [errorId, ids] of Object.entries(accountFormFields)) for (const id of ids) {
+    const input = $(id), label = input.closest('.field'), error = document.createElement('span');
+    // 显式保留原字段名，避免错误文字加入可访问名称；提示另由aria-describedby关联。
+    input.setAttribute('aria-label', label.firstChild.textContent.trim());
+    error.id = `${id}-error`; error.className = 'field-error'; error.hidden = true; label.append(error);
+    input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), error.id].filter(Boolean).join(' '));
+    const validate = () => setAccountFieldError(input, accountFieldRules[id](input));
+    input.addEventListener('blur', event => {
+      input.dataset.touched = 'true';
+      // 点表单按钮时由点击处理器校验，避免先展开错误行移动按钮，导致本次点击落空。
+      if (event.relatedTarget?.closest('button') && input.form?.contains(event.relatedTarget)) return;
+      if (!input.dataset.serverError) validate();
+    });
+    input.addEventListener('input', () => {
+      notice(errorId, '');
+      delete input.dataset.serverError;
+      if (input.dataset.touched || input.hasAttribute('aria-invalid')) validate();
+      const confirmation = id === 'register-password' ? $('register-confirm-password') : id === 'new-password' ? $('confirm-new-password') : null;
+      if (confirmation?.dataset.touched || confirmation?.hasAttribute('aria-invalid')) setAccountFieldError(confirmation, accountFieldRules[confirmation.id](confirmation));
+    });
   }
 
   $('login-tab').addEventListener('click', () => { switchMode('login'); notice('auth-notice', ''); });
@@ -350,12 +464,13 @@
     registrationChallenge = null;
     $('register-email-code').value = '';
     $('email-code-notice').hidden = true;
+    setAccountFieldError($('register-email-code'), '');
     updateRegistrationControls();
   });
 
   $('send-email-code').addEventListener('click', () => {
     const input = $('register-email');
-    if (!input.reportValidity()) return;
+    if (!validateAccountFields('register-error', ['register-email'])) return;
     const email = input.value.trim().toLowerCase();
     operation('register-error', async () => {
       let challenge;
@@ -367,6 +482,7 @@
       registrationCooldown(email, 20);
       registrationChallenge = { ...challenge, email };
       $('register-email-code').value = '';
+      setAccountFieldError($('register-email-code'), '');
       $('email-code-notice').textContent = '验证码已发送，请查看邮箱。';
       $('email-code-notice').hidden = false;
     });
@@ -374,6 +490,7 @@
 
   $('register-form').addEventListener('submit', (event) => {
     event.preventDefault();
+    if (busy || !validateAccountFields('register-error')) return;
     const body = Object.fromEntries(new FormData(event.currentTarget));
     operation('register-error', async () => {
       validateNewPassword(body.password, body.confirmPassword);
@@ -394,12 +511,12 @@
       $('email-code-notice').hidden = true;
       showAuth('注册成功，请登录。');
       $('login-username').value = user.username;
-      $('login-password').focus();
-    });
+    }, 'login-password');
   });
 
   $('login-form').addEventListener('submit', (event) => {
     event.preventDefault();
+    if (busy || !validateAccountFields('login-error')) return;
     const body = {
       username: $('login-username').value, password: $('login-password').value,
       rememberMe: $('remember-me').checked
@@ -438,6 +555,7 @@
 
   $('password-form').addEventListener('submit', (event) => {
     event.preventDefault();
+    if (busy || !validateAccountFields('password-error')) return;
     const body = { currentPassword: $('current-password').value, newPassword: $('new-password').value };
     const confirmation = $('confirm-new-password').value;
     operation('password-error', async () => {
@@ -567,10 +685,10 @@
     { id: 'deepseek', name: '文字 AI', fields: [['apiKey', 'DeepSeek API Key', true, 512], ['model', 'DeepSeek 模型', false, 80], ['workspaceId', 'Workspace ID（北京，可选）', false, 80]] }
   ];
   const textVendors = {
-    deepseek: { name: 'DeepSeek', model: 'deepseek-flash', endpoint: 'https://api.deepseek.com/chat/completions' },
-    openai: { name: 'OpenAI', model: '', endpoint: 'https://api.openai.com/v1/chat/completions' },
-    bailian: { name: '千问 / 阿里云百炼', model: 'qwen-plus', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' },
-    doubao: { name: '豆包 / 火山方舟', model: '', placeholder: '填写 Model ID 或 Endpoint ID（ep-...）', endpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions' }
+    deepseek: { name: 'DeepSeek', model: 'deepseek-flash', models: [['deepseek-flash', 'DeepSeek Flash'], ['deepseek-v4-pro', 'DeepSeek V4 Pro']], endpoint: 'https://api.deepseek.com/chat/completions' },
+    openai: { name: 'OpenAI', model: '', models: [['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-5.6-sol', 'GPT-5.6 Sol'], ['gpt-5.6-luna', 'GPT-5.6 Luna']], endpoint: 'https://api.openai.com/v1/chat/completions' },
+    bailian: { name: '千问 / 阿里云百炼', model: 'qwen-plus', models: [['qwen-plus', '千问 Plus'], ['qwen-flash', '千问 Flash'], ['qwen-max', '千问 Max']], endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' },
+    doubao: { name: '豆包 / 火山方舟', model: '', models: [['doubao-seed-2-1-lite-260915', '豆包 Seed 2.1 Lite'], ['doubao-seed-2-1-pro-260915', '豆包 Seed 2.1 Pro'], ['doubao-seed-2-0-mini-260428', '豆包 Seed 2.0 Mini']], endpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions' }
   };
   function textVendorName() { return textVendors[capabilities?.textAi?.provider]?.name || 'DeepSeek'; }
   function selectCloudCategory(category) {
@@ -652,31 +770,61 @@
     }
     for (const [name, labelText, secret, max] of provider.fields) {
       const label = document.createElement('label'); label.className = 'field'; label.textContent = labelText;
+      if (name === 'model' && vendor) {
+        const select = document.createElement('select'); select.name = name;
+        select.addEventListener('change', () => { article.dataset.dirty = 'true'; state.textContent = '未保存'; state.classList.remove('error'); syncTextVendor(); });
+        label.append(select); fields.append(label); continue;
+      }
       const input = document.createElement('input'); input.name = name; input.type = secret ? 'password' : 'text'; input.maxLength = max;
       input.autocomplete = secret ? 'new-password' : 'off'; input.spellcheck = false; input.setAttribute('aria-label', provider.name + ' ' + labelText);
       if (secret) { input.dataset.secret = 'true'; input.placeholder = saved.personalStored ? '已保存，留空保留' : labelText; }
-      else input.value = name === 'model' && saved.mode !== 'PERSONAL' ? 'deepseek-flash' : saved[name] || (name === 'model' ? textVendors[vendor?.value]?.model ?? 'deepseek-flash' : '');
+      else input.value = saved[name] || '';
       input.addEventListener('input', () => { article.dataset.dirty = 'true'; state.textContent = '未保存'; state.classList.remove('error'); }); label.append(input); fields.append(label);
     }
+    let customModel = null;
+    if (vendor) {
+      const label = document.createElement('label'); label.className = 'field'; label.textContent = '自定义模型 ID';
+      customModel = document.createElement('input'); customModel.name = 'customModel'; customModel.type = 'text'; customModel.maxLength = 80;
+      customModel.autocomplete = 'off'; customModel.spellcheck = false; customModel.setAttribute('aria-label', '自定义模型 ID');
+      if (saved.mode === 'PERSONAL' && !textVendors[vendor.value].models.some(([id]) => id === saved.model)) customModel.value = saved.model || '';
+      customModel.addEventListener('input', () => { article.dataset.dirty = 'true'; state.textContent = '未保存'; state.classList.remove('error'); });
+      label.append(customModel); fields.append(label);
+    }
+    const populateTextModels = (value) => {
+      const model = fields.querySelector('select[name=model]'), selection = textVendors[vendor.value];
+      const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = '请选择模型'; placeholder.disabled = true;
+      model.replaceChildren(placeholder);
+      const models = [...selection.models];
+      // 只保留此供应商已保存的非预设型号，避免刷新页面时悄悄替换旧配置。
+      if (saved.mode === 'PERSONAL' && vendor.value === (saved.textProvider || 'deepseek') && saved.model && !models.some(([id]) => id === saved.model))
+        models.push([saved.model, '已保存：' + saved.model]);
+      for (const [id, name] of models) { const option = document.createElement('option'); option.value = id; option.textContent = name; option.title = id; model.append(option); }
+      const custom = document.createElement('option'); custom.value = '__custom__'; custom.textContent = '自定义模型'; model.append(custom);
+      model.value = value || '';
+    };
     const syncTextVendor = () => {
       if (!vendor) return;
-      const selection = textVendors[vendor.value], key = fields.querySelector('input[name=apiKey]'), model = fields.querySelector('input[name=model]'), workspace = fields.querySelector('input[name=workspaceId]');
+      const selection = textVendors[vendor.value], key = fields.querySelector('input[name=apiKey]'), model = fields.querySelector('select[name=model]'), workspace = fields.querySelector('input[name=workspaceId]');
       key.parentElement.firstChild.textContent = selection.name + ' API Key'; model.parentElement.firstChild.textContent = selection.name + ' 模型';
       key.setAttribute('aria-label', '文字 AI ' + selection.name + ' API Key'); model.setAttribute('aria-label', '文字 AI ' + selection.name + ' 模型');
       key.required = mode.value === 'PERSONAL' && !(saved.personalStored && saved.mode === 'PERSONAL' && vendor.value === (saved.textProvider || 'deepseek'));
       key.placeholder = key.required ? '填写此供应商的 API Key' : '已保存，留空保留'; model.required = mode.value === 'PERSONAL';
-      model.placeholder = selection.placeholder || selection.model || '填写已开通的模型 ID';
+      const custom = model.value === '__custom__'; customModel.parentElement.hidden = !custom;
+      customModel.required = mode.value === 'PERSONAL' && custom;
+      if (customModel.required) customModel.pattern = '[A-Za-z0-9_.:\\/\\-]{1,80}'; else customModel.removeAttribute('pattern');
+      customModel.placeholder = vendor.value === 'doubao' ? 'Model ID 或 Endpoint ID（ep-...）' : '填写供应商提供的模型 ID';
       workspace.parentElement.hidden = vendor.value !== 'bailian'; workspace.disabled = vendor.value !== 'bailian';
       workspace.pattern = '[A-Za-z0-9][A-Za-z0-9-]{0,79}';
       if (endpoint) endpoint.textContent = vendor.value === 'bailian' && /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/.test(workspace.value)
         ? `https://${workspace.value}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions` : selection.endpoint;
     };
     if (vendor) {
+      populateTextModels(saved.mode === 'PERSONAL' ? saved.model : textVendors[vendor.value].model);
       const label = document.createElement('div'); label.className = 'cloud-endpoint';
       endpoint = document.createElement('output'); endpoint.setAttribute('aria-label', '官方接口地址'); label.append(endpoint); fields.append(label);
       vendor.addEventListener('change', () => {
         article.dataset.dirty = 'true'; state.textContent = '未保存'; state.classList.remove('error');
-        fields.querySelector('input[name=apiKey]').value = ''; fields.querySelector('input[name=model]').value = textVendors[vendor.value].model;
+        fields.querySelector('input[name=apiKey]').value = ''; customModel.value = ''; populateTextModels(textVendors[vendor.value].model);
         fields.querySelector('input[name=workspaceId]').value = ''; syncTextVendor();
       });
       fields.querySelector('input[name=workspaceId]').addEventListener('input', syncTextVendor); syncTextVendor();
@@ -699,11 +847,13 @@
     // 凭据只在激活保存按钮时提交，输入框回车产生的隐式submit不得写入。
     form.addEventListener('submit', (event) => event.preventDefault());
     save.addEventListener('click', () => {
+      if (customModel) customModel.value = customModel.value.trim();
       if (busy || cloudLoading || !form.reportValidity()) return;
       const body = { expectedVersion: saved.version, mode: mode.value };
       if (mode.value === 'PERSONAL') {
         if (vendor) body.textProvider = vendor.value;
-        for (const input of fields.querySelectorAll('input')) if (!(vendor && input.name === 'workspaceId' && vendor.value !== 'bailian') && (!input.dataset.secret || input.value)) body[input.name] = input.value;
+        for (const input of fields.querySelectorAll('input,select[name=model]')) if (input.name !== 'customModel' && !(vendor && input.name === 'workspaceId' && vendor.value !== 'bailian') && (!input.dataset.secret || input.value)) body[input.name] = input.value;
+        if (vendor && body.model === '__custom__') body.model = customModel.value;
         if (!window.confirm('将个人凭据加密保存在此服务器，并使用你对应服务商的额度。保存？')) return;
       } else if (saved.personalStored && !window.confirm('这会删除此供应商的个人凭据，并切换凭据来源。继续？')) return;
       write('PUT', body);
@@ -841,7 +991,7 @@
   });
 
   function displayMedia(item) {
-    if (selectedMedia && selectedMedia.id !== item.id && (subtitleDirty || joinDirty || exportDirty || workflowDirty) && !window.confirm('放弃未保存的修改并切换素材？')) return;
+    if (selectedMedia && selectedMedia.id !== item.id && (subtitleDirty || translationDraft || joinDirty || exportDirty || workflowDirty) && !window.confirm('放弃未保存的修改并切换素材？')) return;
     if (selectedMedia && selectedMedia.id !== item.id) clearExport();
     clearTimeout(probeTimer); probeTimer = null;
     if (selectedMedia?.id !== item.id) clearSubtitle();
@@ -1230,7 +1380,7 @@
     $('ai-model-warning').hidden = !localAi || workflowMode;
     const textService = localAi ? '服务端部署 · 千问 ' + (c.textAi.model || 'Qwen3.5-4B') : textVendorName() + ' · 文本对话 API';
     const unavailable = c.textAi?.available === true ? '处理工具暂不可用' : localAi ? messages.LOCAL_AI_UNAVAILABLE : c.textAi?.unavailableReason || '未配置';
-    const signature = JSON.stringify([activeTool, workflowMode, provider, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, providers, c.textAi]);
+    const signature = JSON.stringify([activeTool, workflowMode, provider, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, c.subtitleTranslation, providers, c.textAi]);
     if (dependencySignature === signature) return;
     dependencySignature = signature;
     const kind = activeTool === 'ai' && workflowMode ? 'local' : subtitleTool ? 'mixed' : cloudTool ? localAi ? 'local' : 'cloud' : 'local';
@@ -1251,6 +1401,7 @@
     if (subtitleTool) {
       rows.push(['语音转字幕', provider === 'aliyun' ? '阿里云百炼 · Paraformer 语音识别 API' : '腾讯云 · 录音极速版语音识别 API', providers.includes(provider) ? '已配置' : '未配置或工具未就绪', providers.includes(provider)]);
       rows.push(['文字校对', textService, c.subtitleCorrection ? localAi ? '已就绪' : '已配置' : unavailable, !!c.subtitleCorrection]);
+      rows.push(['字幕翻译 / 双语字幕', textService, c.subtitleTranslation ? localAi ? '已就绪' : '已配置' : unavailable, !!c.subtitleTranslation]);
       rows.push(['编辑 / SRT', '本站后端 · 无第三方 API', '站点处理', true]);
       rows.push(['已有字幕烧录', '服务端 FFmpeg / libass', c.supportedOperations?.includes('burn_subtitles') ? '工具已就绪' : '工具未就绪', !!c.supportedOperations?.includes('burn_subtitles')]);
       detail = localAi ? '语音识别向选定供应商发送音轨；文字校对使用站点服务端部署的千问，不需要用户自行部署模型。' : '识别向选定供应商发送音轨，校对只发送选中句子的文字；第三方调用可能计费。';
@@ -1752,14 +1903,55 @@
     $('workflow-audio').checked = !!last.extractAudio; if (last.videoCodec) $('workflow-codec').value = last.videoCodec;
     workflowDirty = false; renderWorkflowSteps();
   }
+  function settleWorkflowPanels() {
+    workflowTransition++;
+    workflowAnimations.forEach(animation => animation.cancel()); workflowAnimations = [];
+    workflowHeightAnimation?.cancel(); workflowHeightAnimation = null;
+    for (const form of [$('ai-form'), $('workflow-form')]) {
+      form.classList.remove('mode-outgoing');
+      form.hidden = form.id === 'ai-form' ? workflowMode : !workflowMode;
+      form.inert = form.hidden;
+    }
+  }
+  function fitWorkflowTransition(fromHeight = $('workflow-viewport').getBoundingClientRect().height) {
+    const viewport = $('workflow-viewport');
+    workflowHeightAnimation?.cancel();
+    const target = viewport.getBoundingClientRect().height, remaining = workflowTransitionEnd - performance.now();
+    workflowHeightAnimation = remaining > 0 && Math.abs(target - fromHeight) > 1
+      ? viewport.animate([{ height: `${fromHeight}px` }, { height: `${target}px` }],
+        { duration: remaining, easing: 'cubic-bezier(.22,.75,.22,1)' }) : null;
+  }
   function setWorkflowMode(manual) {
+    const viewport = $('workflow-viewport'), outgoing = $(workflowMode ? 'workflow-form' : 'ai-form');
+    const animate = manual !== workflowMode && !reducedMotion.matches && viewport.getClientRects().length > 0;
+    const fromHeight = viewport.getBoundingClientRect().height;
+    settleWorkflowPanels();
     workflowMode = manual; aiRevision++; aiLoading = false;
-    $('ai-form').hidden = manual; $('workflow-form').hidden = !manual;
+    $('ai-form').hidden = manual; $('ai-form').inert = manual;
+    $('workflow-form').hidden = !manual; $('workflow-form').inert = !manual;
+    $('workflow-mode').dataset.mode = manual ? 'steps' : 'text';
     $('workflow-text-mode').setAttribute('aria-pressed', String(!manual)); $('workflow-step-mode').setAttribute('aria-pressed', String(manual));
     renderToolDependencies(); syncAIControls();
+    if (!animate) return;
+    const incoming = $(manual ? 'workflow-form' : 'ai-form'), direction = manual ? 1 : -1, token = workflowTransition;
+    outgoing.classList.add('mode-outgoing'); outgoing.hidden = false; outgoing.inert = true;
+    const options = { duration: 340, easing: 'cubic-bezier(.22,.75,.22,1)' };
+    workflowAnimations = [
+      outgoing.animate([{ transform: 'translateX(0)', opacity: 1 }, { transform: `translateX(${-direction * 110}%)`, opacity: 0 }], options),
+      incoming.animate([{ transform: `translateX(${direction * 110}%)`, opacity: .2 }, { transform: 'translateX(0)', opacity: 1 }], options)
+    ];
+    workflowTransitionEnd = performance.now() + options.duration;
+    fitWorkflowTransition(fromHeight);
+    Promise.all(workflowAnimations.map(animation => animation.finished)).then(() => {
+      if (token === workflowTransition) settleWorkflowPanels();
+    }).catch(() => { /* 快速切换会取消旧动画，由最新模式负责收尾。 */ });
   }
+  // 恢复方案、增删步骤或窗口变化时，动画目标高度跟随表单实际尺寸，不使用固定高度截断内容。
+  const workflowSizeObserver = new ResizeObserver(() => { if (workflowHeightAnimation) fitWorkflowTransition(); });
+  workflowSizeObserver.observe($('ai-form')); workflowSizeObserver.observe($('workflow-form'));
+  reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) settleWorkflowPanels(); });
   $('workflow-text-mode').addEventListener('click', () => {
-    if (workflowMode && (!workflowDirty || window.confirm('放弃未保存的步骤？'))) { workflowDirty = false; setWorkflowMode(false); renderAIPlan(null); loadAIPlan(); }
+    if (workflowMode && (!workflowDirty || window.confirm('放弃未保存的步骤？'))) { workflowDirty = false; setWorkflowMode(false); renderAIPlan(null); loadAIPlan(true); }
   });
   $('workflow-step-mode').addEventListener('click', () => {
     if (!workflowMode) { setWorkflowMode(true); renderAIPlan(null); loadAIPlan(); }
@@ -1871,7 +2063,7 @@
     $('workflow-edit').hidden = p?.operation !== 'workflow' || workflowMode;
     syncAIControls();
   }
-  async function loadAIPlan() {
+  async function loadAIPlan(preserveInput = false) {
     const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
     if (!owner || !mediaId || selectedMedia.status !== 'READY') return;
     const token = ++aiRevision; aiSourceId = mediaId; aiLoading = true; syncAIControls();
@@ -1880,7 +2072,11 @@
       if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== token) return;
       const plan = result.items.find((item) => workflowMode ? item.parameters?.operation === 'workflow' : item.instruction);
       if (workflowMode && plan) fillWorkflow(plan.parameters);
-      $('ai-instruction').value = plan?.instruction || ''; renderAIPlan(plan || null); notice('ai-error', '');
+      if (!workflowMode && !preserveInput) $('ai-instruction').value = plan?.instruction || '';
+      renderAIPlan(plan || null); notice('ai-error', '');
+      if (!workflowMode && preserveInput && $('ai-instruction').value !== (plan?.instruction || '')) {
+        aiPlanDirty = true; $('ai-plan').hidden = true; syncAIControls();
+      }
       if (plan?.taskId) {
         const task = await request(`/api/tasks/${plan.taskId}`);
         if (currentUser?.id === owner && selectedMedia?.id === mediaId && workspaceRevision === revision && aiRevision === token) displayTask(task);
@@ -1925,6 +2121,8 @@
   });
 
   function clearSubtitle() {
+    if (translationRun) translationRun.cancelled = true;
+    translationRun = null; clearTranslation();
     subtitleRevision++; subtitle = null; subtitleMediaId = null; subtitleLatestVersion = 0;
     subtitleDirty = false; subtitleLoading = false; subtitleTaskLoaded = null;
     pendingSubtitlePlan = null; $('subtitle-result-slot').hidden = true;
@@ -1941,7 +2139,7 @@
     $('subtitle-source').textContent = selectedMedia?.originalFilename || '未选择就绪素材';
     $('asr-provider').disabled = busy || !providers.length;
     $('start-transcription').disabled = busy || subtitleLoading || selectedMedia?.status !== 'READY'
-      || !selectedMedia?.metadata?.hasAudio || !providers.length || taskActive(task);
+      || !selectedMedia?.metadata?.hasAudio || !providers.length || taskActive(task) || !!translationDraft;
     $('transcription-label').textContent = subtitle ? '重新识别' : '识别字幕';
     $('cancel-transcription').hidden = !taskActive(task);
     $('cancel-transcription').disabled = busy || task?.status === 'CANCELLING';
@@ -1952,10 +2150,20 @@
       : selectedMedia?.status === 'READY' && !selectedMedia.metadata.hasAudio ? '当前素材没有音轨。'
       : !providers.length ? '语音识别服务尚未配置。' : !subtitle ? '暂无字幕' : `${subtitle.segments.length} 段字幕`;
     $('save-subtitle').disabled = busy || !subtitleDirty || !subtitle || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked;
-    $('subtitle-version').disabled = busy || subtitleDirty || !subtitle;
-    $('subtitle-original').disabled = busy || subtitleDirty || !subtitle;
+    $('subtitle-version').disabled = busy || subtitleDirty || !!translationDraft || !subtitle;
+    $('subtitle-original').disabled = busy || subtitleDirty || !!translationDraft || !subtitle;
     $('subtitle-draft-state').textContent = subtitleDirty ? '有未保存的修改' : subtitle ? `已保存 · v${subtitle.version}` : '';
-    const readOnly = !subtitle || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked;
+    const readOnly = !subtitle || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked || !!translationDraft;
+    $('translate-subtitle').disabled = busy || subtitleLoading || !subtitle || subtitleDirty || !!translationDraft
+      || subtitle.version !== subtitleLatestVersion || !capabilities?.subtitleTranslation || taskActive(task);
+    $('translate-subtitle').title = !capabilities?.subtitleTranslation ? '文字模型暂不可用，请检查 AI 服务配置' : subtitleDirty ? '请先保存字幕修改' : '翻译字幕';
+    $('translation-language').disabled = busy || !!translationDraft;
+    $('cancel-translation').hidden = !translationRun;
+    $('cancel-translation').disabled = !translationRun || translationRun.cancelled;
+    $('save-translation').disabled = busy || !translationDraft;
+    $('discard-translation').disabled = busy;
+    $('translation-layout').disabled = busy;
+    $('translation-segments').querySelectorAll('textarea').forEach(input => { input.disabled = busy; });
     const burnTask = selectedTask?.mediaId === selectedMedia?.id && selectedTask?.parameters?.operation === 'burn_subtitles' ? selectedTask : null;
     $('subtitle-result-slot').hidden = !burnTask;
     $('burn-subtitle').disabled = busy || subtitleLoading || readOnly || subtitleDirty || selectedMedia?.status !== 'READY'
@@ -1965,13 +2173,14 @@
     $('subtitle-segments').querySelectorAll('[data-correct]').forEach((element) => {
       element.disabled = busy || readOnly || subtitleDirty || !capabilities?.subtitleCorrection;
     });
-    $('download-srt').hidden = !subtitle || subtitleDirty;
+    $('download-srt').hidden = !subtitle || subtitleDirty || !!translationDraft;
     if (subtitle) $('download-srt').href = `/api/transcripts/${subtitle.id}/srt?version=${$('subtitle-original').checked ? 1 : subtitle.version}`;
   }
 
   async function loadSubtitle(version) {
     const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
     if (!owner || !mediaId || selectedMedia.status !== 'READY') return;
+    clearTranslation();
     const token = ++subtitleRevision;
     subtitleMediaId = mediaId; subtitleLoading = true; syncSubtitleControls();
     try {
@@ -2038,6 +2247,110 @@
     syncSubtitleControls(); icons();
   }
 
+  function clearTranslation() {
+    translationDraft = null; $('translation-preview').hidden = true; $('translation-segments').replaceChildren();
+    $('subtitle-segments').hidden = false; notice('translation-state', '');
+  }
+  function translationText(index) {
+    const draft = translationDraft, translated = draft.segments[index].text.replace(/\r\n?/g, '\n').trim();
+    return $('translation-layout').value === 'bilingual' ? draft.source[index].text + '\n' + translated : translated;
+  }
+  function renderTranslation() {
+    const draft = translationDraft; if (!draft) return;
+    $('translation-preview').hidden = false; $('subtitle-segments').hidden = true;
+    $('translation-title').textContent = `翻译预览 · ${$('translation-language').selectedOptions[0].textContent} · 原稿 v${draft.item.version}`;
+    $('translation-segments').replaceChildren(...draft.segments.map((segment, index) => {
+      const row = document.createElement('li'); row.className = 'translation-segment';
+      const time = document.createElement('small'); time.className = 'translation-time muted';
+      time.textContent = `${index + 1} · ${(segment.startMs / 1000).toFixed(3)} - ${(segment.endMs / 1000).toFixed(3)} 秒`;
+      const source = document.createElement('p'); source.textContent = draft.source[index].text;
+      const label = document.createElement('label'); label.className = 'field'; label.textContent = '译文';
+      const input = document.createElement('textarea'); input.rows = 3; input.maxLength = 4000; input.value = segment.text;
+      input.setAttribute('aria-label', `第${index + 1}段译文`);
+      const preview = document.createElement('output'); preview.setAttribute('aria-label', `第${index + 1}段字幕预览`); preview.textContent = translationText(index);
+      input.addEventListener('input', () => { if (translationDraft !== draft) return; draft.segments[index].text = input.value; preview.textContent = translationText(index); });
+      label.append(input); row.append(time, source, label, preview); return row;
+    }));
+    syncSubtitleControls(); syncWorkbenchPhase();
+  }
+  $('translation-layout').addEventListener('change', () => {
+    if (translationDraft) $('translation-segments').querySelectorAll('output').forEach((output, index) => { output.textContent = translationText(index); });
+  });
+  $('discard-translation').addEventListener('click', () => {
+    if (busy || !translationDraft || !window.confirm('放弃未保存的译文？')) return;
+    clearTranslation(); syncSubtitleControls(); syncWorkbenchPhase();
+  });
+  $('cancel-translation').addEventListener('click', () => {
+    if (!translationRun) return;
+    translationRun.cancelled = true; notice('translation-state', '正在停止，等待当前批次结束…'); syncSubtitleControls();
+  });
+  $('translate-subtitle').addEventListener('click', async () => {
+    if (busy || !subtitle || subtitleDirty || translationDraft || subtitle.version !== subtitleLatestVersion || !capabilities?.subtitleTranslation) return;
+    const item = subtitle, owner = currentUser?.id, revision = workspaceRevision, token = subtitleRevision;
+    const language = $('translation-language').value, useOriginal = $('subtitle-original').checked;
+    const source = useOriginal ? item.originalSegments : item.segments, batches = [];
+    let batch = [], characters = 0;
+    for (const segment of source) {
+      const length = Array.from(segment.text).length;
+      if (batch.length && (batch.length >= 20 || characters + length > 2000)) { batches.push(batch); batch = []; characters = 0; }
+      batch.push(segment); characters += length;
+    }
+    if (batch.length) batches.push(batch);
+    if (batches.length > 60) { notice('subtitle-error', '字幕超过本次 60 批翻译上限，请精简字幕后再试。', true); return; }
+    const provider = capabilities?.textAi?.source === 'SERVER' ? '服务端千问' : textVendorName();
+    if (!window.confirm(`使用 ${provider} 将 ${source.length} 段字幕分 ${batches.length} 批翻译为${$('translation-language').selectedOptions[0].textContent}？${capabilities?.textAi?.source === 'SERVER' ? '' : '字幕将发送到所选供应商，可能产生费用。'}原稿保留，译文需确认后保存。`)) return;
+    const run = { cancelled: false, complete: false }; translationRun = run;
+    const current = () => currentUser?.id === owner && workspaceRevision === revision && subtitleRevision === token && subtitle === item && translationRun === run;
+    await operation('subtitle-error', async () => {
+      try {
+        const translated = [];
+        for (const segments of batches) {
+          if (!current() || run.cancelled) return;
+          notice('translation-state', `正在翻译 ${translated.length} / ${source.length} 段…`);
+          const result = await request(`/api/transcripts/${item.id}/translations`, { method: 'POST', body: {
+            expectedVersion: item.version, targetLanguage: language, segmentIds: segments.map(segment => segment.id), useOriginal
+          } });
+          if (!current() || run.cancelled) return;
+          if (result.transcriptId !== item.id || result.transcriptVersion !== item.version || result.targetLanguage !== language
+              || !Array.isArray(result.segments) || result.segments.length !== segments.length
+              || result.segments.some((segment, index) => segment.id !== segments[index].id || segment.startMs !== segments[index].startMs || segment.endMs !== segments[index].endMs || typeof segment.text !== 'string'))
+            throw new ApiError('AI_TRANSLATION_FAILED', 422);
+          translated.push(...result.segments);
+        }
+        const latest = await request(`/api/media/${item.mediaId}/transcript`);
+        if (!current() || run.cancelled) return;
+        if (latest.id !== item.id || latest.version !== item.version) throw new ApiError('TRANSCRIPT_VERSION_CONFLICT', 409);
+        translationDraft = { item, source, segments: translated, language, useOriginal };
+        run.complete = true; notice('translation-state', `${translated.length} 段译文待确认`); renderTranslation();
+      } finally {
+        if (current()) {
+          if (!run.complete) notice('translation-state', run.cancelled ? '已停止，原稿未修改。已发出的请求仍可能计费。' : '翻译未完成，原稿未修改。');
+          translationRun = null; syncSubtitleControls();
+        }
+      }
+    });
+  });
+  $('save-translation').addEventListener('click', async () => {
+    if (busy || !translationDraft || !subtitle) return;
+    const draft = translationDraft, item = subtitle, owner = currentUser?.id, token = subtitleRevision;
+    if (!window.confirm(`将${$('translation-layout').value === 'bilingual' ? '双语字幕' : '译文'}保存为新版本？原稿 v${item.version} 和识别原文继续保留。`)) return;
+    await operation('subtitle-error', async () => {
+      const segments = draft.segments.map((segment, index) => {
+        const text = translationText(index);
+        if (!draft.segments[index].text.trim() || Array.from(text).length > 2000 || /\n[\t ]*\n|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/.test(text))
+          throw new Error(`第 ${index + 1} 段字幕不能为空、包含空行或控制字符，原文与译文合计最多 2000 个字符；可改选仅译文或精简文本。`);
+        return { id: segment.id, startMs: segment.startMs, endMs: segment.endMs, text };
+      });
+      if (new TextEncoder().encode(JSON.stringify(segments)).length > 2 * 1024 * 1024) throw new Error('字幕总量超过 2 MiB，请精简译文。');
+      const latest = await request(`/api/media/${item.mediaId}/transcript`);
+      if (currentUser?.id !== owner || subtitleRevision !== token || translationDraft !== draft) return;
+      if (latest.id !== item.id || latest.version !== item.version) throw new ApiError('TRANSCRIPT_VERSION_CONFLICT', 409);
+      await request(`/api/transcripts/${item.id}`, { method: 'PATCH', body: { expectedVersion: item.version, segments } });
+      if (currentUser?.id !== owner || subtitleRevision !== token || translationDraft !== draft) return;
+      await loadSubtitle(); notice('translation-state', '已保存新版本');
+    });
+  });
+
   $('burn-subtitle').addEventListener('click', () => {
     if (busy || !subtitle || subtitleDirty || subtitleLoading || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked) return;
     const item = subtitle, owner = currentUser?.id, revision = workspaceRevision;
@@ -2055,7 +2368,7 @@
   });
   $('subtitle-tool').addEventListener('click', () => selectTool('subtitle'));
   $('refresh-subtitle').addEventListener('click', () => {
-    if (!subtitleDirty || window.confirm('放弃未保存的字幕修改并刷新？')) loadSubtitle();
+    if (!(subtitleDirty || translationDraft) || window.confirm('放弃未保存的字幕或翻译修改并刷新？')) loadSubtitle();
   });
   $('subtitle-version').addEventListener('change', () => loadSubtitle(Number($('subtitle-version').value)));
   $('subtitle-original').addEventListener('change', renderSubtitle);
@@ -2092,7 +2405,7 @@
       notice('subtitle-error', '');
     });
   });
-  window.addEventListener('beforeunload', (event) => { if (subtitleDirty || joinDirty || exportDirty || workflowDirty) { event.preventDefault(); event.returnValue = ''; } });
+  window.addEventListener('beforeunload', (event) => { if (subtitleDirty || translationDraft || translationRun || joinDirty || exportDirty || workflowDirty) { event.preventDefault(); event.returnValue = ''; } });
 
   function taskActive(task) { return task && ['QUEUED', 'RUNNING', 'CANCELLING'].includes(task.status); }
   function taskStatus(status, operation) {
@@ -2113,7 +2426,7 @@
     if (task.kind === 'TRANSCRIPTION') {
       $('conversion-result').hidden = true;
       if (task.mediaId === selectedMedia?.id && task.status === 'SUCCEEDED' && task.transcript
-          && subtitleTaskLoaded !== task.id && !subtitleDirty && !subtitleLoading) {
+          && subtitleTaskLoaded !== task.id && !subtitleDirty && !translationDraft && !translationRun && !subtitleLoading) {
         subtitleTaskLoaded = task.id; loadSubtitle();
       }
       syncMediaControls(); return;
@@ -2219,7 +2532,7 @@
     });
   }
   async function restoreListedPlan(plan) {
-    const dirty = exportDirty || aiPlanDirty || workflowDirty || joinDirty || subtitleDirty;
+    const dirty = exportDirty || aiPlanDirty || workflowDirty || joinDirty || subtitleDirty || !!translationDraft;
     if (busy || dirty && !window.confirm('恢复这个方案？当前未保存的编辑可能被替换。')) return;
     const owner = currentUser?.id, revision = workspaceRevision;
     operation('plan-list-error', async () => {

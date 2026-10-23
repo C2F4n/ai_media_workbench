@@ -47,7 +47,7 @@ for (const width of [1365, 390]) test(`local model reports unavailability and re
   await expect(page.locator('#cloud-tencent [role=status]')).toContainText('不支持语音识别');
   await expect(page.locator('#cloud-providers')).not.toContainText('站点配置');
   await card.locator('select[name=mode]').selectOption('PERSONAL');
-  await expect(card.locator('input[name=model]')).toHaveValue('deepseek-flash');
+  await expect(card.locator('select[name=model]')).toHaveValue('deepseek-flash');
   await card.locator('input[name=apiKey]').fill('not-yet-saved');
   await page.clock.runFor(11000);
   await expect(card.locator('input[name=apiKey]')).toHaveValue('not-yet-saved');

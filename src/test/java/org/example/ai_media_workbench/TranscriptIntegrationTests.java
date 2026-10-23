@@ -53,11 +53,13 @@ class TranscriptIntegrationTests {
     @Autowired MediaService media;
     @Autowired UserService users;
     @Autowired TranscriptAnalysisService analysis;
+    @Autowired TranscriptTranslationService translation;
     @MockitoBean MediaProbe probe;
     @MockitoBean MediaTranscoder transcoder;
     @MockitoBean SpeechRecognizer recognizer;
     @MockitoBean SubtitleCorrector corrector;
     @MockitoBean TranscriptAnalyzer analyzer;
+    @MockitoBean SubtitleTranslator translator;
     private static final String PASSWORD="Testing-2026!";
     private final MediaMetadataVO sourceMetadata=new MediaMetadataVO("mov,mp4",5000,160,90,"h264",true,"aac");
 
@@ -237,6 +239,110 @@ class TranscriptIntegrationTests {
                 .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_VERSION_CONFLICT));
         media.delete(owner.id,item.mediaId());
         mvc.perform(get("/api/transcripts/"+item.id()+"/srt").cookie(owner.cookie)).andExpect(status().isNotFound());
+    }
+
+    @Test void translationsArePrivateSuggestionsAndBilingualRevisionsExportAndBurnWithoutChangingOriginals() throws Exception {
+        var owner=login(); var other=login(); var item=generate(owner,source(owner)); prepareTranslation();
+        var input=translationRequest(item,false);
+        String endpoint="/api/transcripts/"+item.id()+"/translations";
+        mvc.perform(post(endpoint).cookie(other.cookie).header("X-CSRF-Token",other.csrf).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input)))
+                .andExpect(status().isNotFound());
+        mvc.perform(post(endpoint).cookie(owner.cookie).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input))).andExpect(status().isForbidden());
+        mvc.perform(post(endpoint).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input))).andExpect(status().isUnauthorized());
+        verify(translator,never()).translate(anyList(),anyString(),anyString());
+        var result=mvc.perform(post(endpoint).cookie(owner.cookie).header("X-CSRF-Token",owner.csrf).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input)))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store")).andExpect(jsonPath("data.transcriptVersion").value(1))
+                .andExpect(jsonPath("data.targetLanguage").value("en")).andExpect(jsonPath("data.segments[0].startMs").value(100))
+                .andExpect(jsonPath("data.segments[0].text").value("Hello 1")).andReturn();
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("userId","storageKey","apiKey");
+        assertThat(transcripts.get(owner.id,item.id(),null).segments()).isEqualTo(item.segments());
+        var translated=translation.translate(owner.id,item.id(),input);
+        var bilingual=new ArrayList<TranscriptSegment>();
+        for(int i=0;i<item.segments().size();i++) { var s=item.segments().get(i); bilingual.add(new TranscriptSegment(s.id(),s.startMs(),s.endMs(),s.text()+"\n"+translated.segments().get(i).text())); }
+        mvc.perform(patch("/api/transcripts/"+item.id()).cookie(owner.cookie).header("X-CSRF-Token",owner.csrf).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(new UpdateTranscriptRequest(1,bilingual)))).andExpect(status().isOk()).andExpect(jsonPath("data.version").value(2));
+        var saved=transcripts.get(owner.id,item.id(),null);
+        assertThat(saved.originalSegments()).isEqualTo(item.segments()); assertThat(transcripts.get(owner.id,item.id(),1).segments()).isEqualTo(item.segments());
+        mvc.perform(get("/api/transcripts/"+item.id()+"/srt").cookie(owner.cookie).param("version","2"))
+                .andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("你好，世界。\r\nHello 1\r\n")));
+        translation.translate(owner.id,item.id(),translationRequest(saved,true));
+        verify(translator,atLeastOnce()).translate(eq(item.originalSegments()),eq("en"),eq(owner.id));
+        prepareBurn();
+        doAnswer(call->{
+            String ass=Files.readString(call.getArgument(4,Path.class)); assertThat(ass).contains("你好，世界。\\NHello 1");
+            Files.write(call.getArgument(1,Path.class),new byte[]{1,2,3}); return null;
+        }).when(transcoder).burnSubtitles(any(),any(),any(),any(),any(),any());
+        var plan=processing.create(owner.id,new CreatePlanRequest(UUID.fromString(item.mediaId()),burnParameters(saved),null));
+        var task=processing.execute(owner.id,plan.id(),1); worker.runOne();
+        assertThat(processing.task(owner.id,task.id()).status().name()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test void translationRejectsUnknownDuplicateReversedIdsUnsupportedLanguagesAndExcessiveInputBeforeCallingModel() throws Exception {
+        var owner=login(); var item=generate(owner,source(owner)); prepareTranslation();
+        var ids=item.segments().stream().map(TranscriptSegment::id).toList();
+        for(var input:List.of(new TranslateTranscriptRequest(1,"en",List.of(UUID.randomUUID()),false),
+                new TranslateTranscriptRequest(1,"en",List.of(ids.getFirst(),ids.getFirst()),false),
+                new TranslateTranscriptRequest(1,"en",List.of(ids.getLast(),ids.getFirst()),false),
+                new TranslateTranscriptRequest(1,"en",Collections.nCopies(21,ids.getFirst()),false),
+                new TranslateTranscriptRequest(1,"xx",ids,false))) {
+            mvc.perform(post("/api/transcripts/"+item.id()+"/translations").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf)
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input))).andExpect(status().isUnprocessableEntity());
+        }
+        var longSegments=item.segments().stream().map(s->new TranscriptSegment(s.id(),s.startMs(),s.endMs(),"x".repeat(1001))).toList();
+        var latest=transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(1,longSegments));
+        assertThatThrownBy(()->translation.translate(owner.id,item.id(),translationRequest(latest,false)))
+                .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_TRANSLATION_TOO_LARGE));
+        verify(translator,never()).translate(anyList(),anyString(),anyString());
+    }
+
+    @Test void invalidTranslationCannotInventIdsChangeOrderOrPublishBlankOversizedOrControlText() throws Exception {
+        var owner=login(); var item=generate(owner,source(owner)); prepareTranslation();
+        var first=item.segments().getFirst(); var last=item.segments().getLast();
+        for(var result:List.of(List.<SubtitleTranslator.Translation>of(),
+                List.of(new SubtitleTranslator.Translation(UUID.randomUUID(),"unknown"),new SubtitleTranslator.Translation(last.id(),"last")),
+                List.of(new SubtitleTranslator.Translation(last.id(),"last"),new SubtitleTranslator.Translation(first.id(),"first")),
+                List.of(new SubtitleTranslator.Translation(first.id()," "),new SubtitleTranslator.Translation(last.id(),"last")),
+                List.of(new SubtitleTranslator.Translation(first.id(),"x\n\ny"),new SubtitleTranslator.Translation(last.id(),"last")),
+                List.of(new SubtitleTranslator.Translation(first.id(),"x\u0000y"),new SubtitleTranslator.Translation(last.id(),"last")),
+                List.of(new SubtitleTranslator.Translation(first.id(),"x".repeat(2001)),new SubtitleTranslator.Translation(last.id(),"last")))) {
+            when(translator.translate(anyList(),anyString(),anyString())).thenReturn(result);
+            assertThatThrownBy(()->translation.translate(owner.id,item.id(),translationRequest(item,false)))
+                    .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.AI_TRANSLATION_FAILED));
+        }
+        when(translator.isAvailable(anyString())).thenReturn(false);
+        assertThatThrownBy(()->translation.translate(owner.id,item.id(),translationRequest(item,false)))
+                .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.AI_UNAVAILABLE));
+        assertThat(transcripts.get(owner.id,item.id(),null).version()).isEqualTo(1);
+    }
+
+    @Test void translationRejectsLateResultsAfterEditReRecognitionDeletionOrAccountRevocation() throws Exception {
+        for(String change:List.of("edit","recognize","delete","revoke")) {
+            var owner=login(); var item=generate(owner,source(owner)); prepareTranslation();
+            doAnswer(call->{
+                assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                switch(change) {
+                    case "edit" -> transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(1,item.segments()));
+                    case "recognize" -> generate(owner,item.mediaId(),true);
+                    case "delete" -> media.delete(owner.id,item.mediaId());
+                    default -> users.deleteAccount(owner.id,new DeleteUserRequest(PASSWORD,jdbc.queryForObject("SELECT username FROM app_user WHERE id=?",String.class,owner.id)));
+                }
+                return item.segments().stream().map(s->new SubtitleTranslator.Translation(s.id(),"late")).toList();
+            }).when(translator).translate(anyList(),anyString(),anyString());
+            assertThatThrownBy(()->translation.translate(owner.id,item.id(),translationRequest(item,false))).isInstanceOf(BusinessException.class);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transcript_revision WHERE transcript_id=?",Integer.class,item.id())).isEqualTo(1+(change.equals("edit")?1:0));
+        }
+    }
+
+    private void prepareTranslation() {
+        when(translator.isAvailable(anyString())).thenReturn(true);
+        doAnswer(call->{
+            List<TranscriptSegment> segments=call.getArgument(0); var values=new ArrayList<SubtitleTranslator.Translation>();
+            for(int i=0;i<segments.size();i++) values.add(new SubtitleTranslator.Translation(segments.get(i).id(),"Hello "+(i+1)));
+            return values;
+        }).when(translator).translate(anyList(),anyString(),anyString());
+    }
+    private TranslateTranscriptRequest translationRequest(TranscriptVO item,boolean original) {
+        return new TranslateTranscriptRequest(item.version(),"en",(original?item.originalSegments():item.segments()).stream().map(TranscriptSegment::id).toList(),original);
     }
 
     @Test void searchAndRecommendationsReturnOnlyExactVersionedEvidenceWithoutCreatingTasks() throws Exception {
