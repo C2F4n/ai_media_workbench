@@ -564,12 +564,33 @@
   const cloudProviders = [
     { id: 'tencent', name: '腾讯云语音识别', fields: [['appId', 'AppId', false, 20], ['secretId', 'SecretId', true, 128], ['secretKey', 'SecretKey', true, 256]] },
     { id: 'aliyun', name: '阿里云百炼语音识别', fields: [['apiKey', 'API Key', true, 512], ['workspaceId', 'Workspace ID', false, 80]] },
-    { id: 'deepseek', name: '文字 AI', fields: [['apiKey', 'DeepSeek API Key', true, 512], ['model', 'DeepSeek 模型', false, 80]] }
+    { id: 'deepseek', name: '文字 AI', fields: [['apiKey', 'DeepSeek API Key', true, 512], ['model', 'DeepSeek 模型', false, 80], ['workspaceId', 'Workspace ID（北京，可选）', false, 80]] }
   ];
+  const textVendors = {
+    deepseek: { name: 'DeepSeek', model: 'deepseek-flash', endpoint: 'https://api.deepseek.com/chat/completions' },
+    openai: { name: 'OpenAI', model: '', endpoint: 'https://api.openai.com/v1/chat/completions' },
+    bailian: { name: '千问 / 阿里云百炼', model: 'qwen-plus', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' },
+    doubao: { name: '豆包 / 火山方舟', model: '', placeholder: '填写 Model ID 或 Endpoint ID（ep-...）', endpoint: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions' }
+  };
+  function textVendorName() { return textVendors[capabilities?.textAi?.provider]?.name || 'DeepSeek'; }
+  function selectCloudCategory(category) {
+    for (const name of ['text', 'speech']) {
+      const active = name === category;
+      $(`cloud-${name}-panel`).hidden = !active; $(`cloud-${name}-tab`).setAttribute('aria-selected', String(active));
+      $(`cloud-${name}-tab`).tabIndex = active ? 0 : -1;
+    }
+  }
+  for (const name of ['text', 'speech']) $(`cloud-${name}-tab`).addEventListener('click', () => selectCloudCategory(name));
+  document.querySelector('.cloud-categories').addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const category = event.key === 'Home' ? 'text' : event.key === 'End' ? 'speech' : $('cloud-text-panel').hidden ? 'text' : 'speech';
+    selectCloudCategory(category); $(`cloud-${category}-tab`).focus();
+  });
   function clearCloudSecrets() { $('cloud-providers').querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); }
   function clearCloud() {
     cloudRevision++; cloudEntries = null; cloudOwner = null; cloudLoading = false;
-    $('cloud-providers').replaceChildren(); notice('cloud-state', ''); notice('cloud-error', '');
+    $('cloud-text-providers').replaceChildren(); $('cloud-speech-providers').replaceChildren(); selectCloudCategory('text'); notice('cloud-state', ''); notice('cloud-error', '');
   }
   let userCapabilitiesRevision = 0;
   async function refreshUserCapabilities() {
@@ -602,7 +623,7 @@
   function renderCloudProvider(provider) {
     const saved = cloudEntries?.find((item) => item.provider === provider.id); if (!saved) return;
     let article = $('cloud-' + provider.id);
-    if (!article) { article = document.createElement('article'); article.id = 'cloud-' + provider.id; article.className = 'cloud-provider'; $('cloud-providers').append(article); }
+    if (!article) { article = document.createElement('article'); article.id = 'cloud-' + provider.id; article.className = 'cloud-provider'; $(provider.id === 'deepseek' ? 'cloud-text-providers' : 'cloud-speech-providers').append(article); }
     article.replaceChildren();
     delete article.dataset.dirty;
     const heading = document.createElement('div'); heading.className = 'section-heading';
@@ -612,7 +633,7 @@
     heading.append(title, state); article.append(heading);
     const form = document.createElement('form'); form.autocomplete = 'off';
     const source = document.createElement('label'); source.className = 'field'; source.textContent = '服务来源';
-    const mode = document.createElement('select'); mode.setAttribute('aria-label', provider.name + '凭据来源');
+    const mode = document.createElement('select'); mode.name = 'mode'; mode.setAttribute('aria-label', provider.name + '凭据来源');
     for (const [value, text] of [['PERSONAL', '我的凭据'], ['SERVER', provider.id === 'deepseek' ? '服务端部署 · 千问' : '服务端模型（不支持语音识别）'], ['OFF', '停用']]) {
       const option = document.createElement('option'); option.value = value; option.textContent = text; mode.append(option);
     }
@@ -621,15 +642,46 @@
     modelWarning.textContent = '服务端使用轻量模型，理解能力有限，复杂要求可能解析不准确。';
     modelWarning.hidden = provider.id !== 'deepseek' || mode.value !== 'SERVER'; form.append(modelWarning);
     const fields = document.createElement('div'); fields.hidden = mode.value !== 'PERSONAL';
+    fields.className = 'cloud-fields';
+    let vendor = null, endpoint = null;
+    if (provider.id === 'deepseek') {
+      const label = document.createElement('label'); label.className = 'field'; label.textContent = '模型供应商';
+      vendor = document.createElement('select'); vendor.name = 'textProvider'; vendor.setAttribute('aria-label', '文字 AI模型供应商');
+      for (const [value, setting] of Object.entries(textVendors)) { const option = document.createElement('option'); option.value = value; option.textContent = setting.name; vendor.append(option); }
+      vendor.value = saved.textProvider || 'deepseek'; label.append(vendor); fields.append(label);
+    }
     for (const [name, labelText, secret, max] of provider.fields) {
       const label = document.createElement('label'); label.className = 'field'; label.textContent = labelText;
       const input = document.createElement('input'); input.name = name; input.type = secret ? 'password' : 'text'; input.maxLength = max;
       input.autocomplete = secret ? 'new-password' : 'off'; input.spellcheck = false; input.setAttribute('aria-label', provider.name + ' ' + labelText);
       if (secret) { input.dataset.secret = 'true'; input.placeholder = saved.personalStored ? '已保存，留空保留' : labelText; }
-      else input.value = name === 'model' && saved.mode !== 'PERSONAL' ? 'deepseek-flash' : saved[name] || (name === 'model' ? 'deepseek-flash' : '');
+      else input.value = name === 'model' && saved.mode !== 'PERSONAL' ? 'deepseek-flash' : saved[name] || (name === 'model' ? textVendors[vendor?.value]?.model ?? 'deepseek-flash' : '');
       input.addEventListener('input', () => { article.dataset.dirty = 'true'; state.textContent = '未保存'; state.classList.remove('error'); }); label.append(input); fields.append(label);
     }
-    mode.addEventListener('change', () => { article.dataset.dirty = 'true'; fields.hidden = mode.value !== 'PERSONAL'; modelWarning.hidden = provider.id !== 'deepseek' || mode.value !== 'SERVER'; form.querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); state.textContent = '未保存'; state.classList.remove('error'); });
+    const syncTextVendor = () => {
+      if (!vendor) return;
+      const selection = textVendors[vendor.value], key = fields.querySelector('input[name=apiKey]'), model = fields.querySelector('input[name=model]'), workspace = fields.querySelector('input[name=workspaceId]');
+      key.parentElement.firstChild.textContent = selection.name + ' API Key'; model.parentElement.firstChild.textContent = selection.name + ' 模型';
+      key.setAttribute('aria-label', '文字 AI ' + selection.name + ' API Key'); model.setAttribute('aria-label', '文字 AI ' + selection.name + ' 模型');
+      key.required = mode.value === 'PERSONAL' && !(saved.personalStored && saved.mode === 'PERSONAL' && vendor.value === (saved.textProvider || 'deepseek'));
+      key.placeholder = key.required ? '填写此供应商的 API Key' : '已保存，留空保留'; model.required = mode.value === 'PERSONAL';
+      model.placeholder = selection.placeholder || selection.model || '填写已开通的模型 ID';
+      workspace.parentElement.hidden = vendor.value !== 'bailian'; workspace.disabled = vendor.value !== 'bailian';
+      workspace.pattern = '[A-Za-z0-9][A-Za-z0-9-]{0,79}';
+      if (endpoint) endpoint.textContent = vendor.value === 'bailian' && /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/.test(workspace.value)
+        ? `https://${workspace.value}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions` : selection.endpoint;
+    };
+    if (vendor) {
+      const label = document.createElement('div'); label.className = 'cloud-endpoint';
+      endpoint = document.createElement('output'); endpoint.setAttribute('aria-label', '官方接口地址'); label.append(endpoint); fields.append(label);
+      vendor.addEventListener('change', () => {
+        article.dataset.dirty = 'true'; state.textContent = '未保存'; state.classList.remove('error');
+        fields.querySelector('input[name=apiKey]').value = ''; fields.querySelector('input[name=model]').value = textVendors[vendor.value].model;
+        fields.querySelector('input[name=workspaceId]').value = ''; syncTextVendor();
+      });
+      fields.querySelector('input[name=workspaceId]').addEventListener('input', syncTextVendor); syncTextVendor();
+    }
+    mode.addEventListener('change', () => { article.dataset.dirty = 'true'; fields.hidden = mode.value !== 'PERSONAL'; modelWarning.hidden = provider.id !== 'deepseek' || mode.value !== 'SERVER'; form.querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); state.textContent = '未保存'; state.classList.remove('error'); syncTextVendor(); });
     form.append(fields);
     const actions = document.createElement('div'); actions.className = 'cloud-provider-actions';
     const save = document.createElement('button'); save.type = 'button'; save.className = 'button primary'; save.title = '保存配置'; save.setAttribute('aria-label', '保存' + provider.name + '配置'); save.innerHTML = '<i data-lucide="save" aria-hidden="true"></i><span>保存</span>'; actions.append(save);
@@ -650,7 +702,8 @@
       if (busy || cloudLoading || !form.reportValidity()) return;
       const body = { expectedVersion: saved.version, mode: mode.value };
       if (mode.value === 'PERSONAL') {
-        for (const input of fields.querySelectorAll('input')) if (!input.dataset.secret || input.value) body[input.name] = input.value;
+        if (vendor) body.textProvider = vendor.value;
+        for (const input of fields.querySelectorAll('input')) if (!(vendor && input.name === 'workspaceId' && vendor.value !== 'bailian') && (!input.dataset.secret || input.value)) body[input.name] = input.value;
         if (!window.confirm('将个人凭据加密保存在此服务器，并使用你对应服务商的额度。保存？')) return;
       } else if (saved.personalStored && !window.confirm('这会删除此供应商的个人凭据，并切换凭据来源。继续？')) return;
       write('PUT', body);
@@ -1167,7 +1220,7 @@
     const kind = ['subtitle', 'ai'].includes(tool) ? 'mixed' : tool === 'find' ? 'cloud' : 'local';
     badge.className = 'tool-dependency'; badge.dataset.kind = kind; badge.textContent = { local: '站点', cloud: 'API', mixed: '混合' }[kind]; badge.setAttribute('aria-hidden', 'true');
     button.append(name, badge); button.setAttribute('aria-label', toolNames[tool]);
-    button.title = toolNames[tool] + ' · ' + (tool === 'ai' ? '文字输入：所选模型 / 分步填写：站点处理' : { local: '站点处理，无需第三方 API', cloud: 'DeepSeek 文本 API', mixed: '语音识别 API / 所选文字模型' }[kind]);
+    button.title = toolNames[tool] + ' · ' + (tool === 'ai' ? '文字输入：所选模型 / 分步填写：站点处理' : { local: '站点处理，无需第三方 API', cloud: '所选文字模型 API', mixed: '语音识别 API / 所选文字模型' }[kind]);
   }
 
   function renderToolDependencies() {
@@ -1175,7 +1228,7 @@
     const provider = $('asr-provider').value, providers = c.asrProviders || [];
     const localAi = c.textAi?.source === 'SERVER';
     $('ai-model-warning').hidden = !localAi || workflowMode;
-    const textService = localAi ? '服务端部署 · 千问 ' + (c.textAi.model || 'Qwen3.5-4B') : 'DeepSeek · 文本对话 API';
+    const textService = localAi ? '服务端部署 · 千问 ' + (c.textAi.model || 'Qwen3.5-4B') : textVendorName() + ' · 文本对话 API';
     const unavailable = c.textAi?.available === true ? '处理工具暂不可用' : localAi ? messages.LOCAL_AI_UNAVAILABLE : c.textAi?.unavailableReason || '未配置';
     const signature = JSON.stringify([activeTool, workflowMode, provider, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, providers, c.textAi]);
     if (dependencySignature === signature) return;
@@ -1210,7 +1263,7 @@
       } else {
         rows.push(['内容检索', textService, c.semanticSearch ? localAi ? '已就绪' : '已配置' : unavailable, !!c.semanticSearch]);
         rows.push(['片段建议', textService, c.clipRecommendations ? localAi ? '已就绪' : '已配置' : unavailable, !!c.clipRecommendations]);
-        detail = localAi ? '站点服务端部署的千问分析已保存字幕，不向第三方模型服务发送字幕或原视频。' : '向 DeepSeek 发送已保存字幕及查找要求，不发送原视频；第三方调用可能计费。';
+        detail = localAi ? '站点服务端部署的千问分析已保存字幕，不向第三方模型服务发送字幕或原视频。' : `向 ${textVendorName()} 发送已保存字幕及查找要求，不发送原视频；第三方调用可能计费。`;
       }
     } else {
       const operation = { convert: 'transcode', compress: 'compress', audio: 'extract_audio', trim: 'trim', join: 'join_clips', mute: 'mute' }[activeTool];
@@ -1228,7 +1281,7 @@
   }
   $('asr-provider').addEventListener('change', renderToolDependencies);
   $('dependency-settings').addEventListener('click', () => {
-    setNavigationOpen(false, false); selectPanel('account'); selectAccountTab('cloud');
+    setNavigationOpen(false, false); selectPanel('account'); selectAccountTab('cloud'); selectCloudCategory(activeTool === 'subtitle' ? 'speech' : 'text');
     $('cloud-section').scrollIntoView({ block: 'start', behavior: reducedMotion.matches ? 'instant' : 'smooth' });
     $('refresh-cloud').focus({ preventScroll: true });
   });
@@ -1607,7 +1660,7 @@
   }));
   $('find-form').addEventListener('submit', (event) => {
     event.preventDefault(); if (busy || !findTranscript) return;
-    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm('将向 DeepSeek 发送目标和当前已保存字幕，可能产生服务费用。继续？')) return;
+    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm(`将向 ${textVendorName()} 发送目标和当前已保存字幕，可能产生服务费用。继续？`)) return;
     const owner = currentUser?.id, mediaId = selectedMedia.id, revision = workspaceRevision, token = ++findRevision;
     const snapshot = findTranscript, recommend = findMode() === 'recommend';
     operation('find-error', async () => {
@@ -1846,7 +1899,7 @@
     event.preventDefault();
     const instruction = $('ai-instruction').value.trim(), owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
     if (!instruction || busy) return;
-    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm('将向 DeepSeek 发送处理要求和视频参数，可能产生服务费用。继续？')) return;
+    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm(`将向 ${textVendorName()} 发送处理要求和视频参数，可能产生服务费用。继续？`)) return;
     const token = ++aiRevision; aiSourceId = mediaId;
     operation('ai-error', async () => {
       if (Array.from(instruction).length > 2000) throw new Error('处理要求不能超过2000个字符。');
@@ -1958,10 +2011,10 @@
         label.append(input); row.append(label);
       }
       const correct = document.createElement('button'); correct.type = 'button'; correct.className = 'icon-button'; correct.dataset.correct = segment.id;
-      correct.title = capabilities?.textAi?.source === 'SERVER' ? '服务端千问校对' : 'DeepSeek 校对'; correct.setAttribute('aria-label', `校对第${index + 1}段`);
+      correct.title = capabilities?.textAi?.source === 'SERVER' ? '服务端千问校对' : textVendorName() + ' 校对'; correct.setAttribute('aria-label', `校对第${index + 1}段`);
       correct.innerHTML = '<i data-lucide="wand-sparkles" aria-hidden="true"></i>';
       correct.addEventListener('click', () => {
-        if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm('将向 DeepSeek 发送这段字幕进行校对，可能产生服务费用。继续？')) return;
+        if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm(`将向 ${textVendorName()} 发送这段字幕进行校对，可能产生服务费用。继续？`)) return;
         const item = subtitle, token = subtitleRevision, owner = currentUser?.id;
         operation('subtitle-error', async () => {
           const suggestion = await request(`/api/transcripts/${item.id}/corrections`, {

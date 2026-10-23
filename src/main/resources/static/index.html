@@ -359,7 +359,14 @@
           <section id="cloud-section" class="account-section" role="tabpanel" aria-labelledby="account-cloud-tab" hidden>
             <div class="section-heading"><h2 id="cloud-title">AI 服务</h2><button id="refresh-cloud" class="icon-button" type="button" title="刷新 AI 服务状态" aria-label="刷新 AI 服务状态"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
             <p id="cloud-state" class="muted" role="status"></p><p id="cloud-error" class="form-error" role="alert" hidden></p>
-            <div id="cloud-providers" class="cloud-providers"></div>
+            <div class="cloud-categories" role="tablist" aria-label="AI服务分类">
+              <button id="cloud-text-tab" type="button" role="tab" aria-selected="true" aria-controls="cloud-text-panel"><i data-lucide="messages-square" aria-hidden="true"></i>文字AI</button>
+              <button id="cloud-speech-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-speech-panel" tabindex="-1"><i data-lucide="audio-lines" aria-hidden="true"></i>语音识别</button>
+            </div>
+            <div id="cloud-providers" class="cloud-providers">
+              <div id="cloud-text-panel" role="tabpanel" aria-labelledby="cloud-text-tab"><div id="cloud-text-providers" class="cloud-provider-grid"></div></div>
+              <div id="cloud-speech-panel" role="tabpanel" aria-labelledby="cloud-speech-tab" hidden><div id="cloud-speech-providers" class="cloud-provider-grid"></div></div>
+            </div>
           </section>
           <section id="account-danger-section" class="account-section danger-section" hidden>
             <h2>注销账号</h2>

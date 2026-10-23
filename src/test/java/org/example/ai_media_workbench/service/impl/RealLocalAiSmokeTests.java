@@ -22,7 +22,7 @@ class RealLocalAiSmokeTests {
             var local=new LocalAiClient(new LocalAiProperties(true,Integer.parseInt(System.getenv("LOCAL_AI_SMOKE_PORT")),"qwen3.5-4b",System.getenv("LOCAL_AI_API_KEY")),transport,json);
             assertThat(local.isAvailable()).isTrue();
             var credentials=mock(CloudCredentialService.class); when(credentials.source("smoke-user","deepseek")).thenReturn(Mode.SERVER);
-            var cloud=mock(DeepSeekJsonClient.class);
+            var cloud=mock(CloudTextJsonClient.class);
             var planner=new DeepSeekOperationPlanner(new TextAiJsonClient(credentials,cloud,local),json);
             var context=new OperationPlanner.Context(new MediaMetadataVO("mp4",30000,1920,1080,"h264",true,"aac"),1000000,
                     List.of("workflow","export","trim","mute","join_clips"),null,null,List.of("mp4","webm"),List.of("h264","vp9"),1073741824L);

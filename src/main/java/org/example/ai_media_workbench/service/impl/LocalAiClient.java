@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.Semaphore;
 import org.example.ai_media_workbench.common.exception.*;
 import org.example.ai_media_workbench.properties.LocalAiProperties;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.*;
 
@@ -20,6 +21,9 @@ public class LocalAiClient {
     private final Semaphore requests = new Semaphore(1);
     private long checkedAt;
     private boolean ready;
+    /** 单次推理超时；更大的本地模型预填更慢，部署者可放宽，未配置时与既有35秒一致。 */
+    @Value("${app.local-ai.timeout-seconds:35}")
+    private int timeoutSeconds = 35;
 
     public LocalAiClient(LocalAiProperties properties, CloudTransport transport, ObjectMapper json) {
         this.properties = properties; this.transport = transport; this.json = json;
@@ -45,9 +49,9 @@ public class LocalAiClient {
                     "temperature", 0, "chat_template_kwargs", Map.of("enable_thinking", false),
                     "response_format", Map.of("type", "json_object"),
                     "messages", List.of(Map.of("role", "system", "content", prompt), Map.of("role", "user", "content", content)));
-            var request = request("/v1/chat/completions", Duration.ofSeconds(35))
+            var request = request("/v1/chat/completions", Duration.ofSeconds(timeoutSeconds))
                     .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build();
-            var response = json.readTree(transport.post(request, System.nanoTime() + Duration.ofSeconds(35).toNanos(),
+            var response = json.readTree(transport.post(request, System.nanoTime() + Duration.ofSeconds(timeoutSeconds).toNanos(),
                     () -> false, ErrorCode.LOCAL_AI_UNAVAILABLE, failure));
             var choice = response.path("choices").path(0);
             if (!"stop".equals(choice.path("finish_reason").asText()) || !choice.path("message").path("content").isString())

@@ -42,11 +42,11 @@ for (const width of [1365, 390]) test(`local model reports unavailability and re
   await page.locator('#header-account').click();
   await page.locator('#account-cloud-tab').click();
   const card = page.locator('#cloud-deepseek');
-  await expect(card.locator('select option[value=SERVER]')).toHaveText('服务端部署 · 千问');
+  await expect(card.locator('select[name=mode] option[value=SERVER]')).toHaveText('服务端部署 · 千问');
   await expect(card.locator('[role=status]')).toContainText('服务端模型暂不可用');
   await expect(page.locator('#cloud-tencent [role=status]')).toContainText('不支持语音识别');
   await expect(page.locator('#cloud-providers')).not.toContainText('站点配置');
-  await card.locator('select').selectOption('PERSONAL');
+  await card.locator('select[name=mode]').selectOption('PERSONAL');
   await expect(card.locator('input[name=model]')).toHaveValue('deepseek-flash');
   await card.locator('input[name=apiKey]').fill('not-yet-saved');
   await page.clock.runFor(11000);
@@ -57,8 +57,8 @@ for (const width of [1365, 390]) test(`local model reports unavailability and re
   await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
   state.ready = true;
   await page.locator('#refresh-cloud').click();
-  await expect(card.locator('select')).toHaveValue('PERSONAL');
-  await card.locator('select').selectOption('SERVER');
+  await expect(card.locator('select[name=mode]')).toHaveValue('PERSONAL');
+  await card.locator('select[name=mode]').selectOption('SERVER');
   await card.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
   await expect(card.locator('[role=status]')).toHaveText('服务端模型已就绪');
   await expect(card.locator('input[name=apiKey]')).toHaveValue('');

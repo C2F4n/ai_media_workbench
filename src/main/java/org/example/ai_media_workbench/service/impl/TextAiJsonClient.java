@@ -5,13 +5,13 @@ import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 
-/** 来源互斥：SERVER调用本地千问，PERSONAL调用个人DeepSeek，失败不自动切换供应商。 */
+/** 来源互斥：SERVER调用服务端千问，PERSONAL按本人选择调用官方供应商，失败不自动切换。 */
 @Component
 public class TextAiJsonClient {
     private final CloudCredentialService credentials;
-    private final DeepSeekJsonClient cloud;
+    private final CloudTextJsonClient cloud;
     private final LocalAiClient local;
-    public TextAiJsonClient(CloudCredentialService credentials, DeepSeekJsonClient cloud, LocalAiClient local) {
+    public TextAiJsonClient(CloudCredentialService credentials, CloudTextJsonClient cloud, LocalAiClient local) {
         this.credentials = credentials; this.cloud = cloud; this.local = local;
     }
     public boolean isAvailable(String userId) { return credentials.available(userId, "deepseek"); }

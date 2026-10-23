@@ -2,9 +2,10 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI音视频工作台接口文档",
-    "version": "2.19.0",
-    "x-source-policy": "2.18起SERVER表示本地千问，不再使用站点云端凭据；PERSONAL仍用个人DeepSeek/腾讯/百炼。所有来源失败均不回退。文字能力适用后文DeepSeek功能契约；本地单并发/35秒，健康检查700ms/缓存2秒，不支持ASR。新增textAi状态及凭据available/unavailableReason。已完成真实有序方案冒烟，但不代表长时性能、所有模型效果或云端费用验收。",
-    "description": "轻量版契约，共57个接口，43个已实现。登录后直接使用，不创建项目或分类。业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly会话Cookie，不是JWT，写请求校验CSRF。支持账号/注册邮箱验证、个人凭据、素材/方案/任务/结果、FFmpeg转换压缩裁切静音音轨提取、字幕编辑/SRT/识别/校对/检索/建议/烧录。2.17工作流支持有序裁切、同源拼接、缩放、静音和最终导出，按上一步时间轴校验，不穷举操作组合；确认后才执行，失败不发布半成品。2.18把SERVER站点配置改为本地千问：方案生成、文字校对及检索建议可使用本地模型或PERSONAL个人DeepSeek，任何来源失败均不回退。新增textAi状态、available和unavailableReason；本地health检查700ms/缓存2秒，单并发/35秒，不支持ASR。历史SERVER值、接口和表兼容。后文DeepSeek文字契约同样适用于本地模型，个人云端仍须自行配置凭据。已完成真实有序方案冒烟，不等于长时性能、所有模型效果或云端费用验收。跨素材、拼接字幕重映射、任意滤镜及clip-drafts管理仍未实现。 2.19自然语言重新生成完整替换提示词，不拼接旧文或继承旧参数；新增方案删除和任务记录移除，前端记录独立成页。"
+    "version": "2.21.0",
+    "x-source-policy": "SERVER表示服务端千问；PERSONAL文字供应商由deepseek槽位内的textProvider选择DeepSeek/OpenAI/千问百炼北京/豆包火山方舟北京。旧密文默认DeepSeek，同厂商省略秘密可保留，换厂商必须重填密钥。个人文字共用2并发/35秒，不回退、不付费重试；配置可用不等于余额、模型权限或网络已验证。本地推理超时依部署者LOCAL_AI_TIMEOUT_SECONDS配置，不支持ASR。",
+    "x-latest-change": "2.21新增textProvider=doubao，固定北京Ark Chat接口，max_tokens、thinking.type=disabled和JSON mode；model必填，支持已开通的Model ID或Endpoint ID。千问仍使用bailian供应商值并兼容已有凭据，仅更新入口名称。本次无新接口、表或迁移，不包括豆包语音、图片或视频生成。",
+    "description": "轻量版契约，共57个接口，43个已实现。登录后直接使用，不创建项目或分类。业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly会话Cookie，不是JWT，写请求校验CSRF。支持账号/注册邮箱验证、个人凭据、素材/方案/任务/结果、FFmpeg转换压缩裁切静音音轨提取、字幕编辑/SRT/识别/校对/检索/建议/烧录。2.17工作流支持有序裁切、同源拼接、缩放、静音和最终导出，按上一步时间轴校验，不穷举操作组合；确认后才执行，失败不发布半成品。2.18把SERVER站点配置改为本地千问：方案生成、文字校对及检索建议可使用本地模型或PERSONAL个人DeepSeek，任何来源失败均不回退。新增textAi状态、available和unavailableReason；本地health检查700ms/缓存2秒，单并发/35秒，不支持ASR。历史SERVER值、接口和表兼容。后文DeepSeek文字契约同样适用于本地模型，个人云端仍须自行配置凭据。已完成真实有序方案冒烟，不等于长时性能、所有模型效果或云端费用验收。跨素材、拼接字幕重映射、任意滤镜及clip-drafts管理仍未实现。 2.19自然语言重新生成完整替换提示词，不拼接旧文或继承旧参数；新增方案删除和任务记录移除，前端记录独立成页。 2.20新增个人OpenAI/百炼北京文字适配，textProvider选择实际供应商，capabilities.textAi新增provider；换供应商必须提供新密钥，设置按文字AI和语音识别分类。现有接口路径、密文和数据库兼容。"
   },
   "servers": [
     {
@@ -55,7 +56,7 @@
           "用户"
         ],
         "operationId": "listCloudCredentials",
-        "summary": "查询本人三个云端供应商配置状态",
+        "summary": "查询本人三个凭据槽位配置状态",
         "description": "只操作会话当前用户，缺省SERVER现表示本地千问；PERSONAL为个人云端，OFF停用。任何来源失败均不回退。available/unavailableReason声明本地真实健康状态；本地不支持语音识别，tencent/aliyun的SERVER项不可用。个人云端仅声明配置完整，不验证余额或权限。秘密加密保存不回显，保存不发起付费校验。",
         "responses": {
           "200": {
@@ -124,7 +125,7 @@
         ],
         "operationId": "saveCloudCredential",
         "summary": "保存本人云端凭据或切换来源",
-        "description": "只操作会话当前用户，SERVER现表示本地千问而非公共云端额度；PERSONAL为个人云端，OFF停用。任何来源失败均不回退。写入默认每用户5分钟20次；省略/null个人字段保留旧值，显式空密钥无效。不接受其他供应商字段及自定义URL，SERVER/OFF清除个人密文。保存不发起付费校验，不能撤回已发送请求。",
+        "description": "只操作会话当前用户。deepseek是历史文字配置槽位，PERSONAL使用textProvider=deepseek/openai/bailian/doubao；省略时保留旧供应商，无旧值默认DeepSeek。同供应商省略/null秘密可保留，换供应商必须提供新密钥；OpenAI模型ID必填，豆包Model ID或Endpoint ID必填，千问/百炼默认qwen-plus。豆包和百炼均仅北京地域。仅百炼文字接受可选Workspace ID，生成固定官方域名，不接受任意URL。豆包固定https://ark.cn-beijing.volces.com/api/v3/chat/completions，仅支持文字JSON调用。语音tencent/aliyun配置不变。SERVER/OFF不接收个人字段并清除密文。所有来源失败不回退，保存不发付费校验。写入每用户默认5分钟20次，使用expectedVersion防止覆盖。",
         "parameters": [
           {
             "name": "provider",
@@ -6356,9 +6357,10 @@
       "TextAiStatus": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source", "model", "available", "unavailableReason"],
+        "required": ["source", "provider", "model", "available", "unavailableReason"],
         "properties": {
-          "source": {"type": "string", "enum": ["SERVER", "PERSONAL", "OFF"], "description": "SERVER=本地千问；PERSONAL=个人DeepSeek；OFF=停用。"},
+          "source": {"type": "string", "enum": ["SERVER", "PERSONAL", "OFF"], "description": "SERVER=服务端千问；PERSONAL=所选个人云端供应商；OFF=停用。"},
+          "provider": {"type": "string", "enum": ["local", "deepseek", "openai", "bailian", "doubao"], "description": "当前文字模型的实际供应商；bailian=千问/阿里云百炼，doubao=豆包/火山方舟。"},
           "model": {"type": "string", "nullable": true},
           "available": {"type": "boolean", "description": "本地以健康检查为准；个人云端只表示配置可用，不验证余额或权限。"},
           "unavailableReason": {"type": "string", "nullable": true, "description": "不可用原因，不包含内部地址或密钥。"}
@@ -6419,7 +6421,13 @@
           "model": {
             "type": "string",
             "nullable": true,
-            "description": "文字AI返回模型名：SERVER为部署者配置的千问模型，PERSONAL为个人DeepSeek模型。"
+            "description": "文字AI返回模型名：SERVER为部署者配置的千问，PERSONAL为所选供应商模型。"
+          },
+          "textProvider": {
+            "type": "string",
+            "nullable": true,
+            "enum": ["deepseek", "openai", "bailian", "doubao"],
+            "description": "仅文字配置槽位返回所选个人供应商；SERVER及语音槽位为null。"
           },
           "updatedAt": {
             "type": "string",
@@ -6443,7 +6451,7 @@
           "expectedVersion",
           "mode"
         ],
-        "description": "SERVER现表示本地千问，不再使用站点公共云端配置。PERSONAL仅接收当前供应商字段：腾讯appId/secretId/secretKey；百炼apiKey/workspaceId；DeepSeek apiKey/model。省略或null保留旧值，DeepSeek模型默认deepseek-flash。SERVER/OFF不得附带个人字段，切换清除个人密文；失败不自动回退。",
+        "description": "SERVER表示服务端千问。语音字段：腾讯appId/secretId/secretKey，百炼apiKey/workspaceId。历史deepseek文字槽位PERSONAL使用textProvider选择deepseek/openai/bailian/doubao，接收apiKey/model；仅bailian接收可选workspaceId且限定北京官方域名。省略textProvider保留旧供应商，无旧值默认DeepSeek；同供应商省略秘密可保留，换供应商必须重填密钥。OpenAI模型ID必填，豆包Model ID或Endpoint ID必填，DeepSeek默认deepseek-flash，千问/百炼默认qwen-plus。SERVER/OFF不得携带个人字段，切换清除密文，失败不回退。",
         "properties": {
           "expectedVersion": {
             "type": "integer",
@@ -6496,8 +6504,14 @@
           "model": {
             "type": "string",
             "maxLength": 80,
-            "pattern": "^[A-Za-z0-9_.-]{1,80}$",
+            "pattern": "^[A-Za-z0-9_.:/-]{1,80}$",
             "nullable": true
+          },
+          "textProvider": {
+            "type": "string",
+            "enum": ["deepseek", "openai", "bailian", "doubao"],
+            "nullable": true,
+            "description": "仅文字槽位PERSONAL可用。省略保留原供应商，首次默认DeepSeek；切换时必须提交新apiKey。"
           }
         }
       },

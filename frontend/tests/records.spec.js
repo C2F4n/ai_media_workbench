@@ -112,9 +112,11 @@ for (const width of [1365, 390]) {
     const positions = await page.locator('.account-nav [role=tab]').evaluateAll(tabs => tabs.map(tab => tab.getBoundingClientRect().top));
     expect(new Set(positions).size).toBe(1);
     if (width > 1000) {
-      const tops = await page.locator('.cloud-provider').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().top)); expect(new Set(tops).size).toBe(1);
+      await page.locator('#cloud-speech-tab').click();
+      const tops = await page.locator('#cloud-speech-providers .cloud-provider').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().top)); expect(new Set(tops).size).toBe(1);
+      await page.locator('#cloud-text-tab').click();
     }
-    await page.locator('#cloud-deepseek select').selectOption('PERSONAL'); await page.locator('#cloud-deepseek input[name=apiKey]').fill('unsaved-fixture');
+    await page.locator('#cloud-deepseek select[name=mode]').selectOption('PERSONAL'); await page.locator('#cloud-deepseek input[name=apiKey]').fill('unsaved-fixture');
     await expect(page.locator('#cloud-deepseek .model-warning')).toBeHidden();
     await page.locator('#account-security-tab').click(); await expect(page.locator('#password-form')).toBeVisible(); await expect(page.locator('#account-danger-section')).toBeVisible();
     await page.locator('#account-security-tab').focus(); await page.keyboard.press('ArrowRight');

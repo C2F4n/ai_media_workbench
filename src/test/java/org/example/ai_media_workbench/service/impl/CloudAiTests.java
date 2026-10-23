@@ -18,6 +18,7 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -194,8 +195,76 @@ class CloudAiTests {
         assertThatThrownBy(()->DeepSeekTranscriptAnalyzer.parse(clip,TranscriptAnalyzer.Mode.RECOMMEND,1)).isInstanceOf(BusinessException.class);
     }
 
+    @Test void cloudTextAdaptersUseOnlyTheSelectedOfficialEndpointAndProviderSpecificOptions() throws Exception {
+        for (String provider : List.of("deepseek", "openai", "bailian", "doubao")) {
+            var settings=new AiProperties("","","","","","sk-only-"+provider,"model-tests",provider);
+            var transport=mock(CloudTransport.class); var client=new CloudTextJsonClient(credentials(settings),transport,json);
+            when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{\"text\":\"ok\"}"))))));
+            assertThat(client.complete("Return JSON","text",123,ErrorCode.AI_FAILED,USER).path("text").asText()).isEqualTo("ok");
+            var captured=ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(1)).post(captured.capture(),anyLong(),any(),eq(ErrorCode.AI_FAILED));
+            var request=captured.getValue();
+            assertThat(request.uri().toString()).isEqualTo(switch(provider) {
+                case "openai" -> "https://api.openai.com/v1/chat/completions";
+                case "bailian" -> "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+                case "doubao" -> "https://ark.cn-beijing.volces.com/api/v3/chat/completions";
+                default -> "https://api.deepseek.com/chat/completions";
+            });
+            assertThat(request.headers().firstValue("Authorization")).contains("Bearer sk-only-"+provider);
+            var body=requestBody(request); assertThat(body.path("response_format").path("type").asText()).isEqualTo("json_object");
+            assertThat(body.path("model").asText()).isEqualTo("model-tests"); assertThat(body.path("stream").asBoolean()).isFalse();
+            assertThat(body.has("max_completion_tokens")).isEqualTo(provider.equals("openai"));
+            assertThat(body.has("max_tokens")).isEqualTo(!provider.equals("openai"));
+            assertThat(body.has("thinking")).isEqualTo(provider.equals("deepseek") || provider.equals("doubao"));
+            if(body.has("thinking")) assertThat(body.path("thinking").path("type").asText()).isEqualTo("disabled");
+            assertThat(body.has("enable_thinking")).isEqualTo(provider.equals("bailian"));
+            if(provider.equals("bailian")) assertThat(body.path("enable_thinking").asBoolean()).isFalse();
+            if(provider.equals("openai")) assertThat(body.path("store").asBoolean()).isFalse();
+        }
+    }
+
+    @Test void bailianWorkspaceIsAnIdentifierNotAnArbitraryUrlAndInvalidSettingsNeverCallTransport() {
+        var transport=mock(CloudTransport.class);
+        when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{\"text\":\"ok\"}"))))));
+        var settings=new AiProperties("","","","","workspace-123","sk-only-bailian","qwen-plus","bailian");
+        new CloudTextJsonClient(credentials(settings),transport,json).complete("JSON","text",100,ErrorCode.AI_FAILED,USER);
+        var captured=ArgumentCaptor.forClass(HttpRequest.class); verify(transport).post(captured.capture(),anyLong(),any(),any());
+        assertThat(captured.getValue().uri().toString()).isEqualTo("https://workspace-123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions");
+        clearInvocations(transport);
+        for(String workspace:List.of("127.0.0.1","evil.example","user@host","../../host","-invalid")) {
+            var invalid=new AiProperties("","","","",workspace,"sk-only-bailian","qwen-plus","bailian");
+            assertThatThrownBy(()->new CloudTextJsonClient(credentials(invalid),transport,json).complete("JSON","x",100,ErrorCode.AI_FAILED,USER))
+                    .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.AI_UNAVAILABLE));
+        }
+        verifyNoInteractions(transport);
+    }
+
+    @Test void newCloudAdaptersRejectRefusalsTruncationAndMalformedJsonWithoutRetryOrFallback() {
+        for(String provider:List.of("openai","bailian","doubao")) for(String choice:List.of(
+                "{\"finish_reason\":\"length\",\"message\":{\"content\":\"{}\"}}",
+                "{\"finish_reason\":\"stop\",\"message\":{\"refusal\":\"refused\",\"content\":null}}",
+                "{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[]\"}}",
+                "{\"finish_reason\":\"stop\",\"message\":{\"content\":\"not JSON\"}}")) {
+            var transport=mock(CloudTransport.class); var settings=new AiProperties("","","","","","sk-vendor","test-model",provider);
+            when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(json.readTree(choice)))));
+            assertThatThrownBy(()->new CloudTextJsonClient(credentials(settings),transport,json).complete("JSON","x",100,ErrorCode.AI_FAILED,USER))
+                    .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.AI_FAILED));
+            verify(transport,times(1)).post(any(),anyLong(),any(),any());
+        }
+    }
+
+    private JsonNode requestBody(HttpRequest request) throws Exception {
+        var bytes=new java.io.ByteArrayOutputStream(); var done=new CompletableFuture<Void>();
+        request.bodyPublisher().orElseThrow().subscribe(new java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer>() {
+            public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            public void onNext(java.nio.ByteBuffer buffer) { byte[] data=new byte[buffer.remaining()]; buffer.get(data); bytes.writeBytes(data); }
+            public void onComplete() { done.complete(null); }
+            public void onError(Throwable error) { done.completeExceptionally(error); }
+        });
+        done.get(1,TimeUnit.SECONDS); return json.readTree(bytes.toByteArray());
+    }
+
     @Test void sharedTextClientLimitsConcurrencyAndReleasesSlots() throws Exception {
-        var transport=mock(CloudTransport.class); var client=new DeepSeekJsonClient(credentials(configured),transport,json);
+        var transport=mock(CloudTransport.class); var client=new CloudTextJsonClient(credentials(configured),transport,json);
         var entered=new CountDownLatch(2); var release=new CountDownLatch(1);
         when(transport.post(any(),anyLong(),any(),any())).thenAnswer(call->{
             entered.countDown(); if(!release.await(3,TimeUnit.SECONDS)) throw new IllegalStateException("test timeout");
@@ -242,13 +311,13 @@ class CloudAiTests {
         when(service.effective(any(),anyString())).thenReturn(settings);
         when(service.source(any(),anyString())).thenReturn(org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest.Mode.PERSONAL);
         when(service.available(any(),anyString())).thenAnswer(call->switch(call.getArgument(1,String.class)) {
-            case "tencent" -> settings.tencentReady(); case "aliyun" -> settings.aliyunReady(); default -> settings.deepseekReady();
+            case "tencent" -> settings.tencentReady(); case "aliyun" -> settings.aliyunReady(); default -> settings.textReady();
         });
         return service;
     }
     private TextAiJsonClient textClient(CloudTransport transport) {
         var credentials=credentials(configured);
-        return new TextAiJsonClient(credentials,new DeepSeekJsonClient(credentials,transport,json),mock(LocalAiClient.class));
+        return new TextAiJsonClient(credentials,new CloudTextJsonClient(credentials,transport,json),mock(LocalAiClient.class));
     }
     private HttpRequest request(String url) { return HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(3)).POST(HttpRequest.BodyPublishers.noBody()).build(); }
     private void event(CloudSpeechRecognizer.RecognitionListener listener,WebSocket socket,String event,Map<String,?> payload) {

@@ -521,7 +521,16 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 #password-form > .form-error { grid-column: 1 / -1; }
 #password-form > .button { width: max-content; }
 .account-sections .danger-section { padding-top: 24px; border-top: 1px solid var(--line); }
-.cloud-providers { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 20px; align-items: start; }
+.cloud-providers { display: block; }
+.cloud-provider-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; align-items: start; }
+.cloud-categories { display: flex; gap: 6px; margin: 0 0 22px; }
+.cloud-categories button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 14px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 13px; }
+.cloud-categories button[aria-selected="true"] { border-color: #d9d9df; background: #fff; color: #1d1d1f; }
+.cloud-categories button svg { width: 16px; height: 16px; }
+#cloud-text-providers { grid-template-columns: minmax(0,1fr); }
+#cloud-deepseek .cloud-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 24px; }
+.cloud-endpoint { grid-column: 1 / -1; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; padding: 0 0 20px; line-height: 1.7; }
+.cloud-endpoint output { display: block; }
 .cloud-provider { padding: 20px; background: #fff; }
 .cloud-provider .section-heading { flex-direction: column; gap: 6px; align-items: flex-start; }
 .cloud-provider-status { text-align: left; }
@@ -529,14 +538,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .cloud-provider .field input, .cloud-provider .field select { font-size: 13px; }
 .cloud-provider .model-warning { margin-top: 4px; }
 @media (max-width: 1000px) {
-  .cloud-providers { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .cloud-provider-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .record-parameters { grid-template-columns: minmax(0,1fr); }
 }
 @media (max-width: 600px) {
   .account-nav { top: 60px; flex-wrap: nowrap; gap: 2px; }
   .account-nav button { flex: 1; padding: 8px 6px; font-size: 12px; gap: 5px; }
   .account-nav button svg { width: 16px; height: 16px; }
-  .cloud-providers, .profile-info, .account-sections #password-form { grid-template-columns: minmax(0,1fr); }
+  .cloud-provider-grid, #cloud-deepseek .cloud-fields, .profile-info, .account-sections #password-form { grid-template-columns: minmax(0,1fr); }
   #password-form > .field:first-child { max-width: none; }
   .history-tabs button { padding: 8px 12px; font-size: 13px; }
   .history-row { grid-template-columns: minmax(0,1fr) 30px 30px; gap: 3px; }

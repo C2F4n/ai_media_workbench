@@ -37,12 +37,107 @@ class CloudCredentialIntegrationTests {
     @Autowired MockMvc mvc; @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc; @Autowired PasswordEncoder passwords;
     @Autowired CloudCredentialService credentials; @Autowired CloudCredentialMapper mapper; @Autowired SubtitleCorrector corrector; @Autowired UserService users;
     @Autowired SpeechRecognizer recognizer;
+    @Autowired org.example.ai_media_workbench.common.security.CloudCredentialCipher cipher;
     @MockitoBean CloudTransport transport;
     @MockitoBean LocalAiClient local;
     private static final String PASSWORD="Testing-2026!";
     @BeforeEach void response() {
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{\"text\":\"原文\"}"))))));
     }
+    @Test void openaiAndBailianSelectionsAreEncryptedRoutedAndReportedWithoutExposingSecrets() throws Exception {
+        var owner=login();
+        save(owner,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","textProvider","openai","apiKey","sk-openai-personal","model","gpt-model-tests"));
+        mvc.perform(get("/api/system/capabilities").cookie(owner.cookie)).andExpect(jsonPath("data.textAi.provider").value("openai"))
+                .andExpect(jsonPath("data.textAi.model").value("gpt-model-tests"));
+        assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
+        save(owner,"deepseek",Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","bailian","apiKey","sk-bailian-personal","model","qwen-plus","workspaceId","workspace-tests"));
+        assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
+        var requests=org.mockito.ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
+        assertThat(requests.getAllValues().get(0).uri().getHost()).isEqualTo("api.openai.com");
+        assertThat(requests.getAllValues().get(0).headers().firstValue("Authorization")).contains("Bearer sk-openai-personal");
+        assertThat(requests.getAllValues().get(1).uri().getHost()).isEqualTo("workspace-tests.cn-beijing.maas.aliyuncs.com");
+        assertThat(requests.getAllValues().get(1).headers().firstValue("Authorization")).contains("Bearer sk-bailian-personal");
+        var response=mvc.perform(get("/api/users/me/cloud-credentials").cookie(owner.cookie)).andExpect(jsonPath("data[2].textProvider").value("bailian"))
+                .andExpect(jsonPath("data[2].workspaceId").value("workspace-tests")).andReturn();
+        assertThat(response.getResponse().getContentAsString()).doesNotContain("sk-openai-personal","sk-bailian-personal","encryptedPayload");
+        assertThat(mapper.find(owner.id,"deepseek").getEncryptedPayload()).doesNotContain("sk-bailian-personal","qwen-plus");
+        assertThat(recognizer.providers(owner.id)).isEmpty();
+    }
+
+    @Test void doubaoRequiresAnExplicitModelEncryptsItsKeyAndRoutesOnlyToArk() throws Exception {
+        var owner=login();
+        save(owner,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","textProvider","bailian","apiKey","sk-qwen-before-switch","workspaceId","old-workspace"));
+        for(var input:List.of(
+                Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","doubao","model","ep-tests"),
+                Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","doubao","apiKey","ark-personal-tests"),
+                Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","doubao","apiKey","ark-personal-tests","model","ep-tests","workspaceId","wrong-provider"))) {
+            mvc.perform(put("/api/users/me/cloud-credentials/deepseek").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf).contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsBytes(input))).andExpect(status().isUnprocessableEntity());
+        }
+        assertThat(credentials.effective(owner.id,"deepseek").textProvider()).isEqualTo("bailian");
+        verifyNoInteractions(transport);
+        save(owner,"deepseek",Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","doubao","apiKey","ark-personal-tests","model","ep-tests"));
+        mvc.perform(get("/api/system/capabilities").cookie(owner.cookie)).andExpect(jsonPath("data.textAi.provider").value("doubao"))
+                .andExpect(jsonPath("data.textAi.model").value("ep-tests")).andExpect(jsonPath("data.textAi.available").value(true));
+        assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
+        save(owner,"deepseek",Map.of("expectedVersion",2,"mode","PERSONAL","model","doubao-model-tests"));
+        assertThat(credentials.effective(owner.id,"deepseek").deepseekApiKey()).isEqualTo("ark-personal-tests");
+        assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
+        var requests=org.mockito.ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
+        for(var request:requests.getAllValues()) {
+            assertThat(request.uri().toString()).isEqualTo("https://ark.cn-beijing.volces.com/api/v3/chat/completions");
+            assertThat(request.headers().firstValue("Authorization")).contains("Bearer ark-personal-tests");
+        }
+        var response=mvc.perform(get("/api/users/me/cloud-credentials").cookie(owner.cookie)).andExpect(jsonPath("data[2].textProvider").value("doubao"))
+                .andExpect(jsonPath("data[2].workspaceId").isEmpty()).andReturn();
+        assertThat(response.getResponse().getContentAsString()).doesNotContain("ark-personal-tests","sk-qwen-before-switch","encryptedPayload");
+        assertThat(mapper.find(owner.id,"deepseek").getEncryptedPayload()).doesNotContain("ark-personal-tests","doubao-model-tests");
+        assertThat(recognizer.providers(owner.id)).isEmpty();
+    }
+
+    @Test void switchingTextVendorsRequiresAFreshKeyButSameVendorUpdatesKeepOmittedFields() throws Exception {
+        var owner=login(); save(owner,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-old-deepseek","model","deepseek-flash"));
+        mvc.perform(put("/api/users/me/cloud-credentials/deepseek").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","openai","model","gpt-test"))))
+                .andExpect(status().isUnprocessableEntity());
+        assertThat(credentials.effective(owner.id,"deepseek").textProvider()).isEqualTo("deepseek");
+        save(owner,"deepseek",Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","openai","apiKey","sk-new-openai","model","gpt-test"));
+        save(owner,"deepseek",Map.of("expectedVersion",2,"mode","PERSONAL","model","gpt-test-updated"));
+        var settings=credentials.effective(owner.id,"deepseek"); assertThat(settings.textProvider()).isEqualTo("openai");
+        assertThat(settings.deepseekApiKey()).isEqualTo("sk-new-openai"); assertThat(settings.deepseekModel()).isEqualTo("gpt-test-updated");
+        mvc.perform(put("/api/users/me/cloud-credentials/deepseek").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("expectedVersion",3,"mode","PERSONAL","textProvider","bailian","model","qwen-plus"))))
+                .andExpect(status().isUnprocessableEntity());
+        assertThat(credentials.effective(owner.id,"deepseek").textProvider()).isEqualTo("openai"); verifyNoInteractions(transport);
+    }
+
+    @Test void legacyEncryptedDeepseekRowsWithoutAVendorFieldRemainReadable() throws Exception {
+        var owner=login(); save(owner,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-legacy-deepseek","model","deepseek-flash"));
+        var old=Map.of("tencentAppId","","tencentSecretId","","tencentSecretKey","","aliyunApiKey","","aliyunWorkspaceId","","deepseekApiKey","sk-legacy-deepseek","deepseekModel","deepseek-flash");
+        String encrypted=cipher.encrypt(owner.id,"deepseek",json.writeValueAsString(old),false);
+        jdbc.update("UPDATE cloud_credential SET encrypted_payload=? WHERE user_id=? AND provider='deepseek'",encrypted,owner.id);
+        assertThat(credentials.effective(owner.id,"deepseek").textProvider()).isEqualTo("deepseek");
+        assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
+        save(owner,"deepseek",Map.of("expectedVersion",1,"mode","PERSONAL","model","deepseek-v4-pro"));
+        assertThat(credentials.effective(owner.id,"deepseek").deepseekApiKey()).isEqualTo("sk-legacy-deepseek");
+    }
+
+    @Test void vendorWhitelistWorkspaceValidationAndProviderSpecificFieldsCannotBeBypassed() throws Exception {
+        var owner=login();
+        for(var input:List.of(
+                Map.of("expectedVersion",0,"mode","PERSONAL","textProvider","proxy","apiKey","sk-test","model","m"),
+                Map.of("expectedVersion",0,"mode","PERSONAL","textProvider","bailian","apiKey","sk-test","model","qwen-plus","workspaceId","evil.example"),
+                Map.of("expectedVersion",0,"mode","PERSONAL","textProvider","openai","apiKey","sk-test","model","gpt-test","workspaceId","wrong-provider"),
+                Map.of("expectedVersion",0,"mode","SERVER","textProvider","openai"))) {
+            mvc.perform(put("/api/users/me/cloud-credentials/deepseek").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf).contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsBytes(input))).andExpect(status().isUnprocessableEntity());
+        }
+        mvc.perform(put("/api/users/me/cloud-credentials/aliyun").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-test","textProvider","bailian"))))
+                .andExpect(status().isUnprocessableEntity());
+        assertThat(mapper.find(owner.id,"deepseek")).isNull(); verifyNoInteractions(transport);
+    }
+
     @Test void endpointsEncryptAllProvidersAndNeverReturnSecretsOrCiphertexts() throws Exception {
         var owner=login();
         save(owner,"tencent",Map.of("expectedVersion",0,"mode","PERSONAL","appId","123456","secretId","SecretIdTests","secretKey","SecretKeyTests"));

@@ -6,7 +6,7 @@ import org.example.ai_media_workbench.service.SubtitleCorrector;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
-/** 本地千问/个人DeepSeek只接收单段文字，要求JSON并验证输出；不执行模型命令。 */
+/** 使用所选服务端或个人文字模型，只接收单段文字，要求JSON并验证输出，不执行模型命令。 */
 @Component
 public class DeepSeekSubtitleCorrector implements SubtitleCorrector {
     private final TextAiJsonClient client;

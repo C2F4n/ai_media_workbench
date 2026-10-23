@@ -14,7 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
-/** 个人/本地/关闭三种来源明确隔离；SERVER不再使用云端环境凭据，失败不自动回退。 */
+/** 个人/服务端/关闭三种来源隔离；deepseek沿用文字配置槽位，textProvider在密文内区分实际供应商。 */
 @Service
 public class CloudCredentialServiceImpl implements CloudCredentialService {
     private static final List<String> PROVIDERS=List.of("tencent","aliyun","deepseek");
@@ -40,16 +40,16 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
         if(input.mode()==SaveCloudCredentialRequest.Mode.PERSONAL) {
             if((!provider.equals("tencent") && (input.appId()!=null || input.secretId()!=null || input.secretKey()!=null))
                     || (provider.equals("tencent") && (input.apiKey()!=null || input.workspaceId()!=null || input.model()!=null))
-                    || (provider.equals("aliyun") && input.model()!=null) || (provider.equals("deepseek") && input.workspaceId()!=null)) invalid();
+                    || (provider.equals("aliyun") && input.model()!=null) || (!provider.equals("deepseek") && input.textProvider()!=null)) invalid();
             AiProperties previous=old!=null && "PERSONAL".equals(old.getMode()) ? decode(old) : EMPTY;
             var personal=switch(provider) {
                 case "tencent" -> new AiProperties(value(input.appId(),previous.tencentAppId()),value(input.secretId(),previous.tencentSecretId()),value(input.secretKey(),previous.tencentSecretKey()),"","","","deepseek-flash");
                 case "aliyun" -> new AiProperties("","","",value(input.apiKey(),previous.aliyunApiKey()),value(input.workspaceId(),previous.aliyunWorkspaceId()),"","deepseek-flash");
-                default -> new AiProperties("","","","","",value(input.apiKey(),previous.deepseekApiKey()),value(input.model(),previous.deepseekModel()));
+                default -> textSettings(input, previous);
             };
             if(!ready(personal,provider)) invalid();
             encrypted=cipher.encrypt(userId,provider,json.writeValueAsString(personal),mapper.encryptedCount()==0);
-        } else if(input.appId()!=null || input.secretId()!=null || input.secretKey()!=null || input.apiKey()!=null || input.workspaceId()!=null || input.model()!=null) invalid();
+        } else if(input.appId()!=null || input.secretId()!=null || input.secretKey()!=null || input.apiKey()!=null || input.workspaceId()!=null || input.model()!=null || input.textProvider()!=null) invalid();
         var item=old==null ? new CloudCredentialEntity() : old;
         item.setUserId(userId); item.setProvider(provider); item.setMode(input.mode().name()); item.setEncryptedPayload(encrypted);
         item.setVersion(old==null ? 1 : Math.addExact(old.getVersion(),1)); item.setUpdatedAt(LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC));
@@ -86,7 +86,8 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
     @Override public org.example.ai_media_workbench.vo.system.TextAiStatusVO textStatus(String userId) {
         if(userId!=null) active(userId,false);
         var item=view("deepseek",userId==null ? null : mapper.find(userId,"deepseek"));
-        return new org.example.ai_media_workbench.vo.system.TextAiStatusVO(item.mode(),item.model(),item.available(),item.unavailableReason());
+        return new org.example.ai_media_workbench.vo.system.TextAiStatusVO(item.mode(),item.model(),item.available(),item.unavailableReason(),
+                "SERVER".equals(item.mode()) ? "local" : item.textProvider());
     }
     private CloudCredentialVO view(String provider,CloudCredentialEntity item) {
         String mode=item==null ? "SERVER" : item.getMode(); AiProperties settings=EMPTY;
@@ -100,8 +101,20 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
                 : stored ? "个人凭据不可读取，请重新配置" : "个人凭据尚未配置";
         return new CloudCredentialVO(provider,mode,item==null ? 0 : item.getVersion(),configured,stored,
                 "PERSONAL".equals(mode) && provider.equals("tencent") ? settings.tencentAppId() : null,
-                "PERSONAL".equals(mode) && provider.equals("aliyun") ? settings.aliyunWorkspaceId() : null,
-                text ? localMode ? local.model() : settings.deepseekModel() : null,item==null ? null : item.getUpdatedAt().toInstant(ZoneOffset.UTC),available,reason);
+                "PERSONAL".equals(mode) && (provider.equals("aliyun") || text && "bailian".equals(settings.textProvider())) ? settings.aliyunWorkspaceId() : null,
+                text ? localMode ? local.model() : settings.deepseekModel() : null,item==null ? null : item.getUpdatedAt().toInstant(ZoneOffset.UTC),available,reason,
+                text && !localMode ? settings.textProvider() : null);
+    }
+    private static AiProperties textSettings(SaveCloudCredentialRequest input, AiProperties previous) {
+        String selected = input.textProvider() == null ? previous.textProvider() : input.textProvider();
+        if (!Set.of("deepseek", "openai", "bailian", "doubao").contains(selected)) invalid();
+        // 换供应商必须重新填写密钥；省略字段只允许保留同一供应商的旧凭据。
+        boolean same = selected.equals(previous.textProvider());
+        String defaultModel = "bailian".equals(selected) ? "qwen-plus" : "deepseek".equals(selected) ? "deepseek-flash" : "";
+        String model = value(input.model(), same ? previous.deepseekModel() : defaultModel);
+        String workspace = value(input.workspaceId(), same ? previous.aliyunWorkspaceId() : "");
+        if (!"bailian".equals(selected) && input.workspaceId() != null) invalid();
+        return new AiProperties("", "", "", "", workspace, value(input.apiKey(), same ? previous.deepseekApiKey() : ""), model, selected);
     }
     private AiProperties decode(CloudCredentialEntity item) {
         try { return json.readValue(cipher.decrypt(item.getUserId(),item.getProvider(),item.getEncryptedPayload()),AiProperties.class); }
@@ -113,7 +126,7 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
     }
     private static String value(String input,String previous) { return input==null ? previous : input.strip(); }
     private static void provider(String provider) { if(!PROVIDERS.contains(provider)) invalid(); }
-    private static boolean ready(AiProperties value,String provider) { return switch(provider) { case "tencent" -> value.tencentReady(); case "aliyun" -> value.aliyunReady(); case "deepseek" -> value.deepseekReady(); default -> false; }; }
+    private static boolean ready(AiProperties value,String provider) { return switch(provider) { case "tencent" -> value.tencentReady(); case "aliyun" -> value.aliyunReady(); case "deepseek" -> value.textReady(); default -> false; }; }
     private static void version(CloudCredentialEntity row,int expected) { if((row==null ? 0 : row.getVersion())!=expected) throw new BusinessException(ErrorCode.CLOUD_CREDENTIALS_CONFLICT); }
     private static void invalid() { throw new BusinessException(ErrorCode.INVALID_PARAMETERS); }
 }

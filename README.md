@@ -44,11 +44,11 @@ frontend/tests/     浏览器端到端测试
 | 视频检测 | ffprobe | 无 |
 | 格式/编码/分辨率转换、压缩、裁切、同源拼接、静音、音轨提取、组合导出 | FFmpeg / ffprobe | 无 |
 | 语音转字幕 | 腾讯云录音极速版（16k_zh）或阿里云百炼Paraformer（paraformer-realtime-v2） | 语音识别ASR API，发送音轨 |
-| 字幕文字校对 | 本地千问或个人DeepSeek | 本地无需云端API；仅处理选中句子 |
+| 字幕文字校对 | 本地千问或个人文字模型（DeepSeek/OpenAI/千问/豆包） | 本地无需云端API；仅处理选中句子 |
 | 字幕编辑、版本、SRT导出 | 本站后端/数据库 | 无 |
 | 已有字幕烧录 | FFmpeg / libass | 无，不要求重新识别 |
-| AI处理要求生成方案 | 本地千问或个人DeepSeek；确认后FFmpeg执行 | 本地无需云端API，不上传视频 |
-| 按字幕内容检索、片段建议 | 本地千问或个人DeepSeek | 本地无需云端API；处理已保存字幕和查找要求 |
+| AI处理要求生成方案 | 本地千问或个人文字模型；确认后FFmpeg执行 | 本地无需云端API，不上传视频 |
+| 按字幕内容检索、片段建议 | 本地千问或个人文字模型 | 本地无需云端API；处理已保存字幕和查找要求 |
 | 登录、账号、素材/任务/结果管理 | 本站后端/数据库/磁盘 | 无AI API；注册验证邮件另依赖SMTP |
 
 工作台保留左侧可收起/固定的工具栏，工具内顶部按“导入 / 编辑 / 导出”切换。导入包含上传和素材库，编辑并排显示素材预览与参数，导出集中展示进度、结果和SRT入口；处理记录独立成页。阶段切换不重新创建表单或清空草稿；提交处理任务成功后进入导出，后台轮询不会抢走正在编辑的页面，隐藏播放器暂停。原格式、编码、分辨率及有序工作流不变，无新接口或数据库表。
@@ -251,21 +251,30 @@ V9新增transcript/transcript_revision，保存不可变识别稿、编辑版本
 
 ## AI 服务
 
-账户设置的“AI 服务”提供“本地模型 / 我的凭据 / 停用”。沿用API和数据库中的SERVER值，但它现在表示本地千问，不再使用站点公共云端凭据；历史SERVER记录无需迁移。默认本地，PERSONAL仍使用用户加密保存的个人凭据。两种来源失败均不自动切换，避免意外发送数据或扣费；删除个人凭据会停用，切换本地会清除个人密文。个人模式保留腾讯、百炼和DeepSeek三个独立配置，不需要全部购买。
+账户设置的“AI 服务”按“文字AI / 语音识别”分类。文字AI可选服务端部署、我的凭据或停用；个人供应商支持DeepSeek、OpenAI、千问/阿里云百炼（北京）、豆包/火山方舟（北京），共用于方案生成、字幕校对、检索和建议。千问沿用bailian供应商值，不重复创建凭据；豆包使用doubao值。语音识别仍独立配置腾讯和百炼，不包括豆包ASR。SERVER沿用历史持久化值，表示部署者运行的千问，不使用公共云端凭据；任何来源失败均不自动切换，删除个人凭据会停用，切回服务端会清除个人密文。
 
-本地部署目录为外层`llama.cpp/b11669-vulkan-x64`和`models/Qwen3.5-4B`。先运行`deploy/start-local-ai.cmd`，保持窗口运行，再启动/重启IDEA后端；Ctrl+C停止模型。脚本绑定127.0.0.1，使用Vulkan0独显、8192上下文、单并发和4个CPU线程，不启动应用本身，不安装系统服务，不开公网。当前目录结构和RX 6750 GRE已短测，其他机器应先检查设备编号，不保证通用显卡兼容性。
+本地部署目录为外层`llama.cpp/b11669-vulkan-x64`和`models/Qwen3.5-9B`（Q5_K_XL 约6.3GB权重），`models/Qwen3.5-4B`保留为回退。先运行`deploy/start-local-ai.cmd`，保持窗口运行，再启动/重启IDEA后端；Ctrl+C停止模型。脚本优先加载9B并使用32768上下文（实测显存合计约9GB），找不到9B时自动退回4B和8192上下文；绑定127.0.0.1，使用Vulkan0独显、单并发、flash-attention和4个CPU线程，不启动应用本身，不安装系统服务，不开公网。RX 6750 GRE 12GB实测：4B Q4生成92.7 token/s，9B Q5_K_XL生成49.4 token/s、预填约390～630 token/s，因此整段长字幕仍可能超出上下文或超时，会明确报错而不是截断。其他机器应先检查设备编号和显存，不保证通用显卡兼容性。
 
 | 用途 | 环境变量 | 接口 |
 | --- | --- | --- |
-| 本地文字AI | LOCAL_AI_ENABLED=true、LOCAL_AI_PORT=18565、LOCAL_AI_MODEL=qwen3.5-4b | llama.cpp健康检查和JSON文字接口 |
+| 本地文字AI | LOCAL_AI_ENABLED=true、LOCAL_AI_PORT=18565、LOCAL_AI_MODEL=qwen3.5-9b | llama.cpp健康检查和JSON文字接口 |
 | 本地API鉴权（可选） | LOCAL_AI_API_KEY，后端和启动脚本使用相同值 | 仅部署者设置，不返回浏览器 |
 | 腾讯语音识别 | 账户页“我的凭据”：AppId/SecretId/SecretKey | 录音极速版16k_zh，带句时间戳 |
 | 百炼语音识别 | 账户页“我的凭据”：API Key/可选Workspace ID | 北京地域paraformer-realtime-v2 |
 | 个人DeepSeek文字AI | 账户页“我的凭据”：API Key/模型（默认deepseek-flash） | Chat Completions JSON |
+| 个人OpenAI文字AI | 文字AI选择OpenAI：API Key及已开通的模型ID（必填） | 官方Chat Completions，JSON mode，store=false |
+| 个人千问文字AI | 文字AI选择“千问 / 阿里云百炼”：北京API Key/模型（默认qwen-plus）/可选Workspace ID | 官方OpenAI兼容Chat接口，非思考JSON模式 |
+| 个人豆包文字AI | 文字AI选择“豆包 / 火山方舟”：北京API Key及已开通的Model ID或Endpoint ID（ep-...，必填） | 官方Ark Chat接口，thinking.type=disabled，JSON模式 |
+
+百炼控制台是[阿里云官方平台](https://help.aliyun.com/zh/model-studio/get-api-key)，不是第三方OpenAI中转；文字适配参考[百炼兼容接口](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions/)和[OpenAI官方文档](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。只连接官方域名；百炼可选Workspace ID仅用于生成北京专属官方域名，API Key需与地域一致，不接受任意Base URL。模型必须支持对应的非流式JSON输出；未开通模型、网络或余额问题不会自动切换供应商。
+
+豆包使用[火山方舟官方结构化输出接口](https://docs.volcengine.com/docs/ark/structured-output-beta?lang=zh)，固定北京地址`https://ark.cn-beijing.volces.com/api/v3/chat/completions`。需要支持非思考JSON输出的模型，不能填豆包应用Bot ID或把Coding Plan专用Key当通用推理Key使用；本次仅适配文字能力，不提供豆包语音识别或图片/视频生成。
+
+2.21继续保留deepseek文字凭据槽位，在加密JSON中用textProvider区分实际供应商，不新建表、不复制密钥。旧密文省略新字段时按DeepSeek解密；同一供应商留空可保留已保存密钥，切换供应商必须重新填写密钥。OpenAI和豆包未设默认模型，避免替用户选用未开通或不支持的型号。保存只校验配置，不验证真实模型权限、不发付费探测。
 
 本地千问用于方案生成、单句字幕校对、字幕内容检索和片段建议，不具备语音识别能力。腾讯/百炼选本地时显示不支持，需配置至少一家个人识别服务才可转字幕。文字模型仅接收受控文字/参数，不执行模型命令、不上传原视频；方案仍须人工确认。模型上下文有上限，长字幕可能被拒绝，不截断字幕伪装成功，可改用个人云端模型。
 
-本地状态实际检查`GET /health`，单次最多700ms、缓存2秒；未启动、正在加载或连接失败时available=false并返回unavailableReason。页面每10秒刷新能力，也可点账户页刷新按钮；收到本地调用错误时显示明确提示。推理单次35秒、单并发，JSON约束且严格验证输出，不自动重试。个人云端configured/available仅表示配置可读取且完整，不验证余额和权限、不发付费探测。云端域名固定，本地地址固定回环，不接受用户任意URL。原TENCENT_ASR_*、DASHSCOPE_*、DEEPSEEK_*站点环境变量不再作为调用来源。
+本地状态实际检查`GET /health`，单次最多700ms、缓存2秒；未启动、正在加载或连接失败时available=false并返回unavailableReason。页面每10秒刷新能力，也可点账户页刷新按钮；收到本地调用错误时显示明确提示。推理单次默认120秒（`LOCAL_AI_TIMEOUT_SECONDS`，小于启动脚本`--timeout 180`，否则后端会先于服务端放弃）、单并发，JSON约束且严格验证输出，不自动重试。个人云端configured/available仅表示配置可读取且完整，不验证余额和权限、不发付费探测。云端域名固定，本地地址固定回环，不接受用户任意URL。原TENCENT_ASR_*、DASHSCOPE_*、DEEPSEEK_*站点环境变量不再作为调用来源。
 
 登录后的capabilities按当前用户计算，匿名只报告本地默认能力，响应禁止缓存。新增textAi.source/model/available/unavailableReason；`aiPlans`仍要求处理工具可用，其他文字能力按同一用户来源计算。页面使用保存按钮，输入框回车不保存；个人凭据写入前需确认，取消不写入。保存不发起云端验证或付费请求，但可读取本地健康状态。密钥不回显、不存localStorage；输入框留空时省略字段，保留已保存密钥。设置接口以expectedVersion防止多窗口覆盖，写入每用户默认5分钟20次。后台识别显式携带任务用户，不共享可变个人配置。
 
@@ -279,7 +288,7 @@ V10的cloud_credential只存AES-256-GCM密文，随机nonce、AAD绑定用户和
 
 字幕页可识别、编辑时间/文字、保存版本、查看原文/历史、下载SRT和生成字幕视频。重新识别另建字幕，失败保留旧稿；成功任务固定引用识别v1。临时音轨为64kbps/16kHz/单声道MP3，不发布为输出，不覆盖源视频。识别与转换共享有界队列、取消及租约；默认总处理预算5分钟，时间过长应调整服务端预算并同时保证租约足够。云端取消不能撤回已发送数据或保证免扣费，不自动重试付费调用。
 
-单句校对时按所选来源向本地千问或个人DeepSeek发送该句已保存字幕，返回待确认建议；不直接改稿、不改时间轴、不替代ASR。用户确认后仍需保存字幕。每用户默认5分钟最多10次新识别/20次校对。个人云端需自行设置供应商预算和告警；字幕识别的自动测试使用协议替身，不代表真实云端识别效果或费用验收。
+单句校对时按所选来源向本地千问或所选个人文字模型发送该句已保存字幕，返回待确认建议；不直接改稿、不改时间轴、不替代ASR。用户确认后仍需保存字幕。每用户默认5分钟最多10次新识别/20次校对。个人云端需自行设置供应商预算和告警；字幕识别的自动测试使用协议替身，不代表真实云端识别效果或费用验收。
 
 官方协议：[腾讯录音极速版](https://cloud.tencent.com/document/api/1093/52097)、[百炼Paraformer WebSocket](https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service)、[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)。
 
@@ -291,7 +300,7 @@ V10的cloud_credential只存AES-256-GCM密文，随机nonce、AAD绑定用户和
 
 确认页展示实际分辨率、编码、裁切区间、静音/音轨及附加文件；拼接显示每段按播放顺序排列的区间和总时长。生成不入队，确认后才运行既有FFmpeg任务。修改要求会禁用旧确认，必须重新生成；READY与NEEDS_INPUT均使用当前输入作为完整新要求，不拼接旧文、不向模型传旧参数；单份要求最多2000码点，超限在模型调用前拒绝。刷新可恢复上下文和方案，已执行方案不可改；同一方案/版本重复执行返回原任务。
 
-本地使用LOCAL_AI_*配置，个人云端从账户页读取加密凭据，无数据库迁移。仅向所选模型发送受控处理要求、元信息、已有参数和工具能力，不发送视频/音轨/文件名/路径。后端再次验证操作、格式/编码、字段类型和素材边界；非法结果AI_PLAN_FAILED，不创建任务或覆盖旧方案。每用户默认5分钟20次生成，本地单并发、个人云端双并发，35秒超时、最多3072输出token，不自动重试或回退。
+本地使用LOCAL_AI_*配置，个人云端从账户页读取加密凭据，无数据库迁移。仅向所选模型发送受控处理要求、元信息、已有参数和工具能力，不发送视频/音轨/文件名/路径。后端再次验证操作、格式/编码、字段类型和素材边界；非法结果AI_PLAN_FAILED，不创建任务或覆盖旧方案。每用户默认5分钟20次生成，本地单并发、个人云端双并发，本地默认120秒超时（`LOCAL_AI_TIMEOUT_SECONDS`）、最多3072输出token，不自动重试或回退。
 
 执行器把独立步骤编译为源区间和有序滤镜链，复用既有导出逻辑，不调用自己的HTTP接口。单区间融合执行，避免每一步导出；多区间顺序生成FFV1/PCM无损Matroska缓存后一次最终有损编码（目标体积模式包含分析遍），统一30fps，避免反向/重复split积压高清帧。缓存和最终文件分别受输出上限约束，磁盘峰值约两倍加旁路音轨；无损缓存体积可能先触发OUTPUT_TOO_LARGE，缩小分辨率/缩短选段可减少占用。所有阶段共享超时/取消，缓存失败或取消即清理，重启后由既有租约/资源清理覆盖。
 
@@ -331,4 +340,4 @@ capabilities含workflow才开放，除ffprobe及H.264/AAC还需FFV1/PCM编码器
 
 复用DeepSeek配置，仅分析当前完整已保存字幕，最多600段且segments序列化UTF-8 JSON不超过128KiB；超出明确返回TRANSCRIPT_ANALYSIS_TOO_LARGE，不截断。模型只选真实段ID，后端重建引文/时间并验证非重叠和推荐总时长；查无内容返回空结果。标题、理由和相关度为模型判断，仍需核对原文。请求绑定transcriptId和版本，重识别即使仍为v1也不能复用旧稿，调用前后均核验权限和版本。
 
-检索/推荐共享每用户默认5分钟20次，与其他文字AI共享最多2个并发请求、35秒超时，不自动重试。调用前确认向云端发送目标与已保存字幕。当前未配置真实密钥，自动测试仅验证协议、权限、版本、时长边界与本地浏览器预览/带入流程，不代表已验收云端检索质量或费用。
+检索/推荐共享每用户默认5分钟20次，与其他文字AI共享最多2个并发请求、本地默认120秒超时，不自动重试。调用前确认向云端发送目标与已保存字幕。当前未配置真实密钥，自动测试仅验证协议、权限、版本、时长边界与本地浏览器预览/带入流程，不代表已验收云端检索质量或费用。

@@ -1,6 +1,10 @@
 # AI音视频工作台：轻量版接口契约
 
-版本：2.19.0。日期：2026-10-22。
+版本：2.21.0。日期：2026-10-23。
+
+2.21变更：新增豆包/火山方舟文字供应商textProvider=doubao；千问入口明确为“千问 / 阿里云百炼”，仍使用bailian值并兼容已有配置。豆包使用北京官方Chat接口，必须填写API Key和已开通的Model ID或Endpoint ID，不默认代选模型。无新接口、表或迁移，仍为57个接口、43个已实现。
+
+2.20变更：个人文字模型新增OpenAI、阿里云百炼（北京），与DeepSeek共用JSON意图/校对/检索协议。保留deepseek历史凭据槽位，PERSONAL通过textProvider=deepseek/openai/bailian选择实际供应商；旧密文和省略字段仍按原供应商读取。切换供应商必须重新填写密钥，不跨供应商保留秘密。无新接口、表或迁移；共57个接口，43个已实现。设置页面分文字AI和语音识别两类。
 
 2.19变更：重新生成方案时，instruction完整替换旧要求，不再拼接“补充”或继承旧参数。新增DELETE方案与DELETE任务记录接口，均需登录和CSRF，统一200 Result.success()。处理记录与保存方案独立成页；V11新增media_task.history_hidden_at，仅隐藏终态记录，不删除原素材、方案或结果文件。
 
@@ -212,19 +216,23 @@ capabilities.supportedOperations包含workflow才开放，要求ffprobe和本机
 
 | 方法 | 路径 | 含义 |
 | --- | --- | --- |
-| GET | /api/users/me/cloud-credentials | 200 Result，data为三个供应商的状态列表 |
+| GET | /api/users/me/cloud-credentials | 200 Result，data为三个凭据槽位的状态列表 |
 | PUT | /api/users/me/cloud-credentials/{provider} | 200 Result，data为保存后的状态 |
 | DELETE | /api/users/me/cloud-credentials/{provider} | 200 Result，清除密文并设为OFF，data为新状态 |
 
 provider仅tencent/aliyun/deepseek，不支持自定义URL。全部需登录；PUT/DELETE需CSRF和JSON，响应no-store。无记录version=0、mode=SERVER，保存后版本递增。原状态字段保留，新增available和可空unavailableReason；configured表示配置完整，不能代替available。本地deepseek项的model为部署者配置的千问模型名，available取决于真实健康检查。SERVER下tencent/aliyun的configured/available均为false，原因是本地不支持语音识别。个人云端available仍仅表示凭据可读取且完整，不保证网络、权限或余额。不返回秘密、密文、回环端口或userId。
 
-PUT必填expectedVersion和mode（SERVER/PERSONAL/OFF）。SERVER现在表示本地模型，不再使用站点云端凭据。PERSONAL字段及校验不变：腾讯appId/secretId/secretKey，百炼apiKey/workspaceId，DeepSeek apiKey/model。省略或null保留之前值，未有旧值时必须提供密钥；显式空密钥失败。SERVER/OFF不得携带个人字段，切换时清除旧密文。DELETE请求体为`{"expectedVersion":1}`，删除后停用；启用本地需显式PUT SERVER，不自动回退。
+PUT必填expectedVersion和mode（SERVER/PERSONAL/OFF）。SERVER表示服务端模型，不使用站点云端凭据。语音识别槽位维持腾讯appId/secretId/secretKey、百炼apiKey/workspaceId。文字槽位路径仍是deepseek，PERSONAL接收textProvider（deepseek/openai/bailian/doubao）、apiKey、model；仅bailian接受可选workspaceId。省略textProvider保留旧供应商，没有旧值时按deepseek。相同供应商省略/null字段可保留旧值，切换供应商必须提供新apiKey；OpenAI模型ID必填，豆包Model ID或Endpoint ID必填（均通过model字段传递），千问/百炼默认qwen-plus，DeepSeek默认deepseek-flash。显式空密钥失败。SERVER/OFF不得携带个人字段，切换时清除旧密文。DELETE请求体为`{"expectedVersion":1}`，删除后停用，不自动回退。
 
 三种来源互斥，任何来源失败都不回退。写入默认每用户5分钟20次，429含Retry-After；版本冲突409 CLOUD_CREDENTIALS_CONFLICT；密文不可读503 CLOUD_CREDENTIALS_UNAVAILABLE。列表在不可解密时仍返回personalStored=true、configured=false、available=false，可删除或恢复主密钥。账号注销在同一事务删除凭据。
 
-`capabilities.textAi={source,model,available,unavailableReason}`声明当前用户文字来源；匿名使用SERVER。服务端固定访问127.0.0.1，端口由LOCAL_AI_PORT设置，健康检查最多700ms/缓存2秒，不调用生成接口、不产生费用；本地单并发/35秒，关闭思考并要求JSON。页面每10秒刷新能力，账户页可主动刷新；未启动/加载中显示本地模型不可用。已判定不可用的业务入口仍可能返回503 AI_UNAVAILABLE；请求中途失败返回503 LOCAL_AI_UNAVAILABLE，前端两者均显示本地不可用提示。输入超上下文或非法模型结果按对应AI_PLAN_FAILED/AI_FAILED/AI_ANALYSIS_FAILED拒绝，不能执行半份方案。
+`capabilities.textAi={source,provider,model,available,unavailableReason}`声明当前用户文字来源；provider为local/deepseek/openai/bailian/doubao，匿名使用SERVER和local。服务端固定回环地址，健康检查最多700ms/缓存2秒，不产生云端费用；推理单并发，超时由LOCAL_AI_TIMEOUT_SECONDS配置。个人文字调用共用2个并发槽、35秒单次超时和4MiB响应上限，不回退、不自动重试。页面每10秒刷新能力，失败显示当前供应商；个人available只表示配置可读取且完整，不代表真实网络、模型权限或余额已验证。非法、拒答或截断结果按AI_PLAN_FAILED/AI_FAILED/AI_ANALYSIS_FAILED拒绝。
 
-示例（仅虚构值）：`{"expectedVersion":0,"mode":"PERSONAL","apiKey":"sk-example-not-real","model":"deepseek-flash"}`。保存不会发起付费校验。调用服务时按会话/任务用户解密当前配置，秘密不写任务或方案；排队识别使用执行时的配置，切换或删除不能撤回已发出的请求及费用。登录和保存后应重新查询capabilities，不能跨用户缓存。
+OpenAI固定POST https://api.openai.com/v1/chat/completions，使用max_completion_tokens、store=false和JSON mode；百炼固定北京域名https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions，或由合法workspaceId生成https://{workspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions，使用max_tokens、enable_thinking=false和JSON mode。Workspace ID是标识符，不是URL，不接受任意主机、端口、路径或第三方中转。百炼文字配置与百炼语音配置独立，不共享密钥。参考[OpenAI官方接口](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[百炼官方兼容接口](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions/)。
+
+豆包固定POST https://ark.cn-beijing.volces.com/api/v3/chat/completions，Bearer API Key鉴权，使用max_tokens、thinking.type=disabled及response_format.type=json_object。必须选用支持非思考JSON输出的已开通模型，不支持应用Bot ID、Coding Plan专用接口或任意中转地址。豆包仅增加文字适配，不提供豆包语音识别、图片/视频生成。参考[火山方舟结构化输出](https://docs.volcengine.com/docs/ark/structured-output-beta?lang=zh)。
+
+示例（仅虚构值）：`{"expectedVersion":0,"mode":"PERSONAL","textProvider":"doubao","apiKey":"ark-example-not-real","model":"ep-example-not-real"}`。保存不会发起付费校验。调用服务时按会话/任务用户解密当前配置，秘密不写任务或方案；排队识别使用执行时的配置，切换或删除不能撤回已发出的请求及费用。登录和保存后应重新查询capabilities，不能跨用户缓存。
 
 ### 同源多段拼接
 

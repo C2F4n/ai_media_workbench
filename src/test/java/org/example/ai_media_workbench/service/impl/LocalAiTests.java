@@ -84,13 +84,13 @@ class LocalAiTests {
         var transport=readyTransport(); var local=local(transport);
         when(transport.post(any(),anyLong(),any(),any(),any())).thenThrow(new BusinessException(ErrorCode.LOCAL_AI_UNAVAILABLE));
         var credentials=mock(CloudCredentialService.class); when(credentials.source("user","deepseek")).thenReturn(Mode.SERVER);
-        var cloud=mock(DeepSeekJsonClient.class); var client=new TextAiJsonClient(credentials,cloud,local);
+        var cloud=mock(CloudTextJsonClient.class); var client=new TextAiJsonClient(credentials,cloud,local);
         assertThatThrownBy(()->client.complete("JSON","text",100,ErrorCode.AI_PLAN_FAILED,"user"))
                 .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.LOCAL_AI_UNAVAILABLE));
         assertThat(local.isAvailable()).isFalse(); verifyNoInteractions(cloud);
     }
     @Test void sourcesAreExclusiveAndNeverRetryTheOtherSource() {
-        var credentials=mock(CloudCredentialService.class); var cloud=mock(DeepSeekJsonClient.class); var local=mock(LocalAiClient.class);
+        var credentials=mock(CloudCredentialService.class); var cloud=mock(CloudTextJsonClient.class); var local=mock(LocalAiClient.class);
         var client=new TextAiJsonClient(credentials,cloud,local);
         when(credentials.source("user","deepseek")).thenReturn(Mode.PERSONAL);
         when(cloud.complete(any(),any(),anyInt(),any(),any())).thenThrow(new BusinessException(ErrorCode.AI_PLAN_FAILED));

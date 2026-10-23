@@ -25,7 +25,7 @@ async function remove(context, username) {
 async function settings(page) {
   await page.locator('#header-account').click();
   await page.locator('#account-cloud-tab').click();
-  await expect(page.locator('#cloud-providers > article')).toHaveCount(3);
+  await expect(page.locator('.cloud-provider')).toHaveCount(3);
 }
 
 test('personal credentials are private, never echoed, versioned and explicitly disabled on deletion', async ({ page, context, browser }, testInfo) => {
@@ -41,8 +41,9 @@ test('personal credentials are private, never echoed, versioned and explicitly d
       ['aliyun', { apiKey: 'sk-fake-aliyun-browser', workspaceId: 'workspace-test' }],
       ['deepseek', { apiKey: 'sk-fake-deepseek-browser', model: 'deepseek-flash' }]
     ]) {
+      await page.locator(provider === 'deepseek' ? '#cloud-text-tab' : '#cloud-speech-tab').click();
       const card = page.locator('#cloud-' + provider);
-      await card.locator('select').selectOption('PERSONAL');
+      await card.locator('select[name=mode]').selectOption('PERSONAL');
       for (const [key, value] of Object.entries(fields)) await card.locator('input[name="' + key + '"]').fill(value);
       await card.getByRole('button', { name: /^保存/ }).click();
       await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
@@ -78,16 +79,16 @@ test('personal credentials are private, never echoed, versioned and explicitly d
     }
     second = await browser.newContext({ baseURL: new URL(page.url()).origin });
     const other = await second.newPage(); otherName = await account(other, second); await settings(other);
-    await expect(other.locator('#cloud-deepseek select')).toHaveValue('SERVER');
+    await expect(other.locator('#cloud-deepseek select[name=mode]')).toHaveValue('SERVER');
     expect((await (await second.request.get('/api/users/me/cloud-credentials')).json()).data.every((item) => item.version === 0 && !item.personalStored)).toBe(true);
     expect((await (await second.request.get('/api/system/capabilities')).json()).data.subtitleCorrection).toBe(false);
     await deepseek.getByRole('button', { name: '删除文字 AI个人凭据', exact: true }).click();
     await expect(deepseek.locator('[role=status]')).toHaveText('已停用');
     expect((await (await context.request.get('/api/system/capabilities')).json()).data.subtitleCorrection).toBe(false);
-    await page.locator('#cloud-tencent input[name=secretKey]').fill('unsaved-key');
+    await page.locator('#cloud-speech-tab').click(); await page.locator('#cloud-tencent input[name=secretKey]').fill('unsaved-key');
     await page.getByRole('button', { name: '退出登录', exact: true }).click();
     await expect(page.locator('#auth-view')).toBeVisible();
-    await expect(page.locator('#cloud-providers > article')).toHaveCount(0);
+    await expect(page.locator('.cloud-provider')).toHaveCount(0);
     await page.locator('#login-username').fill(username); await page.locator('#login-password').fill(password);
     await page.getByRole('button', { name: '登录', exact: true }).click();
     await expect(page.locator('#workbench-panel')).toBeVisible(); await settings(page);
