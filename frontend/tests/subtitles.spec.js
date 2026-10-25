@@ -1,11 +1,15 @@
 const { test, expect } = require('@playwright/test');
+const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => handleActionConfirmations(page));
+test.beforeEach(async ({ page }) => acceptCloudCalls(page));
 const { serveStatic } = require('./helpers/static.cjs');
 test.beforeEach(async ({ page }) => { await serveStatic(page); });
 const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 
 // Isolated browser contract fixture, not evidence of real cloud recognition or billing.
-async function fixture(page, enabled = true, existing = false) {
+async function fixture(page, enabled = true, existing = false, models = null) {
+  const selection = { provider: 'aliyun', model: null };
   const id = '22222222-2222-4222-8222-222222222222';
   const transcriptId = '66666666-6666-4666-8666-666666666666';
   const createdAt = '2026-10-20T00:00:00Z';
@@ -25,13 +29,13 @@ async function fixture(page, enabled = true, existing = false) {
     const missing = () => route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ code: 'RESOURCE_NOT_FOUND', data: null, details: [] }) });
     if (url.pathname === '/api/system/capabilities') return ok({ registration: false, emailVerification: false, passwordRecovery: false, aiPlans: false, asr: enabled,
       semanticSearch: false, clipRecommendations: false, mediaTool: true, maxUploadBytes: 1073741824, maxDurationMs: 900000,
-      supportedOperations: ['transcode'], asrProviders: enabled ? ['tencent', 'aliyun'] : [], subtitleCorrection: enabled });
+      supportedOperations: ['transcode'], asrProviders: enabled ? ['tencent', 'aliyun'] : [], subtitleCorrection: enabled, ...(models ? { asrModels: models } : {}) });
     if (url.pathname === '/api/auth/csrf') return ok({ token: 'fixture-csrf', headerName: 'X-CSRF-Token' });
     if (url.pathname === '/api/users/me') return ok({ id: '11111111-1111-4111-8111-111111111111', username: 'fixture', displayName: '字幕测试', email: 'fixture@example.com', emailVerified: true, createdAt, updatedAt: createdAt });
     if (url.pathname === '/api/media') return ok({ items: [media], page: 1, pageSize: 10, total: 1 });
     if (url.pathname === '/api/media/' + id) return ok(media);
     if (url.pathname.endsWith('/transcriptions') && method === 'POST') {
-      writes++; expect(request.postDataJSON()).toEqual({ language: 'zh-CN', force: versions.size > 0, provider: 'aliyun' });
+      writes++; expect(request.postDataJSON()).toEqual({ language: 'zh-CN', force: versions.size > 0, provider: selection.provider, ...(models ? { model: selection.model } : {}) });
       expect(request.headers()['x-csrf-token']).toBe('fixture-csrf');
       task = { id: '44444444-4444-4444-8444-444444444444', mediaId: id, kind: 'TRANSCRIPTION', sourceId: id, sourceVersion: null,
         planId: null, planVersion: null, parameters: null, status: 'QUEUED', stage: 'WAITING', progressPercent: null, outputs: [], transcript: null, error: null, createdAt };
@@ -65,8 +69,58 @@ async function fixture(page, enabled = true, existing = false) {
     }
     throw new Error('Unexpected fixture request: ' + method + ' ' + url.pathname);
   });
-  return { calls, versions, writes: () => writes };
+  return { calls, versions, selection, writes: () => writes };
 }
+
+const speechModels = [
+  { provider: 'tencent', id: '16k_zh', name: '中文通用 16k', recommended: true },
+  { provider: 'aliyun', id: 'qwen-audio-3.1-asr-flash-streaming', name: '千问语音 3.1', recommended: true },
+  { provider: 'aliyun', id: 'fun-asr-realtime', name: 'Fun-ASR · 多语种与方言', recommended: false },
+  { provider: 'aliyun', id: 'paraformer-realtime-v2', name: 'Paraformer V2 · 常规转写', recommended: false }
+];
+
+for (const width of [1365, 390, 320]) test(`speech model selection follows its supplier and sends the confirmed model at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await fixture(page, true, false, speechModels);
+  await page.removeLocatorHandler(page.locator('#cloud-confirm-dialog[open]'));
+  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await selectTool(page, 'subtitle');
+  await page.locator('#asr-provider').selectOption('aliyun');
+  await expect(page.locator('#asr-model option')).toHaveCount(3);
+  await expect(page.locator('#asr-model')).toHaveValue('qwen-audio-3.1-asr-flash-streaming');
+  await expect(page.locator('#asr-model option:checked')).toHaveText('千问语音 3.1（推荐）');
+  await page.locator('#start-transcription').click();
+  await expect(page.locator('#cloud-confirm-dialog')).toContainText('qwen-audio-3.1-asr-flash-streaming');
+  expect(await page.locator('#cloud-confirm-dialog').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.locator('#cancel-cloud-confirm').click();
+  await page.locator('#asr-model').selectOption('fun-asr-realtime');
+  await page.locator('#asr-provider').selectOption('tencent');
+  await expect(page.locator('#asr-model option')).toHaveCount(1); await expect(page.locator('#asr-model')).toHaveValue('16k_zh');
+  await page.locator('#asr-provider').selectOption('aliyun'); await expect(page.locator('#asr-model')).toHaveValue('fun-asr-realtime');
+  await page.locator('#tool-dependencies summary').click(); await expect(page.locator('#dependency-services')).toContainText('Fun-ASR');
+  expect(state.writes()).toBe(0);
+  await page.locator('#start-transcription').click();
+  await expect(page.locator('#cloud-confirm-dialog')).toBeVisible(); await expect(page.locator('#cloud-confirm-dialog')).toContainText('fun-asr-realtime');
+  await page.locator('#cancel-cloud-confirm').click(); expect(state.writes()).toBe(0);
+  await expect(page.locator('#asr-model-note')).toContainText('文言文与生僻字需核对');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const fields = await page.locator('#asr-provider, #asr-model').evaluateAll(items => items.map(item => {
+    const box = item.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
+  }));
+  expect(fields.every(box => box.left >= 0 && box.right <= width && box.width > 0)).toBe(true);
+  await page.locator('#subtitle-section').screenshot({ path: testInfo.outputPath(`speech-models-${width}.png`) });
+  state.selection.model = 'fun-asr-realtime';
+  await page.locator('#start-transcription').click(); await page.locator('#accept-cloud-confirm').click();
+  await expect(page.locator('#subtitle-editor')).toBeVisible({ timeout: 12000 }); expect(state.writes()).toBe(1);
+  await expect(page.locator('#asr-model')).toHaveValue('fun-asr-realtime');
+});
+
+test('missing speech credentials disable the provider model and recognition together', async ({ page }) => {
+  await fixture(page, false, false, speechModels); await page.goto('/');
+  await selectTool(page, 'subtitle');
+  await expect(page.locator('#asr-provider')).toBeDisabled(); await expect(page.locator('#asr-model')).toBeDisabled();
+  await expect(page.locator('#start-transcription')).toBeDisabled();
+});
 
 test('cloud subtitle workflow supports editing, versions, safe correction suggestions and SRT on desktop/mobile', async ({ page }, testInfo) => {
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));

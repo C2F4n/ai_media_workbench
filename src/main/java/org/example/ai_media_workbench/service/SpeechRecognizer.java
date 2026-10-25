@@ -9,6 +9,9 @@ import java.util.function.BooleanSupplier;
 public interface SpeechRecognizer {
     List<String> providers(String userId);
     boolean isAvailable(String provider,String userId);
-    List<RecognizedSegment> recognize(String provider, Path monoMp3, Duration timeout, BooleanSupplier cancelled,String userId);
+    List<RecognizedSegment> recognize(String provider, String model, Path monoMp3, Duration timeout, BooleanSupplier cancelled,String userId);
+    default List<RecognizedSegment> recognize(String provider, Path monoMp3, Duration timeout, BooleanSupplier cancelled,String userId) {
+        return recognize(provider,null,monoMp3,timeout,cancelled,userId);
+    }
     record RecognizedSegment(long startMs, long endMs, String text) {}
 }

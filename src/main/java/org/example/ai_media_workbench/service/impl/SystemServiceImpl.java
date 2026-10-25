@@ -56,6 +56,7 @@ public class SystemServiceImpl implements SystemService {
                 analyzer.isAvailable(userId), probe.isAvailable(), media.maxUploadSize().toBytes(), media.maxDuration().toMillis(),
                 List.copyOf(operations), providers, corrector.isAvailable(userId),
                 probe.isAvailable() ? transcoder.exportFormats() : List.of(), probe.isAvailable() ? transcoder.exportVideoCodecs() : List.of(), credentials.textStatus(userId),
-                credentials.available(userId,"deepseek"));
+                credentials.available(userId,"deepseek"), java.util.Arrays.stream(org.example.ai_media_workbench.common.ai.AsrModel.values())
+                    .map(model -> new org.example.ai_media_workbench.vo.system.AsrModelVO(model.provider(),model.id(),model.displayName(),model.recommended())).toList());
     }
 }

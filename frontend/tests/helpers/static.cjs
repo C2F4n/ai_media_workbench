@@ -5,11 +5,12 @@ const path = require('node:path');
 async function serveStatic(page) {
   const root = path.resolve(__dirname, '../../../src/main/resources/static');
   const files = { '/': 'index.html', '/assets/app.js': 'assets/app.js', '/assets/styles.css': 'assets/styles.css', '/assets/brand.svg': 'assets/brand.svg', '/assets/vendor/lucide.min.js': 'assets/vendor/lucide.min.js' };
+  for (const name of ['studio-desk.webp', 'studio-lighting.webp', 'studio-editing.webp']) files['/assets/auth/' + name] = 'assets/auth/' + name;
   await page.route('**/*', (route) => {
     const name = new URL(route.request().url()).pathname;
     if (name.startsWith('/api/')) return route.fallback();
     const file = files[name]; if (!file) return route.fulfill({ status: 404, body: '' });
-    const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : file.endsWith('.svg') ? 'image/svg+xml' : 'text/html';
+    const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : file.endsWith('.svg') ? 'image/svg+xml' : file.endsWith('.webp') ? 'image/webp' : 'text/html';
     return route.fulfill({ status: 200, contentType: type, body: fs.readFileSync(path.join(root, file)) });
   });
 }

@@ -56,7 +56,8 @@ public class CloudTextJsonClient {
             var result=json.readTree(choice.path("message").path("content").asText());
             if (!result.isObject()) throw new BusinessException(failure);
             return result;
-        } catch (Exception exception) { throw new BusinessException(failure); }
+        } catch (BusinessException exception) { throw exception; }
+        catch (Exception exception) { throw new BusinessException(failure); }
         finally { requests.release(); }
     }
     private static URI endpoint(org.example.ai_media_workbench.properties.AiProperties settings) {

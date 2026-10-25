@@ -62,7 +62,7 @@ public class TranscriptionWorker {
                     || Files.size(audio.path())<=0 || Files.size(audio.path())>Math.min(limits.maxOutputSize().toBytes(),100L*1024*1024))
                 throw new BusinessException(ErrorCode.ASR_FAILED);
             CloudTransport.check(deadline,cancelled);
-            var recognized=recognizer.recognize(request.provider(),audio.path(),Duration.ofNanos(deadline-System.nanoTime()),cancelled,task.getUserId());
+            var recognized=recognizer.recognize(request.provider(),request.model(),audio.path(),Duration.ofNanos(deadline-System.nanoTime()),cancelled,task.getUserId());
             CloudTransport.check(deadline,cancelled);
             if (recognized==null || recognized.isEmpty()) throw new BusinessException(ErrorCode.ASR_NO_SPEECH);
             var segments=new ArrayList<TranscriptSegment>();

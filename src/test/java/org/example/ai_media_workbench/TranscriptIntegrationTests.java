@@ -72,7 +72,7 @@ class TranscriptIntegrationTests {
                 ? new MediaMetadataVO("mp3",5040,null,null,null,true,"mp3") : new MediaMetadataVO("mov",5000,null,null,null,true,"aac"));
         doAnswer(call->{ Files.write(call.getArgument(1,Path.class),new byte[]{1,2,3}); return null; })
                 .when(transcoder).prepareSpeechAudio(any(),any(),any(),any());
-        when(recognizer.recognize(anyString(),any(),any(),any(),anyString())).thenReturn(List.of(
+        when(recognizer.recognize(anyString(),any(),any(),any(),any(),anyString())).thenReturn(List.of(
                 new SpeechRecognizer.RecognizedSegment(100,1100,"你好，世界。"),new SpeechRecognizer.RecognizedSegment(2000,4000,"第二段字幕。")));
         when(corrector.isAvailable(anyString())).thenReturn(true); when(corrector.correct(anyString(),anyString())).thenReturn("你好，世界！");
     }
@@ -88,7 +88,7 @@ class TranscriptIntegrationTests {
         var task=processing.task(owner.id,taskId);
         assertThat(task.status().name()).isEqualTo("SUCCEEDED"); assertThat(task.outputs()).isEmpty(); assertThat(task.parameters()).isNull();
         var reference=(TranscriptReference)task.transcript(); assertThat(reference.version()).isEqualTo(1);
-        verify(recognizer).recognize(eq("aliyun"),any(),argThat(value->!value.isNegative()&&value.compareTo(Duration.ofMinutes(5))<=0),any(),eq(owner.id));
+        verify(recognizer).recognize(eq("aliyun"),eq("paraformer-realtime-v2"),any(),argThat(value->!value.isNegative()&&value.compareTo(Duration.ofMinutes(5))<=0),any(),eq(owner.id));
         var original=transcripts.latest(owner.id,mediaId); assertThat(original.version()).isEqualTo(1);
         var first=original.segments().getFirst();
         var changed=List.of(new TranscriptSegment(first.id(),first.startMs(),first.endMs(),"修改后的字幕。"),original.segments().get(1));
@@ -130,15 +130,58 @@ class TranscriptIntegrationTests {
                 .andExpect(status().isForbidden());
     }
 
+    @Test void selectedSpeechModelsAreValidatedSnapshottedAndPassedToTheWorker() throws Exception {
+        var owner=login(); String mediaId=source(owner);
+        mvc.perform(get("/api/system/capabilities").cookie(owner.cookie))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.asrModels.length()").value(4))
+                .andExpect(jsonPath("data.asrModels[1].id").value("qwen-audio-3.1-asr-flash-streaming"));
+        for (String model:List.of("qwen-audio-3.1-asr-flash-streaming","fun-asr-realtime","paraformer-realtime-v2")) {
+            var task=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",true,"aliyun",model));
+            assertThat(json.readTree(tasks.task(owner.id,task.id()).getParametersJson()).path("model").asText()).isEqualTo(model);
+            worker.runOne(); assertThat(processing.task(owner.id,task.id()).status().name()).isEqualTo("SUCCEEDED");
+            verify(recognizer).recognize(eq("aliyun"),eq(model),any(),any(),any(),eq(owner.id));
+        }
+    }
+
+    @Test void unsupportedAndCrossProviderModelsFailBeforeQueuingOrCloudCalls() throws Exception {
+        var owner=login(); String mediaId=source(owner);
+        for (String model:List.of("qwen-plus","16k_zh","qwen-audio-3.1-asr-flash-filetrans","","x".repeat(81)))
+            mvc.perform(post("/api/media/"+mediaId+"/transcriptions").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf)
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(new TranscriptionRequest("zh-CN",false,"aliyun",model))))
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("INVALID_PARAMETERS"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM media_task WHERE user_id=?",Integer.class,owner.id)).isZero();
+        verify(recognizer,never()).recognize(anyString(),any(),any(),any(),any(),anyString());
+    }
+
+    @Test void cloudErrorsReturnResultKeepSessionAndPersistInFailedSpeechTasks() throws Exception {
+        var owner=login(); var item=generate(owner,source(owner)); var segment=item.segments().getFirst();
+        for (var code:List.of(ErrorCode.CLOUD_AUTH_FAILED,ErrorCode.CLOUD_QUOTA_EXCEEDED,ErrorCode.CLOUD_NETWORK_ERROR,ErrorCode.CLOUD_TIMEOUT)) {
+            doThrow(new BusinessException(code)).when(corrector).correct(anyString(),anyString());
+            mvc.perform(post("/api/transcripts/"+item.id()+"/corrections").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf)
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(new CorrectTranscriptRequest(1,segment.id()))))
+                    .andExpect(status().is(code.status().value())).andExpect(jsonPath("code").value(code.name()))
+                    .andExpect(jsonPath("message").value(code.message())).andExpect(jsonPath("data").isEmpty())
+                    .andExpect(jsonPath("details").isArray()).andExpect(jsonPath("requestId").isNotEmpty());
+            mvc.perform(get("/api/users/me").cookie(owner.cookie)).andExpect(status().isOk());
+        }
+        when(recognizer.recognize(anyString(),any(),any(),any(),any(),anyString())).thenThrow(new BusinessException(ErrorCode.CLOUD_AUTH_FAILED));
+        var task=transcripts.transcribe(owner.id,item.mediaId(),new TranscriptionRequest("zh-CN",true,"tencent")); worker.runOne();
+        var result=processing.task(owner.id,task.id());
+        assertThat(result.status().name()).isEqualTo("FAILED");
+        assertThat(result.error().code()).isEqualTo("CLOUD_AUTH_FAILED");
+        assertThat(result.error().message()).isEqualTo(ErrorCode.CLOUD_AUTH_FAILED.message());
+        assertThat(transcripts.latest(owner.id,item.mediaId()).id()).isEqualTo(item.id());
+    }
+
     @Test void forceRecognitionPreservesOldSubtitleOnFailureAndUsesNewIdOnlyOnSuccess() throws Exception {
         var owner=login(); String mediaId=source(owner); var old=generate(owner,mediaId);
         assertThatThrownBy(()->transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",false,"tencent")))
                 .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_ALREADY_EXISTS));
-        when(recognizer.recognize(anyString(),any(),any(),any(),anyString())).thenThrow(new BusinessException(ErrorCode.ASR_FAILED));
+        when(recognizer.recognize(anyString(),any(),any(),any(),any(),anyString())).thenThrow(new BusinessException(ErrorCode.ASR_FAILED));
         var failed=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",true,"tencent")); worker.runOne();
         assertThat(processing.task(owner.id,failed.id()).error().code()).isEqualTo("ASR_FAILED");
         assertThat(transcripts.latest(owner.id,mediaId).id()).isEqualTo(old.id());
-        doReturn(List.of(new SpeechRecognizer.RecognizedSegment(0,1000,"新字幕"))).when(recognizer).recognize(anyString(),any(),any(),any(),anyString());
+        doReturn(List.of(new SpeechRecognizer.RecognizedSegment(0,1000,"新字幕"))).when(recognizer).recognize(anyString(),any(),any(),any(),any(),anyString());
         var newer=generate(owner,mediaId,true); assertThat(newer.id()).isNotEqualTo(old.id());
         assertThat(transcripts.get(owner.id,old.id(),1).segments()).hasSize(2);
     }
@@ -148,7 +191,7 @@ class TranscriptIntegrationTests {
         for(var segments:List.of(List.<SpeechRecognizer.RecognizedSegment>of(),
                 List.of(new SpeechRecognizer.RecognizedSegment(0,9000,"out of range")),
                 List.of(new SpeechRecognizer.RecognizedSegment(0,1000,"first"),new SpeechRecognizer.RecognizedSegment(500,1500,"overlap")))) {
-            when(recognizer.recognize(anyString(),any(),any(),any(),anyString())).thenReturn(segments);
+            when(recognizer.recognize(anyString(),any(),any(),any(),any(),anyString())).thenReturn(segments);
             var task=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",false,"tencent")); worker.runOne();
             assertThat(processing.task(owner.id,task.id()).status().name()).isEqualTo("FAILED");
             assertThat(processing.task(owner.id,task.id()).transcript()).isNull();
@@ -161,8 +204,8 @@ class TranscriptIntegrationTests {
         var queued=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",false,"tencent"));
         processing.cancel(owner.id,queued.id()); assertThat(worker.runOne()).isFalse(); verifyNoInteractions(corrector);
         var running=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",false,"tencent"));
-        when(recognizer.recognize(anyString(),any(),any(),any(),anyString())).thenAnswer(call->{
-            processing.cancel(owner.id,running.id()); assertThat(call.getArgument(3,BooleanSupplier.class).getAsBoolean()).isTrue();
+        when(recognizer.recognize(anyString(),any(),any(),any(),any(),anyString())).thenAnswer(call->{
+            processing.cancel(owner.id,running.id()); assertThat(call.getArgument(4,BooleanSupplier.class).getAsBoolean()).isTrue();
             return List.of(new SpeechRecognizer.RecognizedSegment(0,1000,"late"));
         });
         worker.runOne(); assertThat(processing.task(owner.id,running.id()).status().name()).isEqualTo("CANCELLED");
@@ -172,7 +215,7 @@ class TranscriptIntegrationTests {
         assertThat(processing.task(owner.id,expired.id()).error().code()).isEqualTo("TASK_INTERRUPTED"); assertThat(Files.exists(temp.path())).isFalse();
         var deleted=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",false,"tencent"));
         doAnswer(call->{ media.delete(owner.id,mediaId); return List.of(new SpeechRecognizer.RecognizedSegment(0,1000,"late")); })
-                .when(recognizer).recognize(anyString(),any(),any(),any(),anyString()); worker.runOne();
+                .when(recognizer).recognize(anyString(),any(),any(),any(),any(),anyString()); worker.runOne();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transcript WHERE source_task_id=?",Integer.class,deleted.id())).isZero();
         assertThat(tasks.activeCount()).isZero();
     }
@@ -221,7 +264,7 @@ class TranscriptIntegrationTests {
         var task=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",false,"tencent"));
         doAnswer(call->{ users.deleteAccount(owner.id,new DeleteUserRequest(PASSWORD,jdbc.queryForObject("SELECT username FROM app_user WHERE id=?",String.class,owner.id)));
             return List.of(new SpeechRecognizer.RecognizedSegment(0,1000,"late")); })
-                .when(recognizer).recognize(anyString(),any(),any(),any(),anyString());
+                .when(recognizer).recognize(anyString(),any(),any(),any(),any(),anyString());
         worker.runOne();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM transcript WHERE source_task_id=?",Integer.class,task.id())).isZero();
         mvc.perform(get("/api/media/"+mediaId+"/transcript").cookie(owner.cookie)).andExpect(status().isUnauthorized());

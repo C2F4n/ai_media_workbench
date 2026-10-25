@@ -1,10 +1,12 @@
 const { test, expect } = require('@playwright/test');
+const { handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const { selectTool } = require('./helpers/navigation.cjs');
 
 // 所有页面资源和API均拦截为测试数据，不启动服务，也不接触真实凭据。
-async function fixture(page, savedText = {}) {
+async function fixture(page, savedText = {}, decide) {
+  await handleActionConfirmations(page, decide);
   const root = path.resolve(__dirname, '../../src/main/resources/static'), writes = [];
   const names = ['tencent', 'aliyun', 'deepseek'];
   let entries = names.map((provider) => ({ provider, mode: 'SERVER', version: 0, configured: false, personalStored: false, model: provider === 'deepseek' ? 'deepseek-flash' : null, ...(provider === 'deepseek' ? savedText : {}) }));
@@ -39,8 +41,8 @@ async function fixture(page, savedText = {}) {
 
 for (const width of [1365, 390]) test(`cloud credentials require the visible save command at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 900 });
-  const writes = await fixture(page); let confirmations = 0, accept = false;
-  page.on('dialog', async (dialog) => { confirmations++; await (accept ? dialog.accept() : dialog.dismiss()); });
+  let confirmations = 0, accept = false;
+  const writes = await fixture(page, {}, () => { confirmations++; return accept; });
   for (const [provider, name] of [['tencent', '腾讯云语音识别'], ['aliyun', '阿里云百炼语音识别'], ['deepseek', '文字 AI']]) {
     await page.locator(provider === 'deepseek' ? '#cloud-text-tab' : '#cloud-speech-tab').click();
     const card = page.locator('#cloud-' + provider), save = card.getByRole('button', { name: '保存' + name + '配置', exact: true });
@@ -48,14 +50,14 @@ for (const width of [1365, 390]) test(`cloud credentials require the visible sav
     const before = writes.length, beforeDialogs = confirmations;
     for (const input of await card.locator('input:visible').all()) {
       const field = await input.getAttribute('name');
-      await input.fill(field === 'appId' ? '123456' : field === 'model' ? 'deepseek-flash' : 'fake-test-value');
+      await input.fill(field === 'appId' ? '123456' : field === 'secretId' ? 'FakeTestSecretId' : field === 'model' ? 'deepseek-flash' : 'fake-test-value');
       await input.press('Enter');
     }
     expect(confirmations).toBe(beforeDialogs); expect(writes).toHaveLength(before);
     await expect(save).toHaveText('保存'); await expect(save).toBeVisible();
-    await save.click(); expect(confirmations).toBe(beforeDialogs + 1); expect(writes).toHaveLength(before);
-    accept = true; await save.click(); accept = false;
-    await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置'); expect(writes).toHaveLength(before + 1);
+    await save.click(); await expect(page.locator('#action-confirm-dialog')).toBeHidden(); expect(confirmations).toBe(beforeDialogs + 1); expect(writes).toHaveLength(before);
+    accept = true; await save.click();
+    await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置'); accept = false; expect(writes).toHaveLength(before + 1);
     for (const input of await card.locator('input[data-secret]').all()) await expect(input).toHaveValue('');
     expect(await save.evaluate((button) => button.scrollWidth <= button.clientWidth)).toBe(true);
   }
@@ -179,8 +181,8 @@ test('server and off modes never submit the hidden model or require a personal s
 });
 
 for (const width of [1365, 390]) test(`custom model input validates saves and reloads for every vendor at ${width}px`, async ({ page }, testInfo) => {
-  await page.setViewportSize({ width, height: 900 }); const writes = await fixture(page); let confirmations = 0;
-  page.on('dialog', dialog => { confirmations++; return dialog.accept(); });
+  await page.setViewportSize({ width, height: 900 }); let confirmations = 0;
+  const writes = await fixture(page, {}, () => { confirmations++; return true; });
   const card = page.locator('#cloud-deepseek'), vendor = card.locator('select[name=textProvider]'), model = card.locator('select[name=model]');
   const custom = card.getByRole('textbox', { name: '自定义模型 ID', exact: true }), key = card.locator('input[name=apiKey]');
   const save = card.getByRole('button', { name: '保存文字 AI配置', exact: true });
@@ -216,6 +218,6 @@ test('invalid custom draft does not block presets or server mode and never enter
   await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
   expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'PERSONAL', textProvider: 'deepseek', apiKey: 'fake-preset-key', model: 'deepseek-v4-pro' });
   await model.selectOption('__custom__'); await custom.fill('invalid draft?'); await mode.selectOption('SERVER');
-  await save.click(); await expect.poll(() => writes.length).toBe(2);
+  await save.click(); await expect(page.locator('#action-confirm-dialog')).toBeHidden(); await expect.poll(() => writes.length).toBe(2);
   expect(writes[1].body).toEqual({ expectedVersion: 1, mode: 'SERVER' });
 });

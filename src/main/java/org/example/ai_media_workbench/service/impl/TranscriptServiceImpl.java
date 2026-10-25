@@ -58,6 +58,7 @@ public class TranscriptServiceImpl implements TranscriptService {
     @Override @Transactional
     public TaskVO transcribe(String userId, String mediaId, TranscriptionRequest input) {
         lockUser(userId); var source = source(userId, mediaId);
+        var model=org.example.ai_media_workbench.common.ai.AsrModel.resolve(input.provider(),input.model());
         if (source.getStatus() != MediaStatus.READY || source.getMetadataJson() == null || !storage.exists(source.getStorageKey()))
             throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
         if (!metadata(source).hasAudio()) throw new BusinessException(ErrorCode.SOURCE_HAS_NO_AUDIO);
@@ -70,7 +71,8 @@ public class TranscriptServiceImpl implements TranscriptService {
         tasks.lockQueue();
         if (tasks.activeCount() >= limits.queueLimit()) throw new BusinessException(ErrorCode.QUEUE_FULL);
         var task = new TaskEntity(); task.setId(UUID.randomUUID().toString()); task.setUserId(userId); task.setMediaId(mediaId);
-        task.setKind(TaskKind.TRANSCRIPTION); task.setSourceId(mediaId); task.setParametersJson(json.writeValueAsString(input));
+        task.setKind(TaskKind.TRANSCRIPTION); task.setSourceId(mediaId);
+        task.setParametersJson(json.writeValueAsString(new TranscriptionRequest(input.language(),input.force(),input.provider(),model.id())));
         task.setStatus(TaskStatus.QUEUED); task.setStage(TaskStage.WAITING); task.setCreatedAt(now()); tasks.insertTask(task);
         return views.task(task);
     }

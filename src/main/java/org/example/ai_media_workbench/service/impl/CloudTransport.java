@@ -19,12 +19,21 @@ public class CloudTransport implements DisposableBean {
             .followRedirects(HttpClient.Redirect.NEVER).build();
     HttpClient client() { return client; }
 
+    /** 个人云端HTTP调用：厂商错误与模型输出不合规分开处理。 */
     byte[] post(HttpRequest request, long deadline, BooleanSupplier cancelled, ErrorCode failure) {
-        return post(request, deadline, cancelled, failure, failure);
+        if (cancelled.getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+        if (System.nanoTime() >= deadline) throw new BusinessException(ErrorCode.CLOUD_TIMEOUT);
+        var future = client.sendAsync(request, info -> new LimitedBody(4 * 1024 * 1024));
+        try {
+            var response = awaitCloud(future, deadline, cancelled, failure);
+            if (response.statusCode() != 200) throw new BusinessException(CloudFailures.http(response.statusCode(), response.body()));
+            return response.body();
+        } finally { future.cancel(true); }
     }
     byte[] get(HttpRequest request, long deadline, ErrorCode failure) {
-        return post(request, deadline, () -> false, failure);
+        return post(request, deadline, () -> false, failure, failure);
     }
+    /** 本地模型保留独立错误语义，不误报个人云端密钥问题。 */
     byte[] post(HttpRequest request, long deadline, BooleanSupplier cancelled, ErrorCode failure, ErrorCode rejected) {
         var future = client.sendAsync(request, info -> new LimitedBody(4 * 1024 * 1024));
         try {
@@ -35,16 +44,32 @@ public class CloudTransport implements DisposableBean {
         } finally { future.cancel(true); }
     }
     static <T> T await(CompletableFuture<T> future, long deadline, BooleanSupplier cancelled, ErrorCode failure) {
+        return await(future, deadline, cancelled, failure, false);
+    }
+    static <T> T awaitCloud(CompletableFuture<T> future, long deadline, BooleanSupplier cancelled, ErrorCode failure) {
+        return await(future, deadline, cancelled, failure, true);
+    }
+    private static <T> T await(CompletableFuture<T> future, long deadline, BooleanSupplier cancelled, ErrorCode failure, boolean cloud) {
         try {
             while (true) {
-                check(deadline, cancelled);
+                if (cancelled.getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+                if (System.nanoTime() >= deadline) throw new BusinessException(cloud ? ErrorCode.CLOUD_TIMEOUT : ErrorCode.TRANSCODE_TIMEOUT);
                 try { return future.get(200, TimeUnit.MILLISECONDS); }
                 catch (TimeoutException waiting) { }
             }
         } catch (BusinessException exception) { throw exception; }
         catch (InterruptedException exception) {
             Thread.currentThread().interrupt(); throw new BusinessException(ErrorCode.TASK_INTERRUPTED);
-        } catch (Exception exception) { throw new BusinessException(failure); }
+        } catch (Exception exception) {
+            Throwable cause = exception;
+            while ((cause instanceof ExecutionException || cause instanceof CompletionException) && cause.getCause() != null) cause = cause.getCause();
+            if (cause instanceof BusinessException business) throw business;
+            if (cloud && cause instanceof WebSocketHandshakeException handshake)
+                throw new BusinessException(CloudFailures.http(handshake.getResponse().statusCode(), new byte[0]));
+            if (cloud && cause instanceof HttpTimeoutException) throw new BusinessException(ErrorCode.CLOUD_TIMEOUT);
+            if (cloud && cause instanceof java.io.IOException) throw new BusinessException(ErrorCode.CLOUD_NETWORK_ERROR);
+            throw new BusinessException(failure);
+        }
         finally { if (!future.isDone()) future.cancel(true); }
     }
     static void check(long deadline, BooleanSupplier cancelled) {

@@ -1,11 +1,14 @@
 const { test, expect } = require('@playwright/test');
+const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => handleActionConfirmations(page));
+test.beforeEach(async ({ page }) => acceptCloudCalls(page));
 const { selectTool } = require('./helpers/navigation.cjs');
 const { serveStatic } = require('./helpers/static.cjs');
 
 test.beforeEach(async ({ page }) => { await serveStatic(page); });
 
 // Browser contract fixture only: no credentials, cloud calls or media processing are involved.
-async function fixture(page, enabled = true) {
+async function fixture(page, enabled = true, failure = null) {
   const mediaId = '22222222-2222-4222-8222-222222222222', planId = '33333333-3333-4333-8333-333333333333';
   const taskId = '44444444-4444-4444-8444-444444444444', now = '2026-10-20T00:00:00Z';
   const media = { id: mediaId, originalFilename: '视频测试.mp4', sizeBytes: 1000000, kind: 'VIDEO', status: 'READY', previewUrl: null,
@@ -25,6 +28,7 @@ async function fixture(page, enabled = true) {
     if (url.pathname === '/api/operation-plans' && method === 'POST') {
       posts++; const input = req.postDataJSON(); expect(input).toEqual({ mediaId, instruction: '压小一点' });
       expect(req.headers()['x-csrf-token']).toBe('fixture-csrf');
+      if (failure) return route.fulfill({ status: failure.status, contentType: 'application/json', body: JSON.stringify({ code: failure.code, message: 'private upstream secret-key', data: null, details: [] }) });
       plan = { id: planId, mediaId, instruction: input.instruction, version: 1, status: 'NEEDS_INPUT', parameters: null, summary: '请补充处理要求',
         questions: [{ code: 'TARGET_SIZE_REQUIRED', message: '请补充压缩后的目标体积，例如20MB。' }], warnings: [], taskId: null, createdAt: now, updatedAt: now };
       return ok(plan, 201);
@@ -83,6 +87,31 @@ test('AI plans clarify, preserve version context, require confirmation and retry
   await expect(page.locator('#ai-plan-status')).toHaveText('已执行');
   await expect(page.locator('#execute-ai-plan')).toBeDisabled();
   expect(errors).toEqual([]);
+});
+
+for (const [code, status, hint] of [
+  ['CLOUD_AUTH_FAILED', 422, '密钥、所选供应商及接口地域'],
+  ['CLOUD_PERMISSION_DENIED', 422, '密钥或工作空间权限'],
+  ['CLOUD_QUOTA_EXCEEDED', 422, '余额、资源包和额度限制'],
+  ['CLOUD_MODEL_UNAVAILABLE', 422, '模型ID、地域及开通权限'],
+  ['CLOUD_RATE_LIMITED', 503, '调用频率或并发超限'],
+  ['CLOUD_REQUEST_REJECTED', 422, '是否支持当前功能'],
+  ['CLOUD_NETWORK_ERROR', 502, '服务器网络、代理及TLS'],
+  ['CLOUD_TIMEOUT', 504, '云端调用超时'],
+  ['CLOUD_SERVICE_UNAVAILABLE', 502, '云端服务暂不可用']
+]) test(`AI plans explain ${code} without logout or automatic retries`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: code === 'CLOUD_QUOTA_EXCEEDED' ? 390 : 1365, height: 900 });
+  const app = await fixture(page, true, { code, status });
+  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await selectTool(page, 'ai'); await page.locator('#ai-instruction').fill('压小一点'); await page.locator('#generate-ai-plan').click();
+  await expect(page.locator('#ai-error')).toContainText(hint);
+  await expect(page.locator('#ai-error')).not.toContainText('secret-key');
+  await expect(page.locator('#ai-instruction')).toHaveValue('压小一点');
+  await expect(page.locator('#generate-ai-plan')).toBeEnabled();
+  await expect(page.locator('#workbench-panel')).toBeVisible();
+  expect(app.state().posts).toBe(1); expect(app.state().plan).toBeNull(); expect(app.state().task).toBeNull();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  if (['CLOUD_AUTH_FAILED', 'CLOUD_QUOTA_EXCEEDED'].includes(code)) await page.screenshot({ path: testInfo.outputPath(code + '.png'), fullPage: true });
 });
 
 test('missing DeepSeek credentials keep AI generation closed without disabling explicit tools', async ({ page }) => {

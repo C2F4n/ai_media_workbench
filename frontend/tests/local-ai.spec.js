@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => handleActionConfirmations(page));
 const { serveStatic } = require('./helpers/static.cjs');
 const { selectTool } = require('./helpers/navigation.cjs');
 
@@ -32,6 +34,25 @@ async function fixture(page) {
   await page.goto('/'); await expect(page.locator('#workbench-panel')).toBeVisible();
   return state;
 }
+
+test('credential formats fail locally with actionable feedback and no save or paid request', async ({ page }) => {
+  const state = await fixture(page);
+  await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  const card = page.locator('#cloud-deepseek');
+  await card.locator('select[name=mode]').selectOption('PERSONAL');
+  await expect(card).toContainText('保存仅检查格式，不验证密钥、权限或余额');
+  for (const invalid of ['https://api.example.com', 'Bearer sk-example', 'sk with spaces']) {
+    await card.locator('input[name=apiKey]').fill(invalid);
+    await card.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
+    await expect(page.locator('#cloud-error')).toContainText('只填写密钥');
+    await expect(page.locator('#action-confirm-dialog')).not.toBeVisible();
+    expect(state.writes).toHaveLength(0);
+  }
+  await card.locator('input[name=apiKey]').fill('sk-format-only-test');
+  await card.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
+  await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
+  expect(state.writes).toHaveLength(1);
+});
 
 for (const width of [1365, 390]) test(`local model reports unavailability and recovers without replacing personal credentials at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 900 });

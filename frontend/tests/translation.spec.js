@@ -1,4 +1,7 @@
 const { test, expect } = require('@playwright/test');
+const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => handleActionConfirmations(page));
+test.beforeEach(async ({ page }) => acceptCloudCalls(page));
 const { serveStatic } = require('./helpers/static.cjs');
 const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
@@ -6,7 +9,7 @@ const fs = require('node:fs');
 test.beforeEach(async ({ page }) => { await serveStatic(page); });
 
 // 所有云端和业务API均使用替身，不写开发数据库或调用真实模型。
-async function fixture(page, { count = 2, enabled = true, failBatch = 0, holdFirst = false, textLength = 0 } = {}) {
+async function fixture(page, { count = 2, enabled = true, failBatch = 0, failCode = 'AI_TRANSLATION_FAILED', holdFirst = false, textLength = 0 } = {}) {
   const mediaId = '22222222-2222-4222-8222-222222222222', transcriptId = '66666666-6666-4666-8666-666666666666';
   const now = '2026-10-23T00:00:00Z';
   const original = Array.from({ length: count }, (_, index) => ({ id: `77777777-7777-4777-8777-${String(index + 1).padStart(12, '0')}`,
@@ -36,7 +39,7 @@ async function fixture(page, { count = 2, enabled = true, failBatch = 0, holdFir
       const source = input.useOriginal ? original : versions.get(input.expectedVersion), segments = input.segmentIds.map(id => source.find(segment => segment.id === id));
       expect(segments.reduce((sum, segment) => sum + Array.from(segment.text).length, 0)).toBeLessThanOrEqual(2000);
       if (holdFirst && calls.length === 1) await gate;
-      if (calls.length === failBatch) return error('AI_TRANSLATION_FAILED', 422);
+      if (calls.length === failBatch) return error(failCode, 422);
       return ok({ transcriptId, transcriptVersion: input.expectedVersion, targetLanguage: input.targetLanguage,
         segments: segments.map((segment, index) => ({ ...segment, text: `Hello ${index + 1}` })) });
     }
@@ -93,7 +96,7 @@ for (const width of [1365, 390]) test(`bilingual translation previews edits save
   expect(state.versions.get(2)[0].startMs).toBe(state.original[0].startMs); expect(state.versions.get(2)[0].endMs).toBe(state.original[0].endMs);
   const promise = page.waitForEvent('download'); await page.locator('#download-srt').click(); const download = await promise;
   expect(fs.readFileSync(await download.path(), 'utf8')).toContain('原文1。\r\n<img src=x');
-  await page.locator('#burn-subtitle').click(); await expect.poll(() => state.burns.length).toBe(1);
+  await page.locator('#burn-subtitle').click(); await expect(page.locator('#action-confirm-dialog')).toBeHidden(); await expect.poll(() => state.burns.length).toBe(1);
   expect(state.burns[0].parameters).toMatchObject({ operation: 'burn_subtitles', transcriptVersion: 2 });
   await page.reload(); await selectTool(page, 'subtitle'); await expect(page.locator('#subtitle-version')).toHaveValue('2');
   await page.locator('#subtitle-version').selectOption('1'); await expect(page.locator('#subtitle-segments textarea').first()).toHaveValue('原文1。');
@@ -118,9 +121,19 @@ test('batch failure does not expose partial translation or write a version and n
   await expect(page.locator('#translation-preview')).toBeHidden(); await expect(page.locator('#download-srt')).toBeVisible();
 });
 
+test('cloud authentication failure explains credentials and discards partial translation', async ({ page }) => {
+  const state = await fixture(page, { count: 21, failBatch: 2, failCode: 'CLOUD_AUTH_FAILED' });
+  await page.locator('#translate-subtitle').click();
+  await expect(page.locator('#subtitle-error')).toContainText('密钥、所选供应商及接口地域');
+  await expect(page.locator('#translation-preview')).toBeHidden();
+  await expect(page.locator('#subtitle-segments textarea').first()).toHaveValue('原文1。');
+  await expect(page.locator('#workbench-panel')).toBeVisible();
+  expect(state.calls).toHaveLength(2); expect(state.patches).toHaveLength(0);
+});
+
 test('stopping a pending batch prevents all following paid calls and discards partial suggestions', async ({ page }) => {
   const state = await fixture(page, { count: 21, holdFirst: true }); await page.locator('#translate-subtitle').click();
-  await expect.poll(() => state.calls.length).toBe(1); await expect(page.locator('#cancel-translation')).toBeEnabled();
+  await expect(page.locator('#cancel-translation')).toBeEnabled(); await expect.poll(() => state.calls.length).toBe(1);
   await page.locator('#cancel-translation').click(); state.release();
   await expect(page.locator('#translation-state')).toContainText('已停止'); expect(state.calls).toHaveLength(1); expect(state.patches).toHaveLength(0);
   await expect(page.locator('#translation-preview')).toBeHidden(); await expect(page.locator('#translate-subtitle')).toBeEnabled();

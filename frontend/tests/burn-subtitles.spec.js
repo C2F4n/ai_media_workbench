@@ -1,4 +1,7 @@
 const { test, expect } = require('@playwright/test');
+const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => handleActionConfirmations(page));
+test.beforeEach(async ({ page }) => acceptCloudCalls(page));
 const { serveStatic } = require('./helpers/static.cjs');
 test.beforeEach(async ({ page }) => { await serveStatic(page); });
 const { selectTool } = require('./helpers/navigation.cjs');

@@ -1,8 +1,11 @@
 const { test, expect } = require('@playwright/test');
+const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => acceptCloudCalls(page));
 const { serveStatic } = require('./helpers/static.cjs');
 const { selectTool } = require('./helpers/navigation.cjs');
 
-async function fixture(page) {
+async function fixture(page, decide) {
+  await handleActionConfirmations(page, decide);
   await serveStatic(page);
   const now = '2026-10-22T10:00:00Z', mediaId = '22222222-2222-4222-8222-222222222222';
   const media = { id: mediaId, originalFilename: 'record-source.mp4', sizeBytes: 2000000, status: 'READY', kind: 'VIDEO', previewUrl: null,
@@ -63,7 +66,7 @@ async function fixture(page) {
 for (const width of [1365, 390]) {
   test(`history is separate, expandable and deletable at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 }); const errors = []; page.on('pageerror', error => errors.push(error.message));
-    const state = await fixture(page); let accept = false; page.on('dialog', dialog => accept ? dialog.accept() : dialog.dismiss());
+    let accept = false; const state = await fixture(page, () => accept);
     await page.locator('#phase-export-tab').click(); await expect(page.locator('#task-section')).toBeHidden();
     await selectTool(page, 'history'); await expect(page.locator('#workspace-tool-title')).toHaveText('处理记录');
     await expect(page.locator('#workspace-phases')).toBeHidden(); await expect(page.locator('#phase-export')).toBeHidden();
@@ -71,7 +74,7 @@ for (const width of [1365, 390]) {
     await rows.nth(1).locator('summary').click(); await expect(rows.nth(1)).toContainText('测试失败描述');
     await expect(rows.nth(1).locator('.record-instruction')).toHaveText('MP3 音频方案 2');
     await expect(rows.nth(2).getByRole('button', { name: '删除处理记录', exact: true })).toBeDisabled();
-    await rows.first().getByRole('button', { name: '删除处理记录', exact: true }).click(); expect(state.removed).toHaveLength(0);
+    await rows.first().getByRole('button', { name: '删除处理记录', exact: true }).click(); await expect(page.locator('#action-confirm-dialog')).toBeHidden(); expect(state.removed).toHaveLength(0);
     accept = true; await rows.first().getByRole('button', { name: '删除处理记录', exact: true }).click();
     await expect(rows).toHaveCount(2); expect(state.removed).toHaveLength(1);
     await expect(rows.first().locator('details')).toHaveAttribute('open', '');

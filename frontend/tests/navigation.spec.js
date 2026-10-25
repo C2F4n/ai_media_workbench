@@ -23,8 +23,8 @@ async function workspace(page) {
 test('vertical navigation labels API dependencies, slides in both directions and remembers docking', async ({ page }, testInfo) => {
   const errors = []; page.on('pageerror', (e) => errors.push(e.message));
   await workspace(page);
-  await expect(page.locator('.app-header')).toHaveCSS('background-color', 'rgb(32, 61, 70)');
-  await expect(page.locator('.brand')).toHaveCSS('color', 'rgb(243, 249, 250)');
+  await expect(page.locator('.app-header')).toHaveCSS('background-color', 'rgb(237, 242, 252)');
+  await expect(page.locator('.brand')).toHaveCSS('color', 'rgb(51, 66, 93)');
   const positions = await page.locator('.tool-choice').evaluateAll((items) => items.map((e) => ({ x: e.getBoundingClientRect().x, y: e.getBoundingClientRect().y })));
   expect(new Set(positions.map((p) => p.x)).size).toBe(1);
   expect(positions.every((p, i) => !i || p.y > positions[i - 1].y)).toBe(true);
@@ -66,13 +66,38 @@ test('vertical navigation labels API dependencies, slides in both directions and
   expect(errors).toEqual([]);
 });
 
+for (const width of [1365, 390]) test(`light surfaces preserve readable control contrast at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 }); await workspace(page);
+  if (width <= 900) await page.locator('#toggle-sidebar').click();
+  const palette = await page.evaluate(() => {
+    const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(Number);
+    const luminance = color => rgb(color).map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+      .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+    const contrast = (color, background) => {
+      const values = [luminance(color), luminance(background)].sort((a, b) => b - a);
+      return (values[0] + .05) / (values[1] + .05);
+    };
+    const style = selector => getComputedStyle(document.querySelector(selector));
+    const page = style(':root'), header = style('.app-header'), sidebar = style('.tool-sidebar'), active = style('.tool-choice.active');
+    const brand = style('.brand'), group = style('.tool-group-toggle'), primary = style('#upload-submit'), indicator = style('.tool-indicator');
+    return {
+      surfaces: [page.backgroundColor, header.backgroundColor, sidebar.backgroundColor].map(luminance),
+      textContrast: [contrast(page.color, page.backgroundColor), contrast(brand.color, header.backgroundColor),
+        contrast(group.color, sidebar.backgroundColor), contrast(active.color, indicator.backgroundColor), contrast(primary.color, primary.backgroundColor)]
+    };
+  });
+  expect(palette.surfaces.every(value => value > .85)).toBe(true);
+  expect(palette.textContrast.every(value => value >= 4.5)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath(`light-palette-${width}.png`), fullPage: true, animations: 'disabled' });
+});
+
 test('mobile drawer closes on selection, backdrop or Escape and links to cloud configuration', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 }); await workspace(page);
-  await expect(page.locator('#header-logout')).toHaveCSS('color', 'rgb(237, 246, 248)');
+  await expect(page.locator('#header-logout')).toHaveCSS('color', 'rgb(82, 97, 122)');
   await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
   await page.locator('#toggle-sidebar').click(); await expect(page.locator('#tool-sidebar')).toHaveAttribute('aria-modal', 'true');
   await expect(page.locator('#detect-tool')).toBeFocused();
-  await page.screenshot({ path: testInfo.outputPath('sidebar-mobile-open.png'), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('sidebar-mobile-open.png'), fullPage: true, animations: 'disabled' });
   await page.locator('#find-tool').click(); await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('#dependency-services')).toContainText('DeepSeek');
   await page.locator('#tool-dependencies summary').click();
@@ -140,4 +165,54 @@ test('reduced motion disables group transitions and rapid toggles leave a consis
   expect(await page.locator('#regular-group-body').evaluate(element => element.getAnimations().length)).toBe(0);
   await toggle.click(); await expect(page.locator('#detect-tool')).toBeVisible();
   expect(await page.locator('#regular-group-body').evaluate(element => element.inert)).toBe(false);
+});
+
+for (const width of [1920, 1365, 1024, 901]) test(`pinned navigation reserves space for notices and every workspace surface at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 }); await workspace(page);
+  await page.locator('#account-notice').evaluate(element => { element.textContent = '结果已删除，原素材和处理记录已保留。'; element.hidden = false; });
+  const sidebar = await page.locator('#tool-sidebar').boundingBox(), notice = page.locator('#account-notice');
+  const checkClearance = async () => {
+    await expect(notice).toBeVisible(); await expect(page.locator('#tool-content')).toBeVisible();
+    for (const selector of ['#account-notice', '#tool-content', '.workbench-heading', '#workspace-toolbar', '#tool-dependencies']) {
+      const box = await page.locator(selector).boundingBox(); if (box) expect(box.x).toBeGreaterThanOrEqual(sidebar.x + sidebar.width + 24);
+    }
+    const box = await notice.boundingBox(), content = await page.locator('#tool-content').boundingBox();
+    expect(Math.abs(box.x - content.x)).toBeLessThan(1); expect(Math.abs(box.width - content.width)).toBeLessThan(1);
+    expect(await notice.evaluate(element => {
+      const box = element.getBoundingClientRect(); return element.contains(document.elementFromPoint(box.left + 15, box.top + 15));
+    })).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  };
+  await checkClearance();
+  await page.screenshot({ path: testInfo.outputPath(`notice-pinned-${width}.png`), fullPage: true });
+  await page.locator('#ai-tool').click(); await checkClearance();
+  await page.locator('#history-tool').click(); await checkClearance();
+  await page.locator('#header-account').click();
+  await expect(page.locator('#tool-sidebar')).toBeHidden();
+  expect(Math.abs((await notice.boundingBox()).x - (await page.locator('#account-panel').boundingBox()).x)).toBeLessThan(1);
+  await page.locator('#back-workbench').click(); await checkClearance();
+  await page.locator('#toggle-sidebar').click(); await expect(page.locator('#tool-sidebar')).toBeHidden();
+  expect(Math.abs((await notice.boundingBox()).x - (await page.locator('#tool-content').boundingBox()).x)).toBeLessThan(1);
+  await page.locator('#toggle-sidebar').click(); await checkClearance();
+});
+
+for (const width of [900, 390]) test(`notices remain readable after drawer use and resizing from ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 844 }); await workspace(page);
+  const notice = page.locator('#account-notice');
+  await notice.evaluate(element => { element.textContent = '结果已删除，原素材和处理记录已保留。'; element.hidden = false; element.classList.add('error'); });
+  const original = await notice.boundingBox();
+  expect(Math.abs(original.x - (await page.locator('#tool-content').boundingBox()).x)).toBeLessThan(1);
+  await page.locator('#toggle-sidebar').click(); await expect(page.locator('#sidebar-backdrop')).toBeVisible();
+  await page.locator('#close-sidebar').click(); await expect(page.locator('#sidebar-backdrop')).toBeHidden();
+  await expect(page.locator('#detect-tool')).toBeHidden();
+  expect(await notice.boundingBox()).toEqual(original);
+  expect(await notice.evaluate(element => { const box = element.getBoundingClientRect(); return element.contains(document.elementFromPoint(box.left + 12, box.top + 12)); })).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath(`notice-mobile-${width}.png`), fullPage: true, animations: 'disabled' });
+  await page.setViewportSize({ width: 1365, height: 900 }); await expect(page.locator('#tool-sidebar')).toBeVisible();
+  const sidebar = await page.locator('#tool-sidebar').boundingBox();
+  expect((await notice.boundingBox()).x).toBeGreaterThanOrEqual(sidebar.x + sidebar.width + 24);
+  await page.locator('#pin-sidebar').click(); await expect(page.locator('#sidebar-backdrop')).toBeVisible();
+  await page.locator('#pin-sidebar').click(); await expect(page.locator('#sidebar-backdrop')).toBeHidden();
+  expect((await notice.boundingBox()).x).toBeGreaterThanOrEqual(sidebar.x + sidebar.width + 24);
 });

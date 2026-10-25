@@ -2,9 +2,9 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI音视频工作台接口文档",
-    "version": "2.22.0",
+    "version": "2.24.0",
     "x-source-policy": "SERVER表示服务端千问；PERSONAL文字供应商由deepseek槽位内的textProvider选择DeepSeek/OpenAI/千问百炼北京/豆包火山方舟北京。旧密文默认DeepSeek，同厂商省略秘密可保留，换厂商必须重填密钥。个人文字共用2并发/35秒，不回退、不付费重试；配置可用不等于余额、模型权限或网络已验证。本地推理超时依部署者LOCAL_AI_TIMEOUT_SECONDS配置，不支持ASR。",
-    "x-latest-change": "2.22新增字幕分批翻译建议及subtitleTranslation能力。每批最多20段、原文2000字符及16KiB JSON，等待模型不持事务，返回前重查版本和归属；只建议不写入。前端确认后使用既有PATCH保存仅译文或双语新版本，再SRT或烧录导出。原稿和历史保留，无新表或迁移。",
+    "x-latest-change": "2.24新增语音模型选择：TranscriptionRequest.model与capabilities.asrModels。百炼适配千问语音3.1流式、Fun-ASR实时及原Paraformer，直接发送私有音频并读取真实时间戳；选定模型固定入队，失败不回退或重试。旧客户端省略model保持原模型，无新接口、表或迁移。",
     "description": "轻量版契约，共58个接口，44个已实现。登录后直接使用，不创建项目或分类。业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly会话Cookie，不是JWT，写请求校验CSRF。支持账号/注册邮箱验证、个人凭据、素材/方案/任务/结果、FFmpeg转换压缩裁切静音音轨提取、字幕编辑/SRT/识别/校对/翻译/双语/检索/建议/烧录。2.17工作流支持有序裁切、同源拼接、缩放、静音和最终导出，按上一步时间轴校验，不穷举操作组合；确认后才执行，失败不发布半成品。2.18把SERVER站点配置改为本地千问：方案生成、文字校对及检索建议可使用本地模型或PERSONAL个人DeepSeek，任何来源失败均不回退。新增textAi状态、available和unavailableReason；本地health检查700ms/缓存2秒，推理超时依LOCAL_AI_TIMEOUT_SECONDS，不支持ASR。历史SERVER值、接口和表兼容。后文DeepSeek文字契约同样适用于其他所选文字模型，个人云端仍须自行配置凭据。真实云端效果及费用需另行验收。跨素材、拼接字幕重映射、任意滤镜及clip-drafts管理仍未实现。2.19自然语言重新生成完整替换提示词，新增方案删除和任务记录移除。2.20及2.21新增OpenAI、千问百炼和豆包文字适配；2.22新增分批字幕翻译建议，确认后以普通字幕版本保存和导出，不修改识别原文。"
   },
   "servers": [
@@ -886,8 +886,10 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
+          "502": { "$ref": "#/components/responses/CloudConnectionFailure" },
+          "504": { "$ref": "#/components/responses/CloudTimeout" },
           "503": {
-            "description": "AI未配置(AI_UNAVAILABLE)、文字请求并发已满(AI_BUSY)，或相关处理工具不可用。",
+            "description": "AI未配置(AI_UNAVAILABLE)、文字请求并发已满(AI_BUSY)、云端限流(CLOUD_RATE_LIMITED)，或相关处理工具不可用。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1933,6 +1935,12 @@
                       "extract_audio"
                     ],
                     "asrProviders": [],
+                    "asrModels": [
+                      { "provider": "tencent", "id": "16k_zh", "name": "中文通用 16k", "recommended": true },
+                      { "provider": "aliyun", "id": "qwen-audio-3.1-asr-flash-streaming", "name": "千问语音 3.1", "recommended": true },
+                      { "provider": "aliyun", "id": "fun-asr-realtime", "name": "Fun-ASR · 多语种与方言", "recommended": false },
+                      { "provider": "aliyun", "id": "paraformer-realtime-v2", "name": "Paraformer V2 · 常规转写", "recommended": false }
+                    ],
                     "subtitleCorrection": false
                   },
                   "requestId": "req-capabilities",
@@ -4158,7 +4166,9 @@
           },
           "503": {
             "$ref": "#/components/responses/AIUnavailable"
-          }
+          },
+          "502": { "$ref": "#/components/responses/CloudConnectionFailure" },
+          "504": { "$ref": "#/components/responses/CloudTimeout" }
         },
         "x-implementation-status": "IMPLEMENTED"
       }
@@ -4192,7 +4202,9 @@
           "422": {"$ref": "#/components/responses/InvalidParameters"},
           "429": {"$ref": "#/components/responses/RateLimited"},
           "500": {"$ref": "#/components/responses/InternalError"},
-          "503": {"$ref": "#/components/responses/AIUnavailable"}
+          "503": {"$ref": "#/components/responses/AIUnavailable"},
+          "502": {"$ref": "#/components/responses/CloudConnectionFailure"},
+          "504": {"$ref": "#/components/responses/CloudTimeout"}
         },
         "x-implementation-status": "IMPLEMENTED"
       }
@@ -4552,8 +4564,10 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
+          "502": { "$ref": "#/components/responses/CloudConnectionFailure" },
+          "504": { "$ref": "#/components/responses/CloudTimeout" },
           "503": {
-            "description": "AI_UNAVAILABLE：DeepSeek未配置；AI_BUSY：两个共享文字请求槽已占用。配置不代表供应商可达、权限或余额正常。",
+            "description": "AI_UNAVAILABLE：文字AI未配置；AI_BUSY：共享文字请求槽已占用；CLOUD_RATE_LIMITED：厂商限流。配置不代表供应商可达、权限或余额正常。",
             "content": {
               "application/json": {
                 "schema": {
@@ -4709,8 +4723,10 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
+          "502": { "$ref": "#/components/responses/CloudConnectionFailure" },
+          "504": { "$ref": "#/components/responses/CloudTimeout" },
           "503": {
-            "description": "AI_UNAVAILABLE：DeepSeek未配置；AI_BUSY：两个共享文字请求槽已占用。配置不代表供应商可达、权限或余额正常。",
+            "description": "AI_UNAVAILABLE：文字AI未配置；AI_BUSY：共享文字请求槽已占用；CLOUD_RATE_LIMITED：厂商限流。配置不代表供应商可达、权限或余额正常。",
             "content": {
               "application/json": {
                 "schema": {
@@ -5863,8 +5879,10 @@
           "500": {
             "$ref": "#/components/responses/InternalError"
           },
+          "502": { "$ref": "#/components/responses/CloudConnectionFailure" },
+          "504": { "$ref": "#/components/responses/CloudTimeout" },
           "503": {
-            "description": "AI未配置(AI_UNAVAILABLE)、文字请求并发已满(AI_BUSY)，或相关处理工具不可用。",
+            "description": "AI未配置(AI_UNAVAILABLE)、文字请求并发已满(AI_BUSY)、云端限流(CLOUD_RATE_LIMITED)，或相关处理工具不可用。",
             "content": {
               "application/json": {
                 "schema": {
@@ -7763,6 +7781,18 @@
           }
         }
       },
+      "AsrModel": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "id", "name", "recommended"],
+        "properties": {
+          "provider": { "type": "string", "enum": ["tencent", "aliyun"] },
+          "id": { "type": "string", "maxLength": 80 },
+          "name": { "type": "string" },
+          "recommended": { "type": "boolean" }
+        },
+        "description": "已适配的识别模型，不表示个人密钥具备该模型权限、余额或准确率保证。"
+      },
       "Capabilities": {
         "type": "object",
         "additionalProperties": false,
@@ -7779,6 +7809,7 @@
           "maxDurationMs",
           "supportedOperations",
           "asrProviders",
+          "asrModels",
           "subtitleCorrection",
           "subtitleTranslation",
           "exportFormats",
@@ -7841,6 +7872,11 @@
               ]
             },
             "description": "凭据配置通过且ffprobe/MP3编码器可用的供应商；不代表远端可达或余额充足。空数组时asr=false。"
+          },
+          "asrModels": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AsrModel" },
+            "description": "完整的已适配目录，不因用户是否配置凭据而变化；结合asrProviders检查能否调用。语音模型独立于文字AI，不支持任意自定义型号。旧后端无此字段时页面仅展示原来的腾讯/Paraformer。"
           },
           "subtitleCorrection": {
             "type": "boolean",
@@ -7908,6 +7944,12 @@
               "aliyun"
             ],
             "default": "tencent"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 80,
+            "enum": ["16k_zh", "qwen-audio-3.1-asr-flash-streaming", "fun-asr-realtime", "paraformer-realtime-v2"],
+            "description": "必须与provider匹配：腾讯仅16k_zh；百炼支持其余三种。省略/null保持旧模型（腾讯16k_zh、百炼Paraformer）；未知/空串/跨供应商型号422 INVALID_PARAMETERS。任务内部保存解析后的ID，排队后不会跟随页面选择变化。实际凭据仍在执行时读取；无自动重试或回退。"
           }
         }
       },
@@ -9123,6 +9165,7 @@
         ]
       },
       "ResultError": {
+        "description": "云端错误仍使用Result，data=null、details=[]。422 CLOUD_AUTH_FAILED/CLOUD_PERMISSION_DENIED/CLOUD_QUOTA_EXCEEDED/CLOUD_MODEL_UNAVAILABLE/CLOUD_REQUEST_REJECTED；503 CLOUD_RATE_LIMITED；502 CLOUD_NETWORK_ERROR/CLOUD_SERVICE_UNAVAILABLE；504 CLOUD_TIMEOUT。厂商401不等于本站401，不退出登录。语音任务失败在error.code/message中记录同样的安全信息，不回传厂商原文。无法仅凭密钥外观判定供应商是否正确。",
         "allOf": [
           {
             "$ref": "#/components/schemas/Result"
@@ -9185,6 +9228,14 @@
       }
     },
     "responses": {
+      "CloudConnectionFailure": {
+        "description": "CLOUD_NETWORK_ERROR：检查服务器网络、代理及TLS；CLOUD_SERVICE_UNAVAILABLE：厂商服务异常或重定向。不自动重试或回退，不回传原始错误。",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResultError" } } }
+      },
+      "CloudTimeout": {
+        "description": "CLOUD_TIMEOUT：云端连接、响应或识别等待超时；本次不会自动重试，已发送的调用仍可能计费。",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResultError" } } }
+      },
       "BadRequest": {
         "description": "请求体、必填/互斥字段或ID不合法。",
         "content": {
@@ -9327,7 +9378,7 @@
         }
       },
       "InvalidParameters": {
-        "description": "明确参数不符合白名单或字段值校验失败。",
+        "description": "明确参数不符合白名单或字段值校验失败。AI云端还可返回CLOUD_AUTH_FAILED（核对密钥/厂商/地域）、CLOUD_PERMISSION_DENIED、CLOUD_QUOTA_EXCEEDED、CLOUD_MODEL_UNAVAILABLE或CLOUD_REQUEST_REJECTED，均为422 Result；不影响网站登录。",
         "content": {
           "application/json": {
             "schema": {
@@ -9349,7 +9400,7 @@
         }
       },
       "AIUnavailable": {
-        "description": "模型未配置或调用失败，未创建/修改方案。",
+        "description": "AI_UNAVAILABLE/LOCAL_AI_UNAVAILABLE：模型未配置或服务端模型不可用；AI_BUSY：本站文字请求槽已满；CLOUD_RATE_LIMITED：厂商限流。不自动重试、回退或创建/修改方案。",
         "content": {
           "application/json": {
             "schema": {

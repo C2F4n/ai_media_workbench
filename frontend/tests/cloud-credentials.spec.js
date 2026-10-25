@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => handleActionConfirmations(page));
 const crypto = require('node:crypto');
 const password = 'CloudTests-2026!';
 

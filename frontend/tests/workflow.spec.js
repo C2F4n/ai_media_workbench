@@ -1,4 +1,7 @@
 const { test, expect } = require('@playwright/test');
+const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => handleActionConfirmations(page));
+test.beforeEach(async ({ page }) => acceptCloudCalls(page));
 const { serveStatic } = require('./helpers/static.cjs');
 const { selectTool } = require('./helpers/navigation.cjs');
 
@@ -94,12 +97,12 @@ test('invalid later ranges are rejected locally and AI workflows can be edited w
   await page.locator('#workflow-add').click();
   await page.locator('.workflow-step').nth(2).getByLabel('结束（秒）', { exact: true }).fill('6');
   await page.locator('#workflow-save').click(); await expect(page.locator('#workflow-error')).toContainText('当前结果长 5.000 秒');
-  expect(app.state().patches).toHaveLength(0); expect(dialogs).toBe(1);
+  expect(app.state().patches).toHaveLength(0); expect(dialogs).toBe(0);
   await page.getByRole('button', { name: '删除步骤 3', exact: true }).click();
   await page.locator('#workflow-format').selectOption('flac'); await expect(page.locator('#workflow-codec-field')).toBeHidden();
   await page.locator('#workflow-save').click(); await expect(page.locator('#ai-plan-status')).toHaveText('待确认');
   expect(app.state().patches[0].parameters.steps.at(-1)).toEqual({ operation: 'export', outputFormat: 'flac', videoCodec: null, targetSizeBytes: null, extractAudio: false });
-  expect(dialogs).toBe(1); expect(app.state().executes).toBe(0);
+  expect(dialogs).toBe(0); expect(app.state().executes).toBe(0);
 });
 
 for (const width of [1920, 1365, 390]) test(`input modes slide both ways, fit different heights and preserve text drafts at ${width}px`, async ({ page }, testInfo) => {

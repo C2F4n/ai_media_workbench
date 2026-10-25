@@ -1,6 +1,10 @@
 # AI音视频工作台：轻量版接口契约
 
-版本：2.22.0。日期：2026-10-23。
+版本：2.24.0。日期：2026-10-24。
+
+2.24变更：字幕识别请求新增可选model，能力接口新增asrModels目录。百炼适配千问语音3.1流式、Fun-ASR实时和原Paraformer，均直接传私有音频并使用真实句级时间戳；前端独立选择语音模型，确认框标出实际ID。未指定model的旧客户端/旧任务保持原行为。无新接口、表或迁移，不自动回退模型。
+
+2.23变更：云端文字与语音调用按鉴权、权限、余额/额度、模型、限流、请求、网络、超时和服务故障分别提示。统一Result及异步任务error保留稳定错误码，不回传厂商原文，不将云端401误作网站登录失效。无新接口、表或迁移；保存个人配置仍不发起付费验证。
 
 2.22变更：新增分批字幕翻译建议POST /api/transcripts/{id}/translations及能力字段subtitleTranslation。前端支持10种目标语言、逐段编辑译文、仅译文/双语预览，确认后复用PATCH字幕另存新版本，再下载SRT或烧录视频。识别原文和旧版本保留，无新表或迁移。共58个接口，44个已实现。译文生成不等于保存，未完成或停止的批次不发布半成品，不自动重试付费请求。
 
@@ -207,15 +211,39 @@ capabilities.supportedOperations包含workflow才开放，要求ffprobe和本机
 | POST | /api/transcripts/{transcriptId}/corrections | DeepSeek单句校对建议，200 |
 | POST | /api/transcripts/{id}/translations | 所选文字模型分批翻译建议，200 Result，尚不写入版本 |
 
-识别请求示例：`{"language":"zh-CN","provider":"tencent","force":false}`。provider只支持tencent/aliyun，省略默认tencent；force省略默认false。要求本人READY且有音轨。活动识别复用同一任务；已有字幕且未确认重识别409 TRANSCRIPT_ALREADY_EXISTS。强制重识别成功创建新字幕并切换最新稿，失败不覆盖旧稿。新提交每用户默认5分钟10次，共享最多20个活动任务的队列；复用活动任务不扣次数。QUEUED/RUNNING的parameters=null，kind=TRANSCRIPTION；成功后outputs=[]，transcript为不可变识别稿的transcriptId/version=1引用。未知进度null，成功100。
+识别请求示例：`{"language":"zh-CN","provider":"aliyun","model":"qwen-audio-3.1-asr-flash-streaming","force":false}`。provider只支持tencent/aliyun，省略默认tencent；force省略默认false。可选model必须与provider匹配：腾讯仅16k_zh；百炼支持qwen-audio-3.1-asr-flash-streaming、fun-asr-realtime、paraformer-realtime-v2。不指定/null model时腾讯沿用16k_zh、百炼沿用paraformer-realtime-v2；空串、未知型号、文字模型或跨供应商型号422 INVALID_PARAMETERS，在排队及云端调用前拒绝。要求本人READY且有音轨。活动识别复用同一任务；已有字幕且未确认重识别409 TRANSCRIPT_ALREADY_EXISTS。强制重识别成功创建新字幕并切换最新稿，失败不覆盖旧稿。新提交每用户默认5分钟10次，共享最多20个活动任务的队列；复用活动任务不扣次数。QUEUED/RUNNING的parameters=null，kind=TRANSCRIPTION；成功后outputs=[]，transcript为不可变识别稿的transcriptId/version=1引用。未知进度null，成功100。内部任务参数保存解析后的模型ID，工作线程按此调用，不随之后的页面选择变化，也不保存密钥。
 
-腾讯使用录音极速版16k_zh，word_info=3；百炼使用北京地域Paraformer实时接口paraformer-realtime-v2。后端固定官方域名，不支持任意URL代理，不把私有视频改成公网地址。FFmpeg只提取第一条音轨为64kbps、16kHz单声道临时MP3，校验后传给选定供应商；不修改原素材，不作为输出发布。单任务总预算默认5分钟、租约7分钟；取消、失败、删除、注销或过期令牌均不能发布迟到字幕。临时音频完成后删除，崩溃遗留由现有任务租约/资源清理覆盖。无有效语音ASR_NO_SPEECH，协议/识别失败ASR_FAILED，不伪造字幕。不自动重试或切换付费服务；取消不能保证供应商不收费，已发送的数据也无法追回。
+腾讯使用录音极速版16k_zh，word_info=3；百炼三种模型均使用北京官方WebSocket识别协议和真实时间戳。千问3.1与Fun-ASR发送单个zh语言提示，旧Paraformer保持zh/en参数。capabilities.asrModels为已适配目录，每项含provider/id/name/recommended，不代表个人密钥具备模型权限或余额；是否可用仍检查asrProviders。页面在字幕识别区按供应商切换模型，百炼首次推荐千问语音3.1，本次登录记住各供应商选择；刷新页面重新选择，不把模型选择存入凭据，不影响文字AI配置。旧后端缺少目录时页面仅展示原有模型。目录不包含需额外接口适配的Filetrans、无时间戳的Qwen3实时接口或任意自定义型号。文言文准确率仍需真实音频对比，推荐不代表效果保证；本次没有增加上下文、热词或原文对齐功能。
+
+后端固定官方域名，不支持任意URL代理，不把私有视频改成公网地址。FFmpeg只提取第一条音轨为64kbps、16kHz单声道临时MP3，校验后传给选定供应商；不修改原素材，不作为输出发布。单任务总预算默认5分钟、租约7分钟；取消、失败、删除、注销或过期令牌均不能发布迟到字幕。临时音频完成后删除，崩溃遗留由现有任务租约/资源清理覆盖。无有效语音ASR_NO_SPEECH，协议/识别失败ASR_FAILED，不伪造字幕。不自动重试或切换付费服务；取消不能保证供应商不收费，已发送的数据也无法追回。协议依据：[千问流式客户端事件](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events)、[Fun-ASR客户端事件](https://help.aliyun.com/zh/model-studio/fun-asr-client-events)。
 
 保留不可变originalSegments和所有版本，GET可选正整数version，省略为当前版本，历史不存在404。PATCH全量替换segments并传expectedVersion；版本冲突409 TRANSCRIPT_VERSION_CONFLICT，成功版本+1。1至3000段、ID唯一、整毫秒0<=startMs<endMs<=素材时长，按时间排序、不重叠。文字1至2000个码点，换行归一化、去首尾空白，禁止空白段、空行和控制字符（LF/tab除外），整个segments序列化JSON最多2MiB。SRT为UTF-8/CRLF原始字节流、attachment、no-store；version=1导出原始识别稿。删除素材或注销后，当前和历史字幕立即不可访问。
 
 校对请求：`{"expectedVersion":1,"segmentId":"字幕段UUID"}`。只把已保存的该段文字发送DeepSeek，不发送音频或时间轴，不接收任意指令。35秒超时，JSON和文本边界校验，每用户默认5分钟20次。响应data为transcriptId/version/segmentId/originalText/correctedText；仅瞬时建议，不落库、不产生correctionId，不改变时间轴或字幕版本。用户确认后通过既有PATCH保存，调用前后重新检查版本和归属。DeepSeek不代替语音识别；aiPlans按DeepSeek配置及处理工具可用性声明。
 
 凭据配置见README云端服务及下节；capabilities按当前登录用户计算，匿名仅报告站点能力，Cache-Control:no-store。配置状态不代表网络、权限或余额已经验证；未实现供应商余额查询、额度分配或自动付费重试。
+
+### 云端失败提示（2.23）
+
+方案生成、字幕校对、翻译、检索/片段建议共用错误分类；语音识别失败将同样的code/message写入任务error，不发布半成品字幕或覆盖旧字幕。所有JSON错误仍使用Result，data=null、details=[]；云端鉴权失败不是本站登录失败，不返回本站401，不触发退出登录。不能仅凭密钥格式判断供应商是否正确，提示用户核对供应商、接口地域及密钥，不声称已确定错配。
+
+| 错误码 | HTTP | 提示与处理 |
+| --- | --- | --- |
+| CLOUD_AUTH_FAILED | 422 | 云端鉴权失败；核对密钥、供应商和接口地域 |
+| CLOUD_PERMISSION_DENIED | 422 | 核对账号状态、开通服务、密钥和工作空间权限 |
+| CLOUD_QUOTA_EXCEEDED | 422 | 核对余额、资源包及可用额度/用量上限，不反复重试 |
+| CLOUD_MODEL_UNAVAILABLE | 422 | 模型/接入点不存在或无权限，检查ID、地域及开通状态 |
+| CLOUD_REQUEST_REJECTED | 422 | 模型不支持当前参数或输入被拒绝，检查模型功能和输入 |
+| CLOUD_RATE_LIMITED | 503 | 厂商频率/并发限制，稍后手动重试；区别于本站429 RATE_LIMITED |
+| CLOUD_NETWORK_ERROR | 502 | 检查服务器网络、代理及TLS连接 |
+| CLOUD_TIMEOUT | 504 | 云端连接/响应或识别等待超时；取消仍使用TASK_CANCELLED |
+| CLOUD_SERVICE_UNAVAILABLE | 502 | 厂商服务故障、重定向或其他异常响应，稍后手动重试 |
+
+解释HTTP状态及允许列表中的厂商机器错误码，例如DeepSeek 402、OpenAI insufficient_quota/credit_balance_exhausted、百炼Arrearage、豆包AccountOverdueError和腾讯极速版4002至4006。不扫描或显示原始message，不把所有429误判成余额问题。百炼WebSocket握手及task-failed均参与分类，未知任务错误仍为ASR_FAILED。模型返回的无效、拒答、截断或越界内容仍按原有AI_*失败码拒绝，与密钥/网络错误分开。服务端部署模型使用独立LOCAL_AI_UNAVAILABLE提示，不套用个人云端错误。保持响应大小上限、取消、并发限制、不重试、不回退。
+
+前端保存前检查AppId、SecretId、SecretKey和API Key的基础格式，提示不要填写URL或Bearer前缀；保存只表示格式通过并已加密存储，configured/available不会因为保存而表示远程鉴权成功。识别失败后的task.error.message来自固定错误码，不保存密钥或供应商原始响应。
+
+分类依据：[DeepSeek错误码](https://api-docs.deepseek.com/zh-cn/quick_start/error_codes/)、[OpenAI错误码](https://developers.openai.com/api/docs/guides/error-codes)、[百炼错误码](https://help.aliyun.com/zh/model-studio/error-code)、[豆包错误码](https://docs.volcengine.com/docs/ark/error-codes?lang=zh)、[腾讯极速识别错误码](https://cloud.tencent.com/document/product/1093/52097)。供应商未明确给出原因时只显示安全的通用类别，不能保证每种厂商异常都能进一步细分。
 
 ### 个人云端凭据（2.14）
 
@@ -288,7 +316,7 @@ transcriptId与transcriptVersion必须同时匹配最新字幕；重识别另建
 
 模型只选择连续字幕段的首尾ID；后端重建区间内每一段真实evidence和首尾时间，拒绝未知ID、倒序、重叠、非法分数/文字或超预算输出，返回422 AI_ANALYSIS_FAILED。检索按score降序，score只用于AI相关度排序，不代表准确率。推荐每段至少500ms，所有endMs-startMs的和不超过预算，区间中的静音/字幕间隙也计时；title最多80码点、reason最多300码点，均为模型判断，需要用户复核。无匹配时200空matches/clips并给出提示，不编造。
 
-两种模式共享每用户默认5分钟20次，与校对和方案生成共享最多2个云端文字请求、35秒超时，不自动重试或切换付费服务。限流429，未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY。capabilities.semanticSearch/clipRecommendations按DeepSeek配置声明，不依赖FFmpeg，也不代表网络、余额或真实效果已验收。前端调用前确认会向云端发送目标及已保存字幕，不能撤回已发送数据或保证免扣费。
+两种模式共享每用户默认5分钟20次，与校对和方案生成共享最多2个云端文字请求、35秒超时，不自动重试或切换付费服务。限流429，未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY。capabilities.semanticSearch/clipRecommendations按DeepSeek配置声明，不依赖FFmpeg，也不代表网络、余额或真实效果已验收。前端默认以页面内弹窗确认服务商、发送目标及已保存字幕和可能产生的费用；用户可在弹窗或账户AI服务设置中选择本次登录不再提示，重新登录后恢复，服务端鉴权和限流不变。不能撤回已发送数据或保证免扣费。
 
 “找片段”页展示原文、时间与建议，可在原视频编码兼容时预览该区间；其他编码仍可查看证据和带入裁切。带入前再次核验字幕ID/版本，再填写现有裁切页的起止时间，用户点击开始裁切才生成方案/任务。该流程是单段手动确认裁切，不是clip-draft、多段拼接或自动导出；修改查询/模式/限制或切换素材会清除旧结果。
 

@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
+test.beforeEach(async ({ page }) => { await acceptCloudCalls(page); await handleActionConfirmations(page); });
 const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
 const os = require('node:os');

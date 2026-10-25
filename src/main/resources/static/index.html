@@ -11,7 +11,7 @@
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
-  <header class="app-header">
+  <header class="app-header" hidden>
     <a class="brand" href="/" aria-label="AI音视频工作台首页">
       <img src="/assets/brand.svg" width="34" height="34" alt="">
       <span>AI音视频工作台</span>
@@ -36,16 +36,35 @@
       </button>
     </section>
 
-    <section id="auth-view" class="auth-shell" hidden>
+    <section id="auth-view" class="auth-shell" data-theme="light" data-mode="login" hidden>
+      <button id="auth-theme-toggle" class="icon-button" type="button" title="切换到暗色模式" aria-label="切换到暗色模式" aria-pressed="false"><i data-lucide="moon" aria-hidden="true"></i></button>
+      <aside id="auth-gallery" class="auth-gallery" aria-hidden="true" data-slide="0">
+        <div id="auth-gallery-stage" class="auth-gallery-stage">
+          <figure class="auth-slide">
+            <img data-src="/assets/auth/studio-desk.webp" width="1600" height="2399" alt="现代影视工作室中的数字摄影机、监视器与剪辑设备" fetchpriority="high" decoding="async">
+            <div class="auth-image-fallback"><i data-lucide="film" aria-hidden="true"></i></div>
+          </figure>
+          <figure class="auth-slide" hidden>
+            <img data-src="/assets/auth/studio-lighting.webp" width="1600" height="1067" alt="拍摄现场的彩色灯光与现代布光设备" decoding="async">
+            <div class="auth-image-fallback"><i data-lucide="film" aria-hidden="true"></i></div>
+          </figure>
+          <figure class="auth-slide" hidden>
+            <img data-src="/assets/auth/studio-editing.webp" width="1600" height="2395" alt="显示音频波形与视频时间线的双屏剪辑工作台" decoding="async">
+            <div class="auth-image-fallback"><i data-lucide="film" aria-hidden="true"></i></div>
+          </figure>
+        </div>
+      </aside>
+      <div class="auth-form-pane"><div class="auth-form-content">
       <div class="auth-title">
         <p class="eyebrow">AI音视频工作台</p>
         <h1 id="auth-title">登录账户</h1>
       </div>
       <div class="tabs" role="tablist" aria-label="账户操作">
         <button id="login-tab" role="tab" aria-selected="true" aria-controls="login-panel">登录</button>
-        <button id="register-tab" role="tab" aria-selected="false" aria-controls="register-panel">注册</button>
+        <button id="register-tab" role="tab" aria-selected="false" aria-controls="register-panel" tabindex="-1">注册</button>
       </div>
 
+      <div id="auth-form-scroll" class="auth-form-scroll">
       <div id="auth-notice" class="notice" role="status" hidden></div>
 
       <div id="login-panel" role="tabpanel" aria-labelledby="login-tab">
@@ -68,7 +87,7 @@
         </form>
       </div>
 
-      <div id="register-panel" role="tabpanel" aria-labelledby="register-tab" hidden>
+      <div id="register-panel" role="tabpanel" aria-labelledby="register-tab" hidden inert>
         <p id="register-unavailable" class="notice" role="status" hidden>当前暂未开放注册。</p>
         <form id="register-form" novalidate>
           <label class="field">用户名
@@ -104,6 +123,7 @@
           <button id="register-submit" class="button primary full-width" type="submit"><i data-lucide="user-plus" aria-hidden="true"></i><span>创建账户</span></button>
         </form>
       </div>
+      </div></div></div>
     </section>
 
     <section id="account-view" class="account-shell" hidden>
@@ -250,7 +270,8 @@
         <section id="subtitle-section" class="subtitle-section" hidden aria-labelledby="subtitle-title">
           <div class="section-heading"><h2 id="subtitle-title">字幕处理</h2><button id="refresh-subtitle" class="icon-button" type="button" title="刷新字幕" aria-label="刷新字幕"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
           <p id="subtitle-source" class="result-filename">未选择就绪素材</p>
-          <div class="subtitle-toolbar"><label class="field">识别服务<select id="asr-provider"><option value="tencent">腾讯云</option><option value="aliyun">阿里云百炼</option></select></label><button id="start-transcription" class="button primary" type="button"><i data-lucide="captions" aria-hidden="true"></i><span id="transcription-label">识别字幕</span></button><button id="cancel-transcription" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消识别</button></div>
+          <div class="subtitle-toolbar"><label class="field">识别服务<select id="asr-provider"><option value="tencent">腾讯云</option><option value="aliyun">阿里云百炼</option></select></label><label class="field asr-model-field">语音识别模型<select id="asr-model" aria-describedby="asr-model-note"></select></label><button id="start-transcription" class="button primary" type="button"><i data-lucide="captions" aria-hidden="true"></i><span id="transcription-label">识别字幕</span></button><button id="cancel-transcription" class="button secondary compact" type="button" hidden><i data-lucide="square" aria-hidden="true"></i>取消识别</button></div>
+          <p id="asr-model-note" class="muted asr-model-note" hidden></p>
           <p id="subtitle-state" class="muted" role="status"></p><p id="subtitle-error" class="form-error" role="alert" hidden></p>
           <div id="subtitle-editor" hidden>
             <div class="subtitle-toolbar"><label class="field">版本<select id="subtitle-version"></select></label><label class="checkbox-field"><input id="subtitle-original" type="checkbox">识别原文</label><span id="subtitle-draft-state" class="muted" role="status"></span><button id="save-subtitle" class="icon-button save-button" type="button" title="保存字幕" aria-label="保存字幕"><i data-lucide="save" aria-hidden="true"></i></button><a id="download-srt" class="button secondary compact"><i data-lucide="download" aria-hidden="true"></i>下载 SRT</a></div>
@@ -373,6 +394,10 @@
           <section id="cloud-section" class="account-section" role="tabpanel" aria-labelledby="account-cloud-tab" hidden>
             <div class="section-heading"><h2 id="cloud-title">AI 服务</h2><button id="refresh-cloud" class="icon-button" type="button" title="刷新 AI 服务状态" aria-label="刷新 AI 服务状态"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div>
             <p id="cloud-state" class="muted" role="status"></p><p id="cloud-error" class="form-error" role="alert" hidden></p>
+            <div class="cloud-call-preference">
+              <label class="check-field"><input id="skip-cloud-confirmation" type="checkbox" aria-describedby="cloud-confirmation-help">本次登录不再提示云端调用</label>
+              <p id="cloud-confirmation-help" class="field-help">仅跳过调用前的费用提示，重新登录后恢复。关闭提示不影响供应商计费。</p>
+            </div>
             <div class="cloud-categories" role="tablist" aria-label="AI服务分类">
               <button id="cloud-text-tab" type="button" role="tab" aria-selected="true" aria-controls="cloud-text-panel"><i data-lucide="messages-square" aria-hidden="true"></i>文字AI</button>
               <button id="cloud-speech-tab" type="button" role="tab" aria-selected="false" aria-controls="cloud-speech-panel" tabindex="-1"><i data-lucide="audio-lines" aria-hidden="true"></i>语音识别</button>
@@ -393,8 +418,39 @@
     </section>
   </main>
 
+  <dialog id="action-confirm-dialog" data-kind="warning" aria-labelledby="action-confirm-title" aria-describedby="action-confirm-description">
+    <div class="dialog-heading">
+      <div class="dialog-title-group"><span id="action-confirm-icon" class="dialog-icon"><i data-lucide="triangle-alert" aria-hidden="true"></i></span><h2 id="action-confirm-title">确认操作</h2></div>
+      <button id="close-action-confirm" class="icon-button" type="button" title="取消操作" aria-label="取消操作"><i data-lucide="x" aria-hidden="true"></i></button>
+    </div>
+    <p id="action-confirm-description" class="dialog-description"></p>
+    <div class="dialog-actions">
+      <button id="cancel-action-confirm" class="button secondary" type="button" autofocus>取消</button>
+      <button id="accept-action-confirm" class="button primary" type="button"><i data-lucide="check" aria-hidden="true"></i><span>继续</span></button>
+    </div>
+  </dialog>
+
+  <dialog id="cloud-confirm-dialog" aria-labelledby="cloud-confirm-title" aria-describedby="cloud-confirm-description cloud-confirm-fee">
+    <div class="dialog-heading">
+      <div class="cloud-confirm-heading"><span class="cloud-confirm-icon"><i data-lucide="cloud-upload" aria-hidden="true"></i></span><h2 id="cloud-confirm-title">确认调用云端服务</h2></div>
+      <button id="close-cloud-confirm" class="icon-button" type="button" title="取消调用" aria-label="取消调用"><i data-lucide="x" aria-hidden="true"></i></button>
+    </div>
+    <p id="cloud-confirm-description" class="muted">本次操作将使用以下服务处理数据。</p>
+    <dl class="cloud-confirm-details">
+      <div><dt>服务商</dt><dd id="cloud-confirm-provider"></dd></div>
+      <div><dt>发送内容</dt><dd id="cloud-confirm-content"></dd></div>
+    </dl>
+    <p id="cloud-confirm-detail" class="muted" hidden></p>
+    <p id="cloud-confirm-fee" class="cloud-confirm-fee"><i data-lucide="badge-dollar-sign" aria-hidden="true"></i><span>可能产生服务费用，按供应商的计费规则结算。</span></p>
+    <label id="cloud-confirm-skip-row" class="check-field"><input id="cloud-confirm-skip" type="checkbox">本次登录不再提示</label>
+    <div class="dialog-actions">
+      <button id="cancel-cloud-confirm" class="button secondary" type="button" autofocus>取消</button>
+      <button id="accept-cloud-confirm" class="button primary" type="button"><i data-lucide="arrow-right" aria-hidden="true"></i><span>继续调用</span></button>
+    </div>
+  </dialog>
+
   <dialog id="delete-output-dialog" aria-labelledby="delete-output-title" aria-describedby="delete-output-description">
-    <div class="dialog-heading"><h2 id="delete-output-title">删除结果</h2><button id="close-delete-output" class="icon-button" type="button" title="取消" aria-label="取消删除结果"><i data-lucide="x" aria-hidden="true"></i></button></div>
+    <div class="dialog-heading"><div class="dialog-title-group"><span class="dialog-icon danger-icon"><i data-lucide="trash-2" aria-hidden="true"></i></span><h2 id="delete-output-title">删除结果</h2></div><button id="close-delete-output" class="icon-button" type="button" title="取消" aria-label="取消删除结果"><i data-lucide="x" aria-hidden="true"></i></button></div>
     <p id="delete-output-name" class="result-filename"></p>
     <p id="delete-output-description" class="muted">仅删除此结果文件，原素材、参数和处理记录保留。此操作不可恢复。</p>
     <form id="delete-output-form">
@@ -404,7 +460,7 @@
   </dialog>
 
   <dialog id="delete-media-dialog" aria-labelledby="delete-media-title" aria-describedby="delete-media-description">
-    <div class="dialog-heading"><h2 id="delete-media-title">删除素材</h2><button id="close-delete-media" class="icon-button" type="button" title="取消" aria-label="取消删除素材"><i data-lucide="x" aria-hidden="true"></i></button></div>
+    <div class="dialog-heading"><div class="dialog-title-group"><span class="dialog-icon danger-icon"><i data-lucide="trash-2" aria-hidden="true"></i></span><h2 id="delete-media-title">删除素材</h2></div><button id="close-delete-media" class="icon-button" type="button" title="取消" aria-label="取消删除素材"><i data-lucide="x" aria-hidden="true"></i></button></div>
     <p id="delete-media-name" class="result-filename"></p>
     <p id="delete-media-description" class="muted">关联的处理记录和结果也会删除，正在进行的任务将停止。此操作不可恢复。</p>
     <form id="delete-media-form">
@@ -415,7 +471,7 @@
 
   <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
     <div class="dialog-heading">
-      <h2 id="delete-title">确认注销账号</h2>
+      <div class="dialog-title-group"><span class="dialog-icon danger-icon"><i data-lucide="user-round-x" aria-hidden="true"></i></span><h2 id="delete-title">确认注销账号</h2></div>
       <button id="close-delete-dialog" class="icon-button" type="button" title="取消" aria-label="取消"><i data-lucide="x" aria-hidden="true"></i></button>
     </div>
     <p id="delete-description" class="muted">所有设备将退出登录。账号与素材将无法访问，此操作不可恢复。</p>

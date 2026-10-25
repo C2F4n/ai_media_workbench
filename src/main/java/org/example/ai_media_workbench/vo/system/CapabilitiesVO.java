@@ -7,4 +7,5 @@ public record CapabilitiesVO(
         boolean aiPlans, boolean asr, boolean semanticSearch, boolean clipRecommendations,
         boolean mediaTool, long maxUploadBytes, long maxDurationMs,
         List<String> supportedOperations, List<String> asrProviders, boolean subtitleCorrection,
-        List<String> exportFormats, List<String> exportVideoCodecs, TextAiStatusVO textAi, boolean subtitleTranslation) {}
+        List<String> exportFormats, List<String> exportVideoCodecs, TextAiStatusVO textAi, boolean subtitleTranslation,
+        List<AsrModelVO> asrModels) {}

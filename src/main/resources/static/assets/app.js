@@ -2,7 +2,7 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  // 登录令牌不是 JWT：AMW_SESSION HttpOnly Cookie 携带服务端会话 ID，JS 不读取或写入 localStorage。
+  // 登录令牌不是 JWT：AMW_SESSION HttpOnly Cookie 携带服务端会话 ID，JS 不读取令牌，也不将令牌存入 localStorage。
   let currentUser = null;
   let csrfToken = null;
   let capabilities = null;
@@ -10,6 +10,41 @@
   let busy = false;
   const narrowNavigation = window.matchMedia('(max-width: 900px)');
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const systemAuthTheme = window.matchMedia('(prefers-color-scheme: dark)');
+  let authThemePreference = null;
+  try {
+    const saved = localStorage.getItem('amw-auth-theme');
+    if (saved === 'light' || saved === 'dark') authThemePreference = saved;
+  } catch { /* 外观偏好存储不可用时，仍可在当前页面切换。 */ }
+  function applyAuthTheme() {
+    const theme = authThemePreference || (systemAuthTheme.matches ? 'dark' : 'light');
+    $('auth-view').dataset.theme = theme;
+    const button = $('auth-theme-toggle'), dark = theme === 'dark';
+    button.title = dark ? '切换到亮色模式' : '切换到暗色模式';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', String(dark));
+    button.innerHTML = `<i data-lucide="${dark ? 'sun' : 'moon'}" aria-hidden="true"></i>`;
+    icons();
+  }
+  applyAuthTheme();
+  $('auth-theme-toggle').addEventListener('click', () => {
+    authThemePreference = $('auth-view').dataset.theme === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('amw-auth-theme', authThemePreference); } catch { /* 不影响当前页面切换。 */ }
+    applyAuthTheme();
+  });
+  systemAuthTheme.addEventListener('change', () => { if (!authThemePreference) applyAuthTheme(); });
+  window.addEventListener('storage', event => {
+    if (event.key !== 'amw-auth-theme' && event.key !== null) return;
+    authThemePreference = ['light', 'dark'].includes(event.newValue) ? event.newValue : null;
+    applyAuthTheme();
+  });
+  const authGallery = $('auth-gallery'), authSlides = [...authGallery.querySelectorAll('.auth-slide')];
+  let authSlideIndex = 0, authGalleryTimer = null, authGalleryHovered = false;
+  let authGalleryAnimations = [], authGalleryTransition = 0;
+  let authFormAnimation = null;
+  const cloudConfirmationKey = 'amw-cloud-confirmation';
+  let skipCloudConfirmation = false, pendingCloudConfirmation = null;
+  let pendingActionConfirmation = null;
   let navigationPreference = { pinned: true, open: true };
   const toolGroupPreferences = { regular: true, ai: true, history: true };
   try {
@@ -22,6 +57,7 @@
   } catch { /* 分组偏好不影响功能可用性。 */ }
   let navigationOpen = !narrowNavigation.matches && navigationPreference.open;
   let activeTool = 'detect', toolAnimation = null, dependencySignature = '';
+  const asrModelChoices = new Map();
   const phaseOrder = ['import', 'edit', 'export'];
   const toolPhases = new Map();
   let activePhase = 'import', phaseAnimation = null;
@@ -118,6 +154,15 @@
     CLIP_JOIN_FAILED: '片段拼接失败，未生成可用结果。',
     CLOUD_CREDENTIALS_UNAVAILABLE: '个人云端凭据暂不可读取，请检查加密密钥或重新配置。',
     CLOUD_CREDENTIALS_CONFLICT: '云端配置已被修改，请刷新后重试。',
+    CLOUD_AUTH_FAILED: '云端身份验证失败。请前往设置 → AI服务，检查密钥、所选供应商及接口地域是否匹配。',
+    CLOUD_PERMISSION_DENIED: '云端拒绝访问。请检查账号状态、服务是否开通，以及密钥或工作空间权限。',
+    CLOUD_QUOTA_EXCEEDED: '云端余额或可用额度不足。请到对应供应商控制台检查余额、资源包和额度限制。',
+    CLOUD_MODEL_UNAVAILABLE: '云端模型或接入点不存在或无权访问。请在设置 → AI服务中检查模型ID、地域及开通权限。',
+    CLOUD_RATE_LIMITED: '云端调用频率或并发超限，请稍后重试。本次不会自动重试。',
+    CLOUD_REQUEST_REJECTED: '云端未接受请求。请检查所选模型是否支持当前功能、参数及输入内容。',
+    CLOUD_NETWORK_ERROR: '服务器无法连接云端服务。请检查服务器网络、代理及TLS连接。',
+    CLOUD_TIMEOUT: '云端调用超时，请稍后重试。本次不会自动重试。',
+    CLOUD_SERVICE_UNAVAILABLE: '云端服务暂不可用或返回异常，请稍后重试。',
     QUEUE_FULL: '处理队列已满，请稍后重试。',
     PLAN_VERSION_CONFLICT: '方案版本已变化，请刷新后重试。',
     TASK_NOT_CANCELLABLE: '任务已经结束，无法取消。',
@@ -194,20 +239,176 @@
     element.classList.toggle('error', error);
   }
 
+  function syncCloudConfirmationSetting() {
+    $('skip-cloud-confirmation').checked = skipCloudConfirmation;
+    $('skip-cloud-confirmation').disabled = !currentUser;
+  }
+  function loadCloudConfirmationSetting(reset = false) {
+    skipCloudConfirmation = false;
+    try {
+      if (reset) localStorage.removeItem(cloudConfirmationKey);
+      else {
+        const saved = JSON.parse(localStorage.getItem(cloudConfirmationKey) || 'null');
+        skipCloudConfirmation = !!currentUser && saved?.owner === currentUser.id && saved?.skip === true;
+      }
+    } catch { /* 存储不可用时默认保留提示，本页手动设置仍可生效。 */ }
+    syncCloudConfirmationSetting();
+  }
+  function setCloudConfirmationSetting(skip) {
+    skipCloudConfirmation = !!currentUser && skip;
+    try {
+      if (skipCloudConfirmation) localStorage.setItem(cloudConfirmationKey, JSON.stringify({ owner: currentUser.id, skip: true }));
+      else localStorage.removeItem(cloudConfirmationKey);
+    } catch { /* 此偏好不包含令牌或凭据，保存失败不阻断当前操作。 */ }
+    syncCloudConfirmationSetting();
+  }
+  function cloudConfirmationContext() {
+    return JSON.stringify([currentUser?.id, workspaceRevision, selectedMedia?.id, capabilities?.textAi, capabilities?.asrProviders, capabilities?.asrModels, $('asr-model').value]);
+  }
+  function finishCloudConfirmation(accepted) {
+    const pending = pendingCloudConfirmation;
+    if (!pending) return;
+    pendingCloudConfirmation = null;
+    accepted = accepted && !busy && pending.context === cloudConfirmationContext();
+    // 取消、关闭和 Escape 都不保存“不再提示”，也不会发起请求。
+    if (accepted && pending.paid && $('cloud-confirm-skip').checked) setCloudConfirmationSetting(true);
+    if ($('cloud-confirm-dialog').open) $('cloud-confirm-dialog').close();
+    pending.resolve(accepted);
+  }
+  function confirmCloudCall({ provider, content, detail = '', paid = true }) {
+    if (busy || !currentUser || pendingCloudConfirmation || document.querySelector('dialog[open]')) return Promise.resolve(false);
+    if (paid && skipCloudConfirmation) return Promise.resolve(true);
+    $('cloud-confirm-title').textContent = paid ? '确认调用云端服务' : '确认字幕翻译';
+    $('cloud-confirm-provider').textContent = provider;
+    $('cloud-confirm-content').textContent = content;
+    $('cloud-confirm-detail').textContent = detail; $('cloud-confirm-detail').hidden = !detail;
+    $('cloud-confirm-fee').hidden = !paid; $('cloud-confirm-skip-row').hidden = !paid;
+    $('cloud-confirm-dialog').setAttribute('aria-describedby', ['cloud-confirm-description', paid && 'cloud-confirm-fee', detail && 'cloud-confirm-detail'].filter(Boolean).join(' '));
+    $('cloud-confirm-skip').checked = false;
+    return new Promise(resolve => {
+      pendingCloudConfirmation = { resolve, paid, context: cloudConfirmationContext() };
+      $('cloud-confirm-dialog').showModal();
+    });
+  }
+  $('skip-cloud-confirmation').addEventListener('change', event => setCloudConfirmationSetting(event.currentTarget.checked));
+  $('accept-cloud-confirm').addEventListener('click', () => finishCloudConfirmation(true));
+  for (const id of ['cancel-cloud-confirm', 'close-cloud-confirm']) $(id).addEventListener('click', () => finishCloudConfirmation(false));
+  $('cloud-confirm-dialog').addEventListener('cancel', event => { event.preventDefault(); finishCloudConfirmation(false); });
+  $('cloud-confirm-dialog').addEventListener('close', () => { if (!$('cloud-confirm-dialog').open) finishCloudConfirmation(false); });
+  // 所有站内弹窗共用键盘焦点边界，取消键与关闭键不提交业务操作。
+  document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('keydown', event => {
+    if (event.key !== 'Tab') return;
+    const controls = [...event.currentTarget.querySelectorAll('button:not(:disabled), input:not(:disabled)')].filter(element => element.getClientRects().length);
+    const target = event.shiftKey && document.activeElement === controls[0] ? controls.at(-1)
+      : !event.shiftKey && document.activeElement === controls.at(-1) ? controls[0] : null;
+    if (target) { event.preventDefault(); target.focus(); }
+  }));
+  window.addEventListener('storage', event => { if (event.key === cloudConfirmationKey || event.key === null) loadCloudConfirmationSetting(); });
+
+  function actionConfirmationContext() {
+    return JSON.stringify([currentUser?.id, workspaceRevision, selectedMedia?.id, activePanel, activeTool]);
+  }
+  function finishActionConfirmation(accepted) {
+    const pending = pendingActionConfirmation;
+    if (!pending) return;
+    pendingActionConfirmation = null;
+    accepted = accepted && !busy && pending.context === actionConfirmationContext();
+    if ($('action-confirm-dialog').open) $('action-confirm-dialog').close();
+    pending.resolve(accepted);
+  }
+  function confirmAction({ title, message, confirmLabel, kind = 'warning', icon = 'triangle-alert' }) {
+    if (busy || !currentUser || pendingActionConfirmation || document.querySelector('dialog[open]')) return Promise.resolve(false);
+    $('action-confirm-title').textContent = title;
+    $('action-confirm-description').textContent = message;
+    $('action-confirm-dialog').dataset.kind = kind;
+    const glyph = document.createElement('i'); glyph.dataset.lucide = icon; glyph.setAttribute('aria-hidden', 'true');
+    $('action-confirm-icon').replaceChildren(glyph);
+    $('accept-action-confirm').className = 'button ' + (kind === 'danger' ? 'danger' : 'primary');
+    $('accept-action-confirm').querySelector('span').textContent = confirmLabel;
+    icons();
+    return new Promise(resolve => {
+      pendingActionConfirmation = { resolve, context: actionConfirmationContext() };
+      $('action-confirm-dialog').showModal();
+    });
+  }
+  $('accept-action-confirm').addEventListener('click', () => finishActionConfirmation(true));
+  for (const id of ['cancel-action-confirm', 'close-action-confirm']) $(id).addEventListener('click', () => finishActionConfirmation(false));
+  $('action-confirm-dialog').addEventListener('cancel', event => { event.preventDefault(); finishActionConfirmation(false); });
+  $('action-confirm-dialog').addEventListener('close', () => { if (!$('action-confirm-dialog').open) finishActionConfirmation(false); });
+
   // 只显示指定页面视图。
   function showOnly(view) {
+    if (view !== 'account-view') { finishCloudConfirmation(false); finishActionConfirmation(false); }
     for (const id of ['loading-view', 'unavailable-view', 'auth-view', 'account-view']) {
       $(id).hidden = id !== view;
     }
+    document.querySelector('.app-header').hidden = view !== 'account-view';
+    if (view !== 'auth-view') stopAuthFormAnimation();
     $('header-logout').hidden = view !== 'account-view';
     $('header-account').hidden = view !== 'account-view';
     syncNavigation();
+    syncAuthGallery();
   }
+
+  function settleAuthGallery() {
+    authGalleryTransition++;
+    authGalleryAnimations.forEach(animation => animation.cancel()); authGalleryAnimations = [];
+    authSlides.forEach((slide, index) => { slide.hidden = index !== authSlideIndex; slide.inert = slide.hidden; });
+  }
+  function syncAuthGallery() {
+    clearTimeout(authGalleryTimer); authGalleryTimer = null;
+    const visible = !$('auth-view').hidden && !document.hidden;
+    if (visible) for (const image of authGallery.querySelectorAll('img[data-src]')) {
+      if (!image.hasAttribute('src')) image.src = image.dataset.src;
+    }
+    if (!visible) settleAuthGallery();
+    const ready = authSlides.every(slide => { const image = slide.querySelector('img'); return image.hasAttribute('src') && image.complete; });
+    if (visible && ready && !reducedMotion.matches && !authGalleryHovered) {
+      authGalleryTimer = setTimeout(() => setAuthSlide((authSlideIndex + 1) % authSlides.length), 6000);
+    }
+  }
+  function setAuthSlide(index) {
+    const outgoing = authSlides[authSlideIndex], incoming = authSlides[index];
+    if (index === authSlideIndex) { syncAuthGallery(); return; }
+    settleAuthGallery(); authSlideIndex = index;
+    authGallery.dataset.slide = String(index);
+    incoming.hidden = false; incoming.inert = false; outgoing.inert = true;
+    if (reducedMotion.matches || $('auth-view').hidden) settleAuthGallery();
+    else {
+      const token = authGalleryTransition, options = { duration: 720, easing: 'cubic-bezier(.22,.75,.22,1)' };
+      authGalleryAnimations = [
+        outgoing.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-100%)' }], options),
+        incoming.animate([{ transform: 'translateX(100%)' }, { transform: 'translateX(0)' }], options)
+      ];
+      Promise.all(authGalleryAnimations.map(animation => animation.finished)).then(() => {
+        if (token === authGalleryTransition) settleAuthGallery();
+      }).catch(() => { /* 隐藏登录页或改变动态效果偏好时，取消旧动画并归一显示状态。 */ });
+    }
+    syncAuthGallery();
+  }
+  authSlides.forEach((slide, index) => {
+    slide.inert = index !== authSlideIndex;
+    slide.querySelector('img').addEventListener('load', () => { slide.querySelector('.auth-image-fallback').hidden = true; syncAuthGallery(); });
+    slide.querySelector('img').addEventListener('error', event => {
+      event.currentTarget.hidden = true;
+      slide.querySelector('.auth-image-fallback').hidden = false;
+      syncAuthGallery();
+    });
+  });
+  authGallery.addEventListener('pointerenter', event => { if (event.pointerType !== 'touch') { authGalleryHovered = true; syncAuthGallery(); } });
+  authGallery.addEventListener('pointerleave', () => { authGalleryHovered = false; syncAuthGallery(); });
+  document.addEventListener('visibilitychange', syncAuthGallery);
+  window.addEventListener('pagehide', () => { clearTimeout(authGalleryTimer); authGalleryTimer = null; settleAuthGallery(); });
+  window.addEventListener('pageshow', syncAuthGallery);
+  reducedMotion.addEventListener('change', () => {
+    if (reducedMotion.matches) { settleAuthGallery(); stopAuthFormAnimation(); }
+    syncAuthGallery();
+  });
 
   // 设置请求等待状态并禁用或恢复表单控件。
   function setBusy(value) {
     busy = value;
-    document.querySelectorAll('button, form input, form select').forEach((element) => { element.disabled = value || element.hasAttribute('data-unavailable'); });
+    document.querySelectorAll('button:not(#auth-theme-toggle), form input, form select').forEach((element) => { element.disabled = value || element.hasAttribute('data-unavailable'); });
     updateRegistrationControls();
     document.body.setAttribute('aria-busy', String(value));
     syncMediaControls();
@@ -232,16 +433,39 @@
     updateRegistrationControls();
   }
 
-  // 切换登录和注册表单。
-  function switchMode(mode) {
+  function stopAuthFormAnimation() {
+    authFormAnimation?.cancel(); authFormAnimation = null;
+  }
+
+  // 标题和标签栏不参与动画，只切换下方表单；非活动表单不进入焦点或辅助技术导航。
+  function switchMode(mode, animate = false) {
     const login = mode === 'login';
+    const changed = $('auth-view').dataset.mode !== mode;
+    stopAuthFormAnimation();
+    $('auth-view').dataset.mode = mode;
     $('login-tab').setAttribute('aria-selected', String(login));
     $('register-tab').setAttribute('aria-selected', String(!login));
+    $('login-tab').tabIndex = login ? 0 : -1;
+    $('register-tab').tabIndex = login ? -1 : 0;
     $('login-panel').hidden = !login;
     $('register-panel').hidden = login;
+    $('login-panel').inert = !login;
+    $('register-panel').inert = login;
     $('auth-title').textContent = login ? '登录账户' : '创建账户';
     notice('login-error', '');
     notice('register-error', '');
+    if (changed) $('auth-form-scroll').scrollTop = 0;
+    if (changed && animate && !reducedMotion.matches && !$('auth-view').hidden) {
+      const panel = $(login ? 'login-panel' : 'register-panel');
+      const animation = panel.animate([
+        { opacity: 0, transform: `translateX(${login ? -24 : 24}px)` },
+        { opacity: 1, transform: 'translateX(0)' }
+      ], { duration: 300, easing: 'cubic-bezier(.22,.75,.22,1)' });
+      authFormAnimation = animation;
+      animation.finished.then(() => {
+        if (authFormAnimation === animation) stopAuthFormAnimation();
+      }).catch(() => { /* 快速切换、离开认证页或减少动态效果时，直接保留当前表单。 */ });
+    }
   }
 
   // 清空密码输入框并恢复密码隐藏状态。
@@ -263,7 +487,12 @@
 
   // 清除页面中的用户状态并显示登录界面。
   function showAuth(message = '') {
+    asrModelChoices.clear();
+    delete $('asr-model').dataset.catalog;
+    finishCloudConfirmation(false);
+    finishActionConfirmation(false);
     currentUser = null;
+    loadCloudConfirmationSetting(true);
     clearCloud();
     if (capabilities) capabilities = { ...capabilities, aiPlans: false, asr: false, asrProviders: [], semanticSearch: false, clipRecommendations: false, subtitleCorrection: false, subtitleTranslation: false };
     resetWorkbench();
@@ -276,10 +505,11 @@
   }
 
   // 填充用户资料并显示账号界面。
-  function showAccount(user) {
+  function showAccount(user, newLogin = false) {
     // 用户输入用 textContent 填入，不能当作 HTML 执行，避免昵称等字段造成脚本注入。
     const first = currentUser?.id !== user.id;
     currentUser = user;
+    if (first || newLogin) loadCloudConfirmationSetting(newLogin);
     $('workspace-user').textContent = user.displayName;
     $('account-greeting').textContent = `你好，${user.displayName}`;
     $('profile-username').textContent = user.username;
@@ -438,8 +668,8 @@
     });
   }
 
-  $('login-tab').addEventListener('click', () => { switchMode('login'); notice('auth-notice', ''); });
-  $('register-tab').addEventListener('click', () => { switchMode('register'); notice('auth-notice', ''); });
+  $('login-tab').addEventListener('click', () => { switchMode('login', true); notice('auth-notice', ''); });
+  $('register-tab').addEventListener('click', () => { switchMode('register', true); notice('auth-notice', ''); });
   document.querySelector('.tabs').addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
     event.preventDefault();
@@ -525,7 +755,7 @@
       const data = await request('/api/auth/login', { method: 'POST', body });
       // 登录后服务端轮换了会话与 CSRF，后续操作必须使用新令牌。
       csrfToken = data.csrfToken;
-      showAccount(data.user);
+      showAccount(data.user, true);
       notice('account-notice', '');
       channel?.postMessage('account-changed');
     });
@@ -684,6 +914,12 @@
     { id: 'aliyun', name: '阿里云百炼语音识别', fields: [['apiKey', 'API Key', true, 512], ['workspaceId', 'Workspace ID', false, 80]] },
     { id: 'deepseek', name: '文字 AI', fields: [['apiKey', 'DeepSeek API Key', true, 512], ['model', 'DeepSeek 模型', false, 80], ['workspaceId', 'Workspace ID（北京，可选）', false, 80]] }
   ];
+  const cloudFieldRules = {
+    appId: [/^[0-9]{1,20}$/, 'AppId 应为1至20位数字。'],
+    secretId: [/^[A-Za-z0-9]{1,128}$/, 'SecretId 应为字母或数字，不要填写网址或其他字段。'],
+    secretKey: [/^[A-Za-z0-9+/=_-]{1,256}$/, 'SecretKey 格式不正确，请复制对应供应商的密钥。'],
+    apiKey: [/^[A-Za-z0-9_.-]{1,512}$/, 'API Key 格式不正确。只填写密钥，不要包含网址、Bearer 前缀、空格或换行。']
+  };
   const textVendors = {
     deepseek: { name: 'DeepSeek', model: 'deepseek-flash', models: [['deepseek-flash', 'DeepSeek Flash'], ['deepseek-v4-pro', 'DeepSeek V4 Pro']], endpoint: 'https://api.deepseek.com/chat/completions' },
     openai: { name: 'OpenAI', model: '', models: [['gpt-6-sol', 'GPT-6 Sol'], ['gpt-6-astra', 'GPT-6 Astra'], ['gpt-5.6-sol', 'GPT-5.6 Sol'], ['gpt-5.6-luna', 'GPT-5.6 Luna']], endpoint: 'https://api.openai.com/v1/chat/completions' },
@@ -830,6 +1066,9 @@
       fields.querySelector('input[name=workspaceId]').addEventListener('input', syncTextVendor); syncTextVendor();
     }
     mode.addEventListener('change', () => { article.dataset.dirty = 'true'; fields.hidden = mode.value !== 'PERSONAL'; modelWarning.hidden = provider.id !== 'deepseek' || mode.value !== 'SERVER'; form.querySelectorAll('input[data-secret]').forEach((input) => { input.value = ''; }); state.textContent = '未保存'; state.classList.remove('error'); syncTextVendor(); });
+    const validationHint = document.createElement('p'); validationHint.className = 'cloud-endpoint muted';
+    validationHint.textContent = '保存仅检查格式，不验证密钥、权限或余额；请使用所选供应商的密钥。真实调用失败时会显示具体原因。';
+    fields.append(validationHint);
     form.append(fields);
     const actions = document.createElement('div'); actions.className = 'cloud-provider-actions';
     const save = document.createElement('button'); save.type = 'button'; save.className = 'button primary'; save.title = '保存配置'; save.setAttribute('aria-label', '保存' + provider.name + '配置'); save.innerHTML = '<i data-lucide="save" aria-hidden="true"></i><span>保存</span>'; actions.append(save);
@@ -846,20 +1085,37 @@
     };
     // 凭据只在激活保存按钮时提交，输入框回车产生的隐式submit不得写入。
     form.addEventListener('submit', (event) => event.preventDefault());
-    save.addEventListener('click', () => {
+    save.addEventListener('click', async () => {
       if (customModel) customModel.value = customModel.value.trim();
+      if (mode.value === 'PERSONAL') {
+        for (const input of fields.querySelectorAll('input')) {
+          const rule = cloudFieldRules[input.name];
+          if (!rule) continue;
+          input.value = input.value.trim();
+          const required = !saved.personalStored || saved.mode !== 'PERSONAL' || vendor && vendor.value !== (saved.textProvider || 'deepseek');
+          if (input.value ? !rule[0].test(input.value) : required) {
+            notice('cloud-error', input.value ? rule[1] : '请填写' + input.getAttribute('aria-label') + '。', true);
+            input.focus(); return;
+          }
+        }
+      }
       if (busy || cloudLoading || !form.reportValidity()) return;
+      const owner = currentUser?.id, revision = cloudRevision;
       const body = { expectedVersion: saved.version, mode: mode.value };
       if (mode.value === 'PERSONAL') {
         if (vendor) body.textProvider = vendor.value;
         for (const input of fields.querySelectorAll('input,select[name=model]')) if (input.name !== 'customModel' && !(vendor && input.name === 'workspaceId' && vendor.value !== 'bailian') && (!input.dataset.secret || input.value)) body[input.name] = input.value;
         if (vendor && body.model === '__custom__') body.model = customModel.value;
-        if (!window.confirm('将个人凭据加密保存在此服务器，并使用你对应服务商的额度。保存？')) return;
-      } else if (saved.personalStored && !window.confirm('这会删除此供应商的个人凭据，并切换凭据来源。继续？')) return;
+        if (!await confirmAction({ title: '保存个人凭据', message: `将${provider.name}的个人凭据加密保存在此服务器。后续调用使用你在对应服务商的额度，保存本身不会发起付费调用。`, confirmLabel: '保存凭据', kind: 'info', icon: 'key-round' })) return;
+      } else if (saved.personalStored && !await confirmAction({ title: '切换服务来源', message: '这会删除此供应商已保存的个人凭据，并切换到所选服务来源。恢复个人服务时需要重新填写凭据。', confirmLabel: '删除并切换', kind: 'danger', icon: 'key-round' })) return;
+      if (busy || currentUser?.id !== owner || cloudRevision !== revision || !article.isConnected) return;
       write('PUT', body);
     });
-    remove.addEventListener('click', () => {
-      if (busy || !window.confirm('删除此供应商的个人凭据并停用？不会自动切换到服务端模型或其他服务。')) return;
+    remove.addEventListener('click', async () => {
+      if (busy) return;
+      const owner = currentUser?.id, revision = cloudRevision;
+      if (!await confirmAction({ title: '删除个人凭据', message: `删除${provider.name}的个人凭据并停用此服务。不会自动切换到服务端模型或其他供应商；重新启用时需再次配置。`, confirmLabel: '删除并停用', kind: 'danger', icon: 'trash-2' })) return;
+      if (busy || currentUser?.id !== owner || cloudRevision !== revision || !article.isConnected) return;
       write('DELETE', { expectedVersion: saved.version });
     });
   }
@@ -990,8 +1246,13 @@
     notice('source-preview-status', ''); $('retry-source-preview').hidden = true; $('source-preview').load();
   });
 
+  async function confirmMediaSwitch(id) {
+    if (busy) return false;
+    if (!selectedMedia || selectedMedia.id === id || !(subtitleDirty || translationDraft || joinDirty || exportDirty || workflowDirty || aiPlanDirty)) return true;
+    return confirmAction({ title: '切换素材', message: '当前素材有未保存的修改。切换后，这些修改将被放弃，已保存的方案、字幕和原素材不受影响。', confirmLabel: '放弃并切换', icon: 'file-video' });
+  }
+  // 后台刷新只更新展示；用户主动切换的确认放在请求和工作台状态变更之前。
   function displayMedia(item) {
-    if (selectedMedia && selectedMedia.id !== item.id && (subtitleDirty || translationDraft || joinDirty || exportDirty || workflowDirty) && !window.confirm('放弃未保存的修改并切换素材？')) return;
     if (selectedMedia && selectedMedia.id !== item.id) clearExport();
     clearTimeout(probeTimer); probeTimer = null;
     if (selectedMedia?.id !== item.id) clearSubtitle();
@@ -1067,7 +1328,8 @@
         const name = document.createElement('span'); name.className = 'file-name'; name.textContent = item.originalFilename;
         const size = document.createElement('span'); size.className = 'file-size'; size.textContent = sizeText(item.sizeBytes);
         const status = document.createElement('span'); status.className = 'media-status ' + (item.status === 'READY' ? 'ready' : item.status === 'FAILED' ? 'failed' : ''); status.textContent = statusText(item.status);
-        button.append(icon, name, size, status); button.addEventListener('click', () => {
+        button.append(icon, name, size, status); button.addEventListener('click', async () => {
+          if (!await confirmMediaSwitch(item.id) || busy || currentUser?.id !== owner || workspaceRevision !== revision) return;
           displayMedia(item);
           if (selectedMedia?.id === item.id && item.status === 'READY') selectWorkbenchPhase('edit');
         });
@@ -1119,9 +1381,10 @@
     syncMediaControls();
   });
 
-  $('upload-form').addEventListener('submit', (event) => {
+  $('upload-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const file = $('media-file').files[0];
+    if (!await confirmMediaSwitch(null) || busy) return;
     operation('upload-error', async () => {
       if (!file || !file.size) throw new Error('请选择非空的视频文件。');
       if (file.size > capabilities.maxUploadBytes) throw new Error(`文件不能超过${sizeText(capabilities.maxUploadBytes)}。`);
@@ -1380,7 +1643,7 @@
     $('ai-model-warning').hidden = !localAi || workflowMode;
     const textService = localAi ? '服务端部署 · 千问 ' + (c.textAi.model || 'Qwen3.5-4B') : textVendorName() + ' · 文本对话 API';
     const unavailable = c.textAi?.available === true ? '处理工具暂不可用' : localAi ? messages.LOCAL_AI_UNAVAILABLE : c.textAi?.unavailableReason || '未配置';
-    const signature = JSON.stringify([activeTool, workflowMode, provider, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, c.subtitleTranslation, providers, c.textAi]);
+    const signature = JSON.stringify([activeTool, workflowMode, provider, $('asr-model').value, c.mediaTool, c.supportedOperations, c.aiPlans, c.semanticSearch, c.clipRecommendations, c.subtitleCorrection, c.subtitleTranslation, providers, c.textAi]);
     if (dependencySignature === signature) return;
     dependencySignature = signature;
     const kind = activeTool === 'ai' && workflowMode ? 'local' : subtitleTool ? 'mixed' : cloudTool ? localAi ? 'local' : 'cloud' : 'local';
@@ -1399,7 +1662,8 @@
     const rows = [];
     let detail = '';
     if (subtitleTool) {
-      rows.push(['语音转字幕', provider === 'aliyun' ? '阿里云百炼 · Paraformer 语音识别 API' : '腾讯云 · 录音极速版语音识别 API', providers.includes(provider) ? '已配置' : '未配置或工具未就绪', providers.includes(provider)]);
+      const model = asrModels().find(item => item.provider === provider && item.id === $('asr-model').value);
+      rows.push(['语音转字幕', (provider === 'aliyun' ? '阿里云百炼 · ' : '腾讯云 · ') + (model?.name || '语音识别 API'), providers.includes(provider) ? '已配置' : '未配置或工具未就绪', providers.includes(provider)]);
       rows.push(['文字校对', textService, c.subtitleCorrection ? localAi ? '已就绪' : '已配置' : unavailable, !!c.subtitleCorrection]);
       rows.push(['字幕翻译 / 双语字幕', textService, c.subtitleTranslation ? localAi ? '已就绪' : '已配置' : unavailable, !!c.subtitleTranslation]);
       rows.push(['编辑 / SRT', '本站后端 · 无第三方 API', '站点处理', true]);
@@ -1430,7 +1694,11 @@
     }));
     $('dependency-detail').textContent = detail;
   }
-  $('asr-provider').addEventListener('change', renderToolDependencies);
+  $('asr-provider').addEventListener('change', () => { syncSubtitleControls(); renderToolDependencies(); });
+  $('asr-model').addEventListener('change', () => {
+    asrModelChoices.set($('asr-provider').value, $('asr-model').value);
+    syncSubtitleControls(); renderToolDependencies();
+  });
   $('dependency-settings').addEventListener('click', () => {
     setNavigationOpen(false, false); selectPanel('account'); selectAccountTab('cloud'); selectCloudCategory(activeTool === 'subtitle' ? 'speech' : 'text');
     $('cloud-section').scrollIntoView({ block: 'start', behavior: reducedMotion.matches ? 'instant' : 'smooth' });
@@ -1505,20 +1773,24 @@
     exportPlan = plan; exportDirty = false; notice('export-plan-state', `已保存 · v${plan.version}`); return plan;
   }
   $('save-export-plan').addEventListener('click', () => operation('conversion-error', async () => { await saveExportPlan(exportParameters()); }));
-  $('restore-export-plan').addEventListener('click', () => operation('conversion-error', async () => {
-    if (exportDirty && !window.confirm('放弃未保存的导出设置？')) return;
-    const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = exportRevision, workspace = workspaceRevision;
-    let found = null, page = 1;
-    do {
-      const result = await request(`/api/operation-plans?mediaId=${mediaId}&page=${page}&pageSize=50`);
-      if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || exportRevision !== revision || workspaceRevision !== workspace) return;
-      found = result.items.find((plan) => plan.parameters?.operation === 'export');
-      if (found || page * 50 >= result.total) break;
-      page++;
-    } while (page <= 20);
-    if (!found) { notice('export-plan-state', '暂无已保存的导出方案'); return; }
-    restoreExportPlan(found);
-  }));
+  $('restore-export-plan').addEventListener('click', async () => {
+    if (busy) return;
+    if (exportDirty && !await confirmAction({ title: '恢复导出方案', message: '当前未保存的导出设置将被替换为最近保存的方案。原素材和已生成的文件保持不变。', confirmLabel: '恢复方案', icon: 'rotate-ccw' })) return;
+    if (busy) return;
+    operation('conversion-error', async () => {
+      const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = exportRevision, workspace = workspaceRevision;
+      let found = null, page = 1;
+      do {
+        const result = await request(`/api/operation-plans?mediaId=${mediaId}&page=${page}&pageSize=50`);
+        if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || exportRevision !== revision || workspaceRevision !== workspace) return;
+        found = result.items.find((plan) => plan.parameters?.operation === 'export');
+        if (found || page * 50 >= result.total) break;
+        page++;
+      } while (page <= 20);
+      if (!found) { notice('export-plan-state', '暂无已保存的导出方案'); return; }
+      restoreExportPlan(found);
+    });
+  });
   function restoreExportPlan(found) {
     const p = found.parameters; exportPlan = found; exportDirty = false;
     selectTool(['mp3', 'm4a', 'wav', 'flac'].includes(p.outputFormat) ? 'audio' : 'convert');
@@ -1650,15 +1922,20 @@
   $('join-preview').addEventListener('timeupdate', () => { if (joinPreviewRange && $('join-preview').currentTime >= joinPreviewRange.end) $('join-preview').pause(); });
   $('join-preview').addEventListener('play', () => { const video = $('join-preview'); if (joinPreviewRange && (video.currentTime < joinPreviewRange.start || video.currentTime >= joinPreviewRange.end)) video.currentTime = joinPreviewRange.start; });
   $('join-tool').addEventListener('click', () => selectTool('join'));
-  $('refresh-join').addEventListener('click', () => { if (!joinDirty || window.confirm('放弃未导出的修改并恢复最近方案？')) loadJoinPlan(); });
+  $('refresh-join').addEventListener('click', async () => {
+    if (busy || joinDirty && !await confirmAction({ title: '恢复拼接方案', message: '放弃当前未导出的片段顺序和时间修改，恢复最近保存的拼接方案。原素材保持不变。', confirmLabel: '恢复方案', icon: 'rotate-ccw' })) return;
+    loadJoinPlan();
+  });
   $('add-join-clip').addEventListener('click', () => {
     if (busy || joinLoading || !selectedMedia || joinRows.length >= 20) return;
     joinRows.push(joinRow(0, Math.min(5000, selectedMedia.metadata.durationMs))); joinDirty = true; renderJoin();
   });
-  $('join-form').addEventListener('submit', (event) => {
+  $('join-form').addEventListener('submit', async (event) => {
     event.preventDefault(); const data = joinParameters();
     if (busy || joinLoading || !data.valid || selectedMedia?.status !== 'READY') return;
-    if (!window.confirm(`按当前顺序拼接${data.clips.length}段，共${(data.total / 1000).toFixed(3)}秒，生成 MP4？原素材保持不变。`)) return;
+    const token = joinRevision;
+    if (!await confirmAction({ title: '导出拼接视频', message: `按当前顺序拼接 ${data.clips.length} 段，共 ${(data.total / 1000).toFixed(3)} 秒，生成 MP4。原素材保持不变。`, confirmLabel: '开始导出', kind: 'info', icon: 'clapperboard' })) return;
+    if (busy || joinRevision !== token) return;
     const owner = currentUser?.id, mediaId = selectedMedia.id, revision = workspaceRevision;
     operation('join-error', async () => {
       const parameters = { operation: 'join_clips', outputFormat: 'mp4', clips: data.clips, audioMode: 'keep' };
@@ -1809,11 +2086,13 @@
   document.querySelectorAll('input[name="find-mode"]').forEach((input) => input.addEventListener('change', () => {
     findRevision++; clearFindResults(); $('find-limit').value = findMode() === 'recommend' ? '3' : '10'; syncFindControls();
   }));
-  $('find-form').addEventListener('submit', (event) => {
+  $('find-form').addEventListener('submit', async (event) => {
     event.preventDefault(); if (busy || !findTranscript) return;
-    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm(`将向 ${textVendorName()} 发送目标和当前已保存字幕，可能产生服务费用。继续？`)) return;
-    const owner = currentUser?.id, mediaId = selectedMedia.id, revision = workspaceRevision, token = ++findRevision;
+    const owner = currentUser?.id, mediaId = selectedMedia.id, revision = workspaceRevision, previous = findRevision;
     const snapshot = findTranscript, recommend = findMode() === 'recommend';
+    if (capabilities?.textAi?.source !== 'SERVER' && !await confirmCloudCall({ provider: textVendorName(), content: '目标描述和当前已保存的字幕' })) return;
+    if (busy || currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || findRevision !== previous || findTranscript !== snapshot) return;
+    const token = ++findRevision;
     operation('find-error', async () => {
       const query = $('find-query').value.trim(); if (!query || Array.from(query).length > 500) throw new Error('目标内容需要1至500个字符。');
       findRunning = true; clearFindResults(); syncFindControls();
@@ -1950,8 +2229,10 @@
   const workflowSizeObserver = new ResizeObserver(() => { if (workflowHeightAnimation) fitWorkflowTransition(); });
   workflowSizeObserver.observe($('ai-form')); workflowSizeObserver.observe($('workflow-form'));
   reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) settleWorkflowPanels(); });
-  $('workflow-text-mode').addEventListener('click', () => {
-    if (workflowMode && (!workflowDirty || window.confirm('放弃未保存的步骤？'))) { workflowDirty = false; setWorkflowMode(false); renderAIPlan(null); loadAIPlan(true); }
+  $('workflow-text-mode').addEventListener('click', async () => {
+    if (busy || !workflowMode) return;
+    if (workflowDirty && !await confirmAction({ title: '切换文字输入', message: '当前未保存的处理步骤将被放弃。已保存的方案保留，可稍后重新打开。', confirmLabel: '放弃并切换', icon: 'messages-square' })) return;
+    workflowDirty = false; setWorkflowMode(false); renderAIPlan(null); loadAIPlan(true);
   });
   $('workflow-step-mode').addEventListener('click', () => {
     if (!workflowMode) { setWorkflowMode(true); renderAIPlan(null); loadAIPlan(); }
@@ -2087,15 +2368,19 @@
     } finally { if (aiRevision === token) { aiLoading = false; syncAIControls(); } }
   }
   $('ai-tool').addEventListener('click', () => selectTool('ai'));
-  $('refresh-ai-plan').addEventListener('click', () => {
-    if (!(workflowMode ? workflowDirty : $('ai-instruction').value) || window.confirm('恢复最近保存的方案并放弃当前输入？')) { workflowDirty = false; loadAIPlan(); }
+  $('refresh-ai-plan').addEventListener('click', async () => {
+    if (busy) return;
+    if ((workflowMode ? workflowDirty : $('ai-instruction').value) && !await confirmAction({ title: '恢复最近方案', message: '恢复最近保存的方案并放弃当前输入。未保存的文字或处理步骤不会保留。', confirmLabel: '恢复方案', icon: 'rotate-ccw' })) return;
+    workflowDirty = false; loadAIPlan();
   });
   $('ai-instruction').addEventListener('input', () => { aiRevision++; aiPlanDirty = true; $('ai-plan').hidden = true; syncAIControls(); });
-  $('ai-form').addEventListener('submit', (event) => {
+  $('ai-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const instruction = $('ai-instruction').value.trim(), owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
     if (!instruction || busy) return;
-    if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm(`将向 ${textVendorName()} 发送处理要求和视频参数，可能产生服务费用。继续？`)) return;
+    const previous = aiRevision;
+    if (capabilities?.textAi?.source !== 'SERVER' && !await confirmCloudCall({ provider: textVendorName(), content: '处理要求和视频参数' })) return;
+    if (busy || currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || aiRevision !== previous) return;
     const token = ++aiRevision; aiSourceId = mediaId;
     operation('ai-error', async () => {
       if (Array.from(instruction).length > 2000) throw new Error('处理要求不能超过2000个字符。');
@@ -2131,15 +2416,41 @@
     notice('subtitle-error', '');
   }
 
+  function asrModels() {
+    // 兼容尚未提供模型目录的旧后端，只展示原先已实现的两个模型。
+    return Array.isArray(capabilities?.asrModels) ? capabilities.asrModels : [
+      { provider: 'tencent', id: '16k_zh', name: '中文通用 16k' },
+      { provider: 'aliyun', id: 'paraformer-realtime-v2', name: 'Paraformer V2 · 常规转写' }
+    ];
+  }
+  function syncAsrModels(disabled) {
+    const provider = $('asr-provider').value, select = $('asr-model');
+    const models = asrModels().filter(item => item.provider === provider);
+    const signature = JSON.stringify([provider, models]);
+    if (select.dataset.catalog !== signature) {
+      select.replaceChildren(); select.dataset.catalog = signature;
+      for (const model of models) {
+        const option = document.createElement('option'); option.value = model.id;
+        option.textContent = model.name + (model.recommended && models.length > 1 ? '（推荐）' : ''); option.title = model.id;
+        select.append(option);
+      }
+      const remembered = asrModelChoices.get(provider);
+      select.value = models.find(item => item.id === remembered)?.id || models.find(item => item.recommended)?.id || models[0]?.id || '';
+    }
+    select.disabled = disabled || !models.length;
+    $('asr-model-note').hidden = !models.length;
+    $('asr-model-note').textContent = models.length ? `${select.value} · 文言文与生僻字需核对，模型权限与费用以服务商为准。` : '';
+  }
   function syncSubtitleControls() {
     const providers = capabilities?.asrProviders || [];
     for (const option of $('asr-provider').options) option.disabled = !providers.includes(option.value);
     if (!$('asr-provider').value || !providers.includes($('asr-provider').value)) $('asr-provider').value = providers[0] || '';
     const task = selectedTask?.kind === 'TRANSCRIPTION' && selectedTask.mediaId === selectedMedia?.id ? selectedTask : null;
+    syncAsrModels(busy || subtitleLoading || taskActive(task));
     $('subtitle-source').textContent = selectedMedia?.originalFilename || '未选择就绪素材';
-    $('asr-provider').disabled = busy || !providers.length;
+    $('asr-provider').disabled = busy || !providers.length || taskActive(task);
     $('start-transcription').disabled = busy || subtitleLoading || selectedMedia?.status !== 'READY'
-      || !selectedMedia?.metadata?.hasAudio || !providers.length || taskActive(task) || !!translationDraft;
+      || !selectedMedia?.metadata?.hasAudio || !providers.length || !$('asr-model').value || taskActive(task) || !!translationDraft;
     $('transcription-label').textContent = subtitle ? '重新识别' : '识别字幕';
     $('cancel-transcription').hidden = !taskActive(task);
     $('cancel-transcription').disabled = busy || task?.status === 'CANCELLING';
@@ -2222,9 +2533,11 @@
       const correct = document.createElement('button'); correct.type = 'button'; correct.className = 'icon-button'; correct.dataset.correct = segment.id;
       correct.title = capabilities?.textAi?.source === 'SERVER' ? '服务端千问校对' : textVendorName() + ' 校对'; correct.setAttribute('aria-label', `校对第${index + 1}段`);
       correct.innerHTML = '<i data-lucide="wand-sparkles" aria-hidden="true"></i>';
-      correct.addEventListener('click', () => {
-        if (capabilities?.textAi?.source !== 'SERVER' && !window.confirm(`将向 ${textVendorName()} 发送这段字幕进行校对，可能产生服务费用。继续？`)) return;
+      correct.addEventListener('click', async () => {
+        if (busy || !subtitle || !capabilities?.subtitleCorrection) return;
         const item = subtitle, token = subtitleRevision, owner = currentUser?.id;
+        if (capabilities?.textAi?.source !== 'SERVER' && !await confirmCloudCall({ provider: textVendorName(), content: '当前这段已保存的字幕', detail: '获取校对建议，不会直接覆盖原文。' })) return;
+        if (busy || currentUser?.id !== owner || subtitleRevision !== token || subtitle !== item) return;
         operation('subtitle-error', async () => {
           const suggestion = await request(`/api/transcripts/${item.id}/corrections`, {
             method: 'POST', body: { expectedVersion: item.version, segmentId: segment.id }
@@ -2276,8 +2589,10 @@
   $('translation-layout').addEventListener('change', () => {
     if (translationDraft) $('translation-segments').querySelectorAll('output').forEach((output, index) => { output.textContent = translationText(index); });
   });
-  $('discard-translation').addEventListener('click', () => {
-    if (busy || !translationDraft || !window.confirm('放弃未保存的译文？')) return;
+  $('discard-translation').addEventListener('click', async () => {
+    if (busy || !translationDraft) return;
+    const draft = translationDraft;
+    if (!await confirmAction({ title: '放弃译文', message: '未保存的译文和本次编辑将被清除，已保存的字幕原稿保留。已发出的翻译请求仍可能计费。', confirmLabel: '放弃译文', icon: 'languages' }) || busy || translationDraft !== draft) return;
     clearTranslation(); syncSubtitleControls(); syncWorkbenchPhase();
   });
   $('cancel-translation').addEventListener('click', () => {
@@ -2298,7 +2613,9 @@
     if (batch.length) batches.push(batch);
     if (batches.length > 60) { notice('subtitle-error', '字幕超过本次 60 批翻译上限，请精简字幕后再试。', true); return; }
     const provider = capabilities?.textAi?.source === 'SERVER' ? '服务端千问' : textVendorName();
-    if (!window.confirm(`使用 ${provider} 将 ${source.length} 段字幕分 ${batches.length} 批翻译为${$('translation-language').selectedOptions[0].textContent}？${capabilities?.textAi?.source === 'SERVER' ? '' : '字幕将发送到所选供应商，可能产生费用。'}原稿保留，译文需确认后保存。`)) return;
+    if (!await confirmCloudCall({ provider, content: '当前选择的已保存字幕', paid: capabilities?.textAi?.source !== 'SERVER',
+      detail: `${source.length} 段字幕，分 ${batches.length} 批翻译为${$('translation-language').selectedOptions[0].textContent}。原稿保留，译文需确认后保存。` })) return;
+    if (busy || currentUser?.id !== owner || workspaceRevision !== revision || subtitleRevision !== token || subtitle !== item) return;
     const run = { cancelled: false, complete: false }; translationRun = run;
     const current = () => currentUser?.id === owner && workspaceRevision === revision && subtitleRevision === token && subtitle === item && translationRun === run;
     await operation('subtitle-error', async () => {
@@ -2333,7 +2650,8 @@
   $('save-translation').addEventListener('click', async () => {
     if (busy || !translationDraft || !subtitle) return;
     const draft = translationDraft, item = subtitle, owner = currentUser?.id, token = subtitleRevision;
-    if (!window.confirm(`将${$('translation-layout').value === 'bilingual' ? '双语字幕' : '译文'}保存为新版本？原稿 v${item.version} 和识别原文继续保留。`)) return;
+    if (!await confirmAction({ title: '保存字幕新版本', message: `将${$('translation-layout').value === 'bilingual' ? '双语字幕' : '译文'}保存为新版本。原稿 v${item.version} 和识别原文继续保留。`, confirmLabel: '保存新版本', kind: 'info', icon: 'save' })) return;
+    if (busy || currentUser?.id !== owner || subtitleRevision !== token || subtitle !== item || translationDraft !== draft) return;
     await operation('subtitle-error', async () => {
       const segments = draft.segments.map((segment, index) => {
         const text = translationText(index);
@@ -2351,10 +2669,11 @@
     });
   });
 
-  $('burn-subtitle').addEventListener('click', () => {
+  $('burn-subtitle').addEventListener('click', async () => {
     if (busy || !subtitle || subtitleDirty || subtitleLoading || subtitle.version !== subtitleLatestVersion || $('subtitle-original').checked) return;
     const item = subtitle, owner = currentUser?.id, revision = workspaceRevision;
-    if (!window.confirm(`使用已保存的字幕 v${item.version} 生成带字幕的 MP4？原视频保持不变。`)) return;
+    if (!await confirmAction({ title: '导出带字幕视频', message: `使用已保存的字幕 v${item.version} 生成带字幕的 MP4。字幕将烧录进画面，原视频保持不变。`, confirmLabel: '开始导出', kind: 'info', icon: 'captions' })) return;
+    if (busy || currentUser?.id !== owner || workspaceRevision !== revision || subtitle !== item || subtitleDirty) return;
     operation('subtitle-error', async () => {
       const parameters = { operation: 'burn_subtitles', outputFormat: 'mp4', transcriptId: item.id, transcriptVersion: item.version, resolutionPreset: 'source', audioMode: 'keep' };
       if (!pendingSubtitlePlan || pendingSubtitlePlan.mediaId !== item.mediaId || pendingSubtitlePlan.parameters.transcriptId !== item.id
@@ -2367,18 +2686,24 @@
     });
   });
   $('subtitle-tool').addEventListener('click', () => selectTool('subtitle'));
-  $('refresh-subtitle').addEventListener('click', () => {
-    if (!(subtitleDirty || translationDraft) || window.confirm('放弃未保存的字幕或翻译修改并刷新？')) loadSubtitle();
+  $('refresh-subtitle').addEventListener('click', async () => {
+    if (busy) return;
+    if ((subtitleDirty || translationDraft) && !await confirmAction({ title: '刷新字幕', message: '未保存的字幕和翻译修改将被放弃，重新读取已保存的字幕版本。', confirmLabel: '放弃并刷新', icon: 'refresh-cw' })) return;
+    loadSubtitle();
   });
   $('subtitle-version').addEventListener('change', () => loadSubtitle(Number($('subtitle-version').value)));
   $('subtitle-original').addEventListener('change', renderSubtitle);
-  $('start-transcription').addEventListener('click', () => {
-    const vendor = $('asr-provider').value === 'aliyun' ? '阿里云百炼' : '腾讯云';
-    if (!window.confirm(`将向${vendor}发送当前素材的音轨，可能产生服务费用。${subtitle ? '重新识别会创建新字幕，原有版本仍保留。' : ''}继续？`)) return;
+  $('start-transcription').addEventListener('click', async () => {
+    if (busy || !selectedMedia || !capabilities?.asr) return;
+    const provider = $('asr-provider').value, model = $('asr-model').value, vendor = provider === 'aliyun' ? '阿里云百炼' : '腾讯云';
+    if (!asrModels().some(item => item.provider === provider && item.id === model)) return;
     const owner = currentUser?.id, mediaId = selectedMedia?.id, revision = workspaceRevision;
+    const item = subtitle;
+    if (!await confirmCloudCall({ provider: vendor, content: '当前素材的音轨', detail: `模型：${model}。` + (item ? '重新识别会创建新字幕，原有版本仍保留。' : '') })) return;
+    if (busy || currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision || subtitle !== item || $('asr-provider').value !== provider || $('asr-model').value !== model) return;
     operation('subtitle-error', async () => {
       const task = await request(`/api/media/${mediaId}/transcriptions`, {
-        method: 'POST', body: { language: 'zh-CN', force: !!subtitle, provider: $('asr-provider').value }
+        method: 'POST', body: { language: 'zh-CN', force: !!item, provider, ...(Array.isArray(capabilities?.asrModels) ? { model } : {}) }
       });
       if (currentUser?.id !== owner || selectedMedia?.id !== mediaId || workspaceRevision !== revision) return;
       displayTask(task); taskPage = 1; await loadTasks();
@@ -2405,6 +2730,7 @@
       notice('subtitle-error', '');
     });
   });
+  // 关闭/刷新页面时只能使用浏览器的离站保护，不能以异步站内弹窗替代。
   window.addEventListener('beforeunload', (event) => { if (subtitleDirty || translationDraft || translationRun || joinDirty || exportDirty || workflowDirty) { event.preventDefault(); event.returnValue = ''; } });
 
   function taskActive(task) { return task && ['QUEUED', 'RUNNING', 'CANCELLING'].includes(task.status); }
@@ -2507,10 +2833,10 @@
     details.addEventListener('toggle', () => { if (details.open) expandedRecords.add(key); else expandedRecords.delete(key); });
     return details;
   }
-  function deleteRecord(kind, record) {
+  async function deleteRecord(kind, record) {
     if (busy || kind === 'task' && taskActive(record)) return;
     const text = kind === 'task' ? '删除这条处理记录？仅从记录列表移除，原素材和生成文件会保留。' : '删除这个保存的方案？已生成的任务和文件不受影响。';
-    if (!window.confirm(text)) return;
+    if (!await confirmAction({ title: kind === 'task' ? '删除处理记录' : '删除保存的方案', message: text, confirmLabel: '确认删除', kind: 'danger', icon: 'trash-2' })) return;
     const owner = currentUser?.id, revision = workspaceRevision;
     operation(kind === 'task' ? 'task-list-error' : 'plan-list-error', async () => {
       await request(`/api/${kind === 'task' ? 'tasks' : 'operation-plans'}/${record.id}`, { method: 'DELETE' });
@@ -2533,7 +2859,7 @@
   }
   async function restoreListedPlan(plan) {
     const dirty = exportDirty || aiPlanDirty || workflowDirty || joinDirty || subtitleDirty || !!translationDraft;
-    if (busy || dirty && !window.confirm('恢复这个方案？当前未保存的编辑可能被替换。')) return;
+    if (busy || dirty && !await confirmAction({ title: '恢复保存的方案', message: '当前未保存的编辑将被此方案替换。已保存的版本和生成文件不受影响。', confirmLabel: '恢复方案', icon: 'rotate-ccw' })) return;
     const owner = currentUser?.id, revision = workspaceRevision;
     operation('plan-list-error', async () => {
       const source = await request(`/api/media/${plan.mediaId}`);
@@ -2637,8 +2963,9 @@
         name.append(title, time);
         const size = document.createElement('span'); size.className = 'file-size'; size.textContent = task.outputs[0] ? sizeText(task.outputs[0].sizeBytes) : '';
         const status = document.createElement('span'); status.className = 'media-status ' + (task.status === 'SUCCEEDED' ? 'ready' : task.status === 'FAILED' ? 'failed' : ''); status.textContent = taskStatus(task.status, task.kind === 'TRANSCRIPTION' ? 'transcribe' : task.parameters?.operation);
-        button.append(icon, name, size, status); button.addEventListener('click', () => {
+        button.append(icon, name, size, status); button.addEventListener('click', async () => {
           if (task.mediaId) {
+            if (!await confirmMediaSwitch(task.mediaId) || busy || currentUser?.id !== owner || workspaceRevision !== revision) return;
             operation('task-list-error', async () => {
               const source = await request(`/api/media/${task.mediaId}`);
               if (currentUser?.id !== owner || workspaceRevision !== revision) return;
@@ -2776,7 +3103,7 @@
   $('task-prev').addEventListener('click', () => { if (taskPage > 1) { taskPage--; loadTasks(); } });
   $('task-next').addEventListener('click', () => { if (taskPage * 10 < taskTotal) { taskPage++; loadTasks(); } });
   // 标签页间只广播“账号状态变了”，不传凭证；其他标签页收到后重新向服务端确认身份。
-  if (channel) channel.onmessage = () => { if (!busy) restoreSession(); };
+  if (channel) channel.onmessage = () => { finishCloudConfirmation(false); finishActionConfirmation(false); loadCloudConfirmationSetting(); if (!busy) restoreSession(); };
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && !busy && capabilities) restoreSession();
   });

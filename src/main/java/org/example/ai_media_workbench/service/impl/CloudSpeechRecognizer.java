@@ -13,12 +13,13 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.ai.AsrModel;
 import org.example.ai_media_workbench.properties.AiProperties;
 import org.example.ai_media_workbench.service.SpeechRecognizer;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.*;
 
-/** 腾讯极速版 HTTP / 百炼 Paraformer WebSocket，直接传私有音频，不暴露素材下载地址。 */
+/** 腾讯极速版HTTP / 百炼千问、Fun-ASR、Paraformer WebSocket，直接传私有音频并使用真实时间戳。 */
 @Component
 public class CloudSpeechRecognizer implements SpeechRecognizer {
     private final org.example.ai_media_workbench.service.CloudCredentialService credentials;
@@ -36,15 +37,16 @@ public class CloudSpeechRecognizer implements SpeechRecognizer {
         return List.copyOf(result);
     }
     @Override public boolean isAvailable(String provider,String userId) { return providers(userId).contains(provider); }
-    @Override public List<RecognizedSegment> recognize(String provider, Path audio, Duration timeout, BooleanSupplier cancelled,String userId) {
+    @Override public List<RecognizedSegment> recognize(String provider, String modelId, Path audio, Duration timeout, BooleanSupplier cancelled,String userId) {
         if(userId==null) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
+        var model=AsrModel.resolve(provider,modelId);
         var properties=credentials.effective(userId,provider);
         if (!("tencent".equals(provider) && properties.tencentReady()) && !("aliyun".equals(provider) && properties.aliyunReady())) throw new BusinessException(ErrorCode.ASR_UNAVAILABLE);
         long deadline=System.nanoTime()+timeout.toNanos();
         CloudTransport.check(deadline,cancelled);
         try {
             if (Files.size(audio)<=0 || Files.size(audio)>100L*1024*1024) throw new BusinessException(ErrorCode.OUTPUT_TOO_LARGE);
-            return provider.equals("tencent") ? tencent(audio,timeout,deadline,cancelled,properties) : aliyun(audio,deadline,cancelled,properties);
+            return provider.equals("tencent") ? tencent(audio,timeout,deadline,cancelled,properties) : aliyun(audio,deadline,cancelled,properties,model);
         } catch (BusinessException exception) { throw exception; }
         catch (Exception exception) { throw new BusinessException(ErrorCode.ASR_FAILED); }
     }
@@ -65,7 +67,8 @@ public class CloudSpeechRecognizer implements SpeechRecognizer {
         return Base64.getEncoder().encodeToString(mac.doFinal(input.getBytes(StandardCharsets.UTF_8)));
     }
     static List<RecognizedSegment> tencentSegments(JsonNode response) {
-        if (!response.path("code").isIntegralNumber() || response.path("code").asInt()!=0) throw new BusinessException(ErrorCode.ASR_FAILED);
+        if (!response.path("code").isIntegralNumber() || !response.path("code").canConvertToInt()) throw new BusinessException(ErrorCode.ASR_FAILED);
+        if (response.path("code").asInt()!=0) throw new BusinessException(CloudFailures.tencent(response.path("code").asInt()));
         var result=new ArrayList<RecognizedSegment>();
         if (!response.path("flash_result").isArray()) throw new BusinessException(ErrorCode.ASR_FAILED);
         for (var channel:response.path("flash_result")) {
@@ -75,7 +78,7 @@ public class CloudSpeechRecognizer implements SpeechRecognizer {
         }
         return List.copyOf(result);
     }
-    private List<RecognizedSegment> aliyun(Path audio,long deadline,BooleanSupplier cancelled,AiProperties properties) throws Exception {
+    private List<RecognizedSegment> aliyun(Path audio,long deadline,BooleanSupplier cancelled,AiProperties properties,AsrModel model) throws Exception {
         String workspace=properties.aliyunWorkspaceId();
         String host=workspace==null||workspace.isBlank() ? "dashscope.aliyuncs.com" : workspace+".cn-beijing.maas.aliyuncs.com";
         String taskId=UUID.randomUUID().toString();
@@ -85,25 +88,31 @@ public class CloudSpeechRecognizer implements SpeechRecognizer {
                 .buildAsync(URI.create("wss://"+host+"/api-ws/v1/inference"),listener);
         WebSocket socket=null;
         try {
-            socket=CloudTransport.await(connecting,deadline,cancelled,ErrorCode.ASR_FAILED);
-            var payload=Map.of("task_group","audio","task","asr","function","recognition","model","paraformer-realtime-v2",
-                    "parameters",Map.of("format","mp3","sample_rate",16000,"language_hints",List.of("zh","en")),"input",Map.of());
-            CloudTransport.await(socket.sendText(command("run-task",taskId,payload),true),deadline,cancelled,ErrorCode.ASR_FAILED);
-            CloudTransport.await(listener.started,deadline,cancelled,ErrorCode.ASR_FAILED);
+            socket=CloudTransport.awaitCloud(connecting,deadline,cancelled,ErrorCode.ASR_FAILED);
+            var payload=aliyunPayload(model);
+            CloudTransport.awaitCloud(socket.sendText(command("run-task",taskId,payload),true),deadline,cancelled,ErrorCode.ASR_FAILED);
+            CloudTransport.awaitCloud(listener.started,deadline,cancelled,ErrorCode.ASR_FAILED);
             try (var input=Files.newInputStream(audio)) {
                 byte[] buffer=new byte[8192]; int count;
                 while ((count=input.read(buffer))!=-1) {
-                    if (listener.finished.isCompletedExceptionally()) CloudTransport.await(listener.finished,deadline,cancelled,ErrorCode.ASR_FAILED);
-                    CloudTransport.await(socket.sendBinary(ByteBuffer.wrap(Arrays.copyOf(buffer,count)),true),deadline,cancelled,ErrorCode.ASR_FAILED);
+                    if (listener.finished.isCompletedExceptionally()) CloudTransport.awaitCloud(listener.finished,deadline,cancelled,ErrorCode.ASR_FAILED);
+                    CloudTransport.awaitCloud(socket.sendBinary(ByteBuffer.wrap(Arrays.copyOf(buffer,count)),true),deadline,cancelled,ErrorCode.ASR_FAILED);
                 }
             }
-            CloudTransport.await(socket.sendText(command("finish-task",taskId,Map.of("input",Map.of())),true),deadline,cancelled,ErrorCode.ASR_FAILED);
-            CloudTransport.await(listener.finished,deadline,cancelled,ErrorCode.ASR_FAILED);
+            CloudTransport.awaitCloud(socket.sendText(command("finish-task",taskId,Map.of("input",Map.of())),true),deadline,cancelled,ErrorCode.ASR_FAILED);
+            CloudTransport.awaitCloud(listener.finished,deadline,cancelled,ErrorCode.ASR_FAILED);
             return List.copyOf(listener.segments);
         } finally {
             if (socket!=null) socket.abort();
             else { connecting.thenAccept(WebSocket::abort); connecting.cancel(true); }
         }
+    }
+    static Map<String,Object> aliyunPayload(AsrModel model) {
+        if (!"aliyun".equals(model.provider())) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
+        // Fun-ASR只接受一个语言提示；保留旧Paraformer的中英配置，其他中文任务明确为zh。
+        var languages=model==AsrModel.ALIYUN_PARAFORMER ? List.of("zh","en") : List.of("zh");
+        return Map.of("task_group","audio","task","asr","function","recognition","model",model.id(),
+                "parameters",Map.of("format","mp3","sample_rate",16000,"language_hints",languages),"input",Map.of());
     }
     private String command(String action,String id,Map<String,?> payload) {
         return json.writeValueAsString(Map.of("header",Map.of("action",action,"task_id",id,"streaming","duplex"),"payload",payload));
@@ -140,7 +149,10 @@ public class CloudSpeechRecognizer implements SpeechRecognizer {
                     switch (event.path("header").path("event").asText()) {
                         case "task-started" -> started.complete(null);
                         case "task-finished" -> finished.complete(null);
-                        case "task-failed" -> throw new IllegalStateException("Cloud recognition failed");
+                        case "task-failed" -> {
+                            var code=CloudFailures.code(event.path("header").path("error_code"));
+                            throw new BusinessException(code==null ? ErrorCode.ASR_FAILED : code);
+                        }
                         case "result-generated" -> {
                             var sentence=event.path("payload").path("output").path("sentence");
                             if (sentence.path("sentence_end").asBoolean() && !sentence.path("heartbeat").asBoolean()) add(segments,sentence,"begin_time","end_time");
@@ -149,15 +161,18 @@ public class CloudSpeechRecognizer implements SpeechRecognizer {
                     }
                 }
                 socket.request(1);
-            } catch (Exception exception) { fail(); socket.abort(); }
+            } catch (Exception exception) {
+                fail(exception instanceof BusinessException business ? business : new BusinessException(ErrorCode.ASR_FAILED));
+                socket.abort();
+            }
             return CompletableFuture.completedFuture(null);
         }
-        private void fail() {
-            var error=new IllegalStateException("Cloud recognition failed"); started.completeExceptionally(error); finished.completeExceptionally(error);
+        private void fail(BusinessException error) {
+            started.completeExceptionally(error); finished.completeExceptionally(error);
         }
-        @Override public void onError(WebSocket socket,Throwable error) { fail(); }
+        @Override public void onError(WebSocket socket,Throwable error) { fail(new BusinessException(ErrorCode.CLOUD_NETWORK_ERROR)); }
         @Override public CompletionStage<?> onClose(WebSocket socket,int code,String reason) {
-            if (!finished.isDone()) fail(); return CompletableFuture.completedFuture(null);
+            if (!finished.isDone()) fail(new BusinessException(ErrorCode.CLOUD_NETWORK_ERROR)); return CompletableFuture.completedFuture(null);
         }
     }
 }
