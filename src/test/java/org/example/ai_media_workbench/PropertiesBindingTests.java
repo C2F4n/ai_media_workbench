@@ -9,6 +9,7 @@ import org.example.ai_media_workbench.properties.AuthProperties;
 import org.example.ai_media_workbench.properties.MediaProperties;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
 import org.example.ai_media_workbench.properties.TaskExecutionProperties;
+import org.example.ai_media_workbench.properties.TransportProperties;
 import org.example.ai_media_workbench.config.MediaUploadConfig;
 import org.example.ai_media_workbench.properties.StorageProperties;
 import org.example.ai_media_workbench.properties.RegistrationMailProperties;
@@ -37,6 +38,9 @@ class PropertiesBindingTests {
         contextRunner.run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(context.getBean(AuthProperties.class).sessionIdleTimeout()).isEqualTo(Duration.ofMinutes(30));
+            assertThat(context.getBean(AuthProperties.class).cookieSecure()).isFalse();
+            assertThat(context.getBean(TransportProperties.class).requireHttps()).isFalse();
+            assertThat(context.getEnvironment().getProperty("server.forward-headers-strategy")).isEqualTo("none");
             assertThat(context.getBean(StorageProperties.class).root()).isEqualTo("./storage");
             assertThat(context.getBean(AccountCleanupProperties.class).intervalMs()).isEqualTo(5000);
             assertThat(context.getBean(MediaProperties.class).maxUploadSize()).isEqualTo(DataSize.ofGigabytes(3));
@@ -162,6 +166,6 @@ class PropertiesBindingTests {
     @TestConfiguration(proxyBeanMethods = false)
     @PropertySource("classpath:application.properties")
     @EnableConfigurationProperties({AuthProperties.class, StorageProperties.class,
-            AccountCleanupProperties.class, MediaProperties.class, TranscodeProperties.class, RegistrationMailProperties.class, TaskExecutionProperties.class})
+            AccountCleanupProperties.class, MediaProperties.class, TranscodeProperties.class, RegistrationMailProperties.class, TaskExecutionProperties.class, TransportProperties.class})
     static class PropertyConfiguration {}
 }

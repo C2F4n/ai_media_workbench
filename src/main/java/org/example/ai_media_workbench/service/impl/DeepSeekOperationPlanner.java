@@ -78,7 +78,7 @@ public class DeepSeekOperationPlanner implements OperationPlanner {
     public DeepSeekOperationPlanner(TextAiJsonClient client,ObjectMapper json) { this.client=client; this.json=json; }
     @Override public boolean isAvailable(String userId) { return client.isAvailable(userId); }
     @Override public Proposal propose(String instruction,Context context,String userId) {
-        var result=client.complete(PROMPT,json.writeValueAsString(Map.of("instruction",instruction,"context",context)),3072,ErrorCode.AI_PLAN_FAILED,userId);
+        var result=client.plan(PROMPT,json.writeValueAsString(Map.of("instruction",instruction,"context",context)),context,userId);
         return parse(result);
     }
     static Proposal parse(JsonNode result) {

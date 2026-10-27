@@ -196,8 +196,10 @@ for (const [width, height] of [[1920, 900], [1365, 900], [800, 900], [390, 844],
       expect(await page.evaluate(() => scrollY)).toBe(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     };
-    const switchWithAnimation = async mode => page.evaluate(mode => {
+    const switchWithAnimation = async mode => page.evaluate(async mode => {
       document.getElementById(mode + '-tab').click();
+      // Vue commits the selected panel before starting its entrance animation.
+      await new Promise(requestAnimationFrame);
       const panel = document.getElementById(mode + '-panel'), animations = panel.getAnimations();
       const frames = animations[0]?.effect.getKeyframes();
       animations.forEach(animation => animation.pause());
@@ -247,7 +249,7 @@ test('rapid auth switches cancel old animations and reduced motion disables form
   expect(await page.locator('#auth-view .tabs').evaluate(element => getComputedStyle(element, '::after').transitionDuration)).toBe('0s');
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await expect.poll(() => page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
-  await page.evaluate(() => { document.getElementById('register-tab').click(); document.getElementById('register-panel').getAnimations().forEach(animation => animation.pause()); });
+  await page.evaluate(async () => { document.getElementById('register-tab').click(); await new Promise(requestAnimationFrame); document.getElementById('register-panel').getAnimations().forEach(animation => animation.pause()); });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await expect.poll(() => page.locator('#register-panel').evaluate(panel => panel.getAnimations().length)).toBe(0);
   await expect(page.locator('#register-panel')).toBeVisible();

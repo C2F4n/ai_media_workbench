@@ -24,6 +24,10 @@ button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .6; }
 a { color: inherit; text-decoration: none; }
 svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.transport-warning { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; margin: 0 0 16px; border: 1px solid #e7cc92; border-radius: 6px; background: #fff7e8; color: #77501b; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; flex-shrink: 0; }
+.transport-warning svg { margin-top: 2px; }
+.retrieval-state { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; color: var(--muted); margin: 16px 0 8px; }
+.evidence-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .app-header { position: sticky; top: 0; z-index: 60; height: 64px; padding: 0 30px; display: flex; align-items: center; gap: 24px; border-bottom: 1px solid #d7e1f0; color: #33425d; background: #edf2fc; backdrop-filter: blur(20px) saturate(150%); -webkit-backdrop-filter: blur(20px) saturate(150%); }
 .brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 650; white-space: nowrap; }
 .brand img { width: 34px; height: 34px; }
@@ -123,6 +127,7 @@ h2 { font-size: 19px; line-height: 1.5; margin: 0 0 22px; font-weight: 650; }
 input[type="checkbox"] { accent-color: var(--green); width: 16px; height: 16px; margin: 0; }
 .check-field { display: flex; align-items: center; gap: 9px; font-size: 14px; margin: -1px 0 24px; }
 .password-field { display: block; position: relative; }
+.auth-input-shell { display: contents; }
 .password-field input { padding-right: 46px; }
 .password-toggle { position: absolute; right: 6px; top: 6px; color: var(--muted); }
 .optional { float: right; font-size: 12px; font-weight: 400; color: var(--muted); }

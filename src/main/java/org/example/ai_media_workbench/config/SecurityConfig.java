@@ -3,11 +3,13 @@ package org.example.ai_media_workbench.config;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.security.SessionExpirationFilter;
 import org.example.ai_media_workbench.common.security.SessionPolicy;
+import org.example.ai_media_workbench.common.security.HttpsRequiredFilter;
 import org.example.ai_media_workbench.common.exception.ApiErrorWriter;
 import org.example.ai_media_workbench.entity.UserStatus;
 import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.service.UserService;
 import org.example.ai_media_workbench.properties.AuthProperties;
+import org.example.ai_media_workbench.properties.TransportProperties;
 import java.time.Clock;
 import java.util.List;
 import java.util.Locale;
@@ -50,10 +52,10 @@ public class SecurityConfig {
     /** 创建读取数据库账号并校验密码及状态的认证管理器。 */
     @Bean
     AuthenticationManager authenticationManager(UserMapper mapper, PasswordEncoder encoder) {
-        // 框架读取数据库中的哈希并调用 encoder.matches 校验密码，同时拒绝非 ACTIVE 账号。
+        // 非有效账号走框架的未知用户耗时保护，不将注销后的 !DELETED 标记交给哈希解析器。
         var provider = new DaoAuthenticationProvider(username -> {
             var account = mapper.findByUsername(username.toLowerCase(Locale.ROOT));
-            if (account == null) {
+            if (account == null || account.getStatus() != UserStatus.ACTIVE) {
                 throw new UsernameNotFoundException("Invalid credentials");
             }
             return User.withUsername(account.getUsername()).password(account.getPasswordHash())
@@ -121,7 +123,11 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http, HttpSessionCsrfTokenRepository csrfRepository,
                                            SecurityContextRepository contextRepository,
-                                           ApiErrorWriter writer, Clock clock, UserService userService) throws Exception {
+                                           ApiErrorWriter writer, Clock clock, UserService userService,
+                                           TransportProperties transport) throws Exception {
+        if (transport.requireHttps()) {
+            http.addFilterBefore(new HttpsRequiredFilter(writer), SecurityContextHolderFilter.class);
+        }
         // permitAll 只表示不要求登录，不表示跳过 CSRF；注册、登录仍需携带 CSRF 头。
         http.authorizeHttpRequests(auth -> auth
                     .requestMatchers(HttpMethod.GET, "/", "/index.html", "/assets/**",

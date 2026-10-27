@@ -4,7 +4,8 @@ const path = require('node:path');
 // 页面与本地图标直接由测试拦截提供，API由各用例的后注册路由模拟，不占用端口。
 async function serveStatic(page) {
   const root = path.resolve(__dirname, '../../../src/main/resources/static');
-  const files = { '/': 'index.html', '/assets/app.js': 'assets/app.js', '/assets/styles.css': 'assets/styles.css', '/assets/brand.svg': 'assets/brand.svg', '/assets/vendor/lucide.min.js': 'assets/vendor/lucide.min.js' };
+  const files = { '/': 'index.html', '/assets/styles.css': 'assets/styles.css', '/assets/brand.svg': 'assets/brand.svg', '/assets/vendor/lucide.min.js': 'assets/vendor/lucide.min.js' };
+  files['/assets/ui/components.js'] = 'assets/ui/components.js';
   for (const name of ['studio-desk.webp', 'studio-lighting.webp', 'studio-editing.webp']) files['/assets/auth/' + name] = 'assets/auth/' + name;
   await page.route('**/*', (route) => {
     const name = new URL(route.request().url()).pathname;

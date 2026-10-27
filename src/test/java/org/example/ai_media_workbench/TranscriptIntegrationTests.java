@@ -431,7 +431,7 @@ class TranscriptIntegrationTests {
     @Test void unknownReversedOverlappingAndOutOfBudgetSelectionsAreRejected() throws Exception {
         var owner=login(); var item=generate(owner,source(owner)); var first=item.segments().getFirst(); var last=item.segments().getLast();
         when(analyzer.isAvailable(anyString())).thenReturn(true);
-        var request=new SearchTranscriptRequest("test",UUID.fromString(item.id()),1,10);
+        var request=new SearchTranscriptRequest("字幕",UUID.fromString(item.id()),1,10);
         for(var selections:List.of(List.of(new TranscriptAnalyzer.Selection(UUID.randomUUID(),last.id(),0.9,null,null)),
                 List.of(new TranscriptAnalyzer.Selection(last.id(),first.id(),0.9,null,null)),
                 List.of(new TranscriptAnalyzer.Selection(first.id(),last.id(),0.9,null,null),new TranscriptAnalyzer.Selection(last.id(),last.id(),0.8,null,null)),
@@ -452,16 +452,16 @@ class TranscriptIntegrationTests {
             transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(1,item.segments()));
             return List.of(new TranscriptAnalyzer.Selection(first.id(),first.id(),0.9,null,null));
         });
-        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("test",UUID.fromString(item.id()),1,10)))
+        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("字幕",UUID.fromString(item.id()),1,10)))
                 .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_VERSION_CONFLICT));
         var fresh=generate(owner,item.mediaId(),true); assertThat(fresh.version()).isEqualTo(1);
         clearInvocations(analyzer);
-        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("test",UUID.fromString(item.id()),1,10)))
+        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("字幕",UUID.fromString(item.id()),1,10)))
                 .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_VERSION_CONFLICT));
         verifyNoInteractions(analyzer);
         doAnswer(call->{ generate(owner,item.mediaId(),true); return List.of(new TranscriptAnalyzer.Selection(fresh.segments().getFirst().id(),fresh.segments().getFirst().id(),0.9,null,null)); })
                 .when(analyzer).analyze(anyString(),anyList(),any(),anyInt(),anyLong(),anyString());
-        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("test",UUID.fromString(fresh.id()),1,10)))
+        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("字幕",UUID.fromString(fresh.id()),1,10)))
                 .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_VERSION_CONFLICT));
     }
 
@@ -471,24 +471,28 @@ class TranscriptIntegrationTests {
         when(analyzer.analyze(anyString(),anyList(),any(),anyInt(),anyLong(),anyString())).thenAnswer(call->{
             media.delete(owner.id,item.mediaId()); return List.of(new TranscriptAnalyzer.Selection(first.id(),first.id(),0.9,null,null));
         });
-        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("test",UUID.fromString(item.id()),1,10)))
+        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("字幕",UUID.fromString(item.id()),1,10)))
                 .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.RESOURCE_NOT_FOUND));
     }
 
-    @Test void analysisInputLimitsAndRequestValidationApplyBeforeCloudCalls() throws Exception {
+    @Test void retrievalBoundsModelContextInsteadOfRejectingLongSavedTranscripts() throws Exception {
         var owner=login(); var item=generate(owner,source(owner));
+        when(analyzer.isAvailable(anyString())).thenReturn(true);
+        when(analyzer.analyze(anyString(),anyList(),any(),anyInt(),anyLong(),anyString())).thenReturn(List.of());
         var many=new ArrayList<TranscriptSegment>();
-        for(int index=0;index<601;index++) many.add(new TranscriptSegment(UUID.randomUUID(),index*2L,index*2L+1,"text"));
+        for(int index=0;index<601;index++) many.add(new TranscriptSegment(UUID.randomUUID(),index*2L,index*2L+1,index==600 ? "targetword" : "ordinary"));
         var large=transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(1,many));
-        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("test",UUID.fromString(item.id()),large.version(),10)))
-                .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_ANALYSIS_TOO_LARGE));
-        verifyNoInteractions(analyzer);
+        var result=analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("targetword",UUID.fromString(item.id()),large.version(),10));
+        assertThat(result.retrieval().totalSegments()).isEqualTo(601);
+        assertThat(result.retrieval().retrievedSegments()).isBetween(1,96);
+        assertThat(result.retrieval().contextBytes()).isLessThanOrEqualTo(32*1024);
+        clearInvocations(analyzer);
         var bytes=new ArrayList<TranscriptSegment>();
         for(int index=0;index<70;index++) bytes.add(new TranscriptSegment(UUID.randomUUID(),index*2L,index*2L+1,"字".repeat(2000)));
         var longText=transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(large.version(),bytes));
-        assertThatThrownBy(()->analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("test",UUID.fromString(item.id()),longText.version(),10)))
-                .isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.code()).isEqualTo(ErrorCode.TRANSCRIPT_ANALYSIS_TOO_LARGE));
-        verifyNoInteractions(analyzer);
+        var limited=analysis.search(owner.id,item.mediaId(),new SearchTranscriptRequest("字",UUID.fromString(item.id()),longText.version(),10));
+        assertThat(limited.retrieval().contextBytes()).isLessThanOrEqualTo(32*1024);
+        assertThat(limited.retrieval().retrievedSegments()).isLessThan(70);
         for(String body:List.of("{\"query\":\" \",\"transcriptId\":\""+item.id()+"\",\"transcriptVersion\":1}",
                 "{\"query\":\"test\",\"transcriptId\":\""+item.id()+"\",\"transcriptVersion\":1,\"limit\":21}"))
             mvc.perform(post("/api/media/"+item.mediaId()+"/search").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf)

@@ -9,6 +9,7 @@ public enum ErrorCode {
     UNAUTHENTICATED(HttpStatus.UNAUTHORIZED, "请先登录"),
     CSRF_INVALID(HttpStatus.FORBIDDEN, "安全验证已失效，请刷新令牌后重试"),
     ACCESS_DENIED(HttpStatus.FORBIDDEN, "无权访问"),
+    HTTPS_REQUIRED(HttpStatus.FORBIDDEN, "请通过 HTTPS 安全连接访问本站"),
     CURRENT_PASSWORD_INVALID(HttpStatus.FORBIDDEN, "当前密码不正确"),
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "资源不存在"),
     METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED, "不支持此请求方法"),

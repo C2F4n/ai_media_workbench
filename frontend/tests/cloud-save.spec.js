@@ -13,7 +13,8 @@ async function fixture(page, savedText = {}, decide) {
   await page.route('http://workbench.test/**', async (route) => {
     const request = route.request(), url = new URL(request.url());
     if (!url.pathname.startsWith('/api/')) {
-      const files = { '/': 'index.html', '/assets/styles.css': 'assets/styles.css', '/assets/app.js': 'assets/app.js', '/assets/vendor/lucide.min.js': 'assets/vendor/lucide.min.js', '/assets/brand.svg': 'assets/brand.svg' };
+      const files = { '/': 'index.html', '/assets/styles.css': 'assets/styles.css', '/assets/vendor/lucide.min.js': 'assets/vendor/lucide.min.js', '/assets/brand.svg': 'assets/brand.svg' };
+      files['/assets/ui/components.js'] = 'assets/ui/components.js';
       const file = files[url.pathname]; if (!file) return route.fulfill({ status: 404, body: '' });
       return route.fulfill({ status: 200, contentType: file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : file.endsWith('.svg') ? 'image/svg+xml' : 'text/html', body: fs.readFileSync(path.join(root, file)) });
     }

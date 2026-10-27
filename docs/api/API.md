@@ -1,6 +1,12 @@
 # AI音视频工作台：轻量版接口契约
 
-版本：2.24.0。日期：2026-10-24。
+版本：2.25.0。日期：2026-10-26。
+
+2026-10-27前端迁移补记：全站Vue/TypeScript构建已完成；88个接口schema生成前端类型并在构建时核对。此轮未改变HTTP接口、数据库或契约版本。
+
+2.25变更：个人云端方案生成改用标准Function Calling，只允许提交候选方案/固定澄清问题，仍须人工确认；本地保留JSON协议。字幕RAG先用Lucene BM25召回最多96段/32KiB候选，再交给文字模型，结果新增retrieval召回统计，禁止跨未召回段引用。原字幕上限3000段/2MiB不变，无新接口、表或迁移。AI方案展示和检索结果渐进迁入Vue/TypeScript。
+
+2.24.1变更：新增公网public环境，启用HTTPS请求检查、Secure会话Cookie及可信回环代理。明文请求统一403 HTTPS_REQUIRED，仍使用Result；本机开发模式不变。提供独立HTTPS代理模板，修复普通域名HTTP下拼接编辑的安全上下文依赖。无新业务接口、表或迁移。
 
 2.24变更：字幕识别请求新增可选model，能力接口新增asrModels目录。百炼适配千问语音3.1流式、Fun-ASR实时和原Paraformer，均直接传私有音频并使用真实句级时间戳；前端独立选择语音模型，确认框标出实际ID。未指定model的旧客户端/旧任务保持原行为。无新接口、表或迁移，不自动回退模型。
 
@@ -37,6 +43,8 @@ ID为UUID，时间为UTC ISO 8601，媒体时长/位置为整数毫秒，大小�
 ## 3. 账号与会话
 
 登录不是JWT，是Spring Session JDBC保存的服务端会话。浏览器以HttpOnly AMW_SESSION Cookie携带不透明会话ID，服务端检查存在性、有效期与账号状态。不要放URL、localStorage或日志。生产HTTPS启用Secure，SameSite=Lax；仅本机HTTP可关闭Secure。
+
+公网部署启用`public` profile，Secure Cookie固定开启，明文请求在业务处理前返回403 `HTTPS_REQUIRED`及统一Result；CSRF获取、上传和文件预览同样受保护。HTTPS由可信Nginx入口终止，Tomcat只信任精确回环代理；开发模式忽略代理头。部署及穿透注意事项见[HTTPS部署与验收](../deployment/https.md)。
 
 先GET /api/auth/csrf读取data.token/headerName，并保持匿名Cookie；写请求携带X-CSRF-Token。登录成功后采用data.csrfToken中的新值，Cookie也轮换。刷新后GET /api/users/me恢复身份。默认空闲30分钟、绝对12小时；rememberMe=true时空闲7天、绝对30天，以较早者为准。CSRF令牌不是登录令牌。
 
@@ -312,7 +320,9 @@ capabilities.supportedOperations在ffprobe、H.264/AAC编码器和ass过滤器�
 
 检索请求：`{"query":"哪里提到使用限制","transcriptId":"当前字幕UUID","transcriptVersion":1,"limit":10}`。query为1至500个Unicode码点，去首尾空白后不得为空；limit可省略，默认10，范围1至20。推荐另加必填maxTotalDurationMs，范围1000至900000整毫秒；limit默认3，范围1至10。必须登录、提供CSRF且拥有素材及当前已保存字幕。
 
-transcriptId与transcriptVersion必须同时匹配最新字幕；重识别另建ID，即使版本仍为1也拒绝旧ID。云端调用前后检查归属和版本，修改/替换后409 TRANSCRIPT_VERSION_CONFLICT，删除/非本人404。分析仅使用完整已保存字幕，不使用未保存编辑；单次最多600段、segments序列化UTF-8 JSON最多128KiB，超出422 TRANSCRIPT_ANALYSIS_TOO_LARGE，不悄悄截断。不建立向量索引、不新增表、不缓存旧结果。
+transcriptId与transcriptVersion必须同时匹配最新字幕；重识别另建ID，即使版本仍为1也拒绝旧ID。模型调用前后检查归属和版本，修改/替换后409 TRANSCRIPT_VERSION_CONFLICT，删除/非本人404。RAG索引只使用当前已保存快照，最多3000段/2MiB，不使用未保存编辑。Lucene中文分词及双字词字段按BM25召回分块，最多96段/32KiB候选字幕JSON发给模型；搜索无词汇命中直接空结果、不调用模型，推荐无命中使用有界均匀抽样并标明BM25_COVERAGE。无向量数据库、无embedding调用，无新表，不缓存旧索引或跨账号搜索。
+
+SearchResponse和RecommendationResponse新增retrieval对象：method=BM25/BM25_COVERAGE，totalSegments、indexedChunks、retrievedSegments、contextBytes均为非负整数，contextBytes仅统计候选字幕JSON，最多32768。前端可忽略这个新增字段；旧请求不变。模型输出的区间必须全部位于召回候选内，跨遗漏段引用同样返回AI_ANALYSIS_FAILED。词汇检索不保证同义改写召回，分数不代表准确率。
 
 模型只选择连续字幕段的首尾ID；后端重建区间内每一段真实evidence和首尾时间，拒绝未知ID、倒序、重叠、非法分数/文字或超预算输出，返回422 AI_ANALYSIS_FAILED。检索按score降序，score只用于AI相关度排序，不代表准确率。推荐每段至少500ms，所有endMs-startMs的和不超过预算，区间中的静音/字幕间隙也计时；title最多80码点、reason最多300码点，均为模型判断，需要用户复核。无匹配时200空matches/clips并给出提示，不编造。
 

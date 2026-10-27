@@ -56,9 +56,11 @@ async function fixture(page, { enabled = true, existing = true, preview = true, 
       expect(method).toBe('POST'); expect(req.headers()['x-csrf-token']).toBe('fixture-csrf');
       const input = req.postDataJSON(); inputs.push(input);
       expect(input.transcriptId).toBe(transcript.id); expect(input.transcriptVersion).toBe(transcript.version);
-      const common = { mediaId, transcriptId: transcript.id, transcriptVersion: transcript.version };
-      if (url.pathname.endsWith('/search')) return ok({ ...common, matches: empty ? [] : [{ startMs: 1000, endMs: 2000, score: 0.9, evidence: [segment] }], message: empty ? '未找到有字幕依据的相关内容。' : null });
-      return ok({ ...common, clips: [{ title: '使用限制', reason: '说明了产品限制。', startMs: 1000, endMs: 2000, evidence: [segment] }], message: null });
+      const common = { mediaId, transcriptId: transcript.id, transcriptVersion: transcript.version,
+        retrieval: { method: url.pathname.endsWith('/search') ? 'BM25' : 'BM25_COVERAGE', totalSegments: 800, indexedChunks: 134, retrievedSegments: 8, contextBytes: 1024 } };
+      const evidence = [{ segmentId: segment.id, startMs: segment.startMs, endMs: segment.endMs, text: segment.text }];
+      if (url.pathname.endsWith('/search')) return ok({ ...common, matches: empty ? [] : [{ startMs: 1000, endMs: 2000, score: 0.9, evidence }], message: empty ? '未找到有字幕依据的相关内容。' : null });
+      return ok({ ...common, clips: [{ title: '使用限制', reason: '说明了产品限制。', startMs: 1000, endMs: 2000, evidence }], message: null });
     }
     if (url.pathname === '/api/operation-plans' || url.pathname === '/api/tasks') {
       expect(method).toBe('GET'); return ok({ items: [], page: 1, pageSize: 10, total: 0 });
@@ -138,4 +140,28 @@ test('missing credentials or subtitles close analysis and incompatible originals
   await page.unroute('**/api/**'); await fixture(page, { preview: false }); await open(page);
   await expect(page.getByRole('button', { name: '预览片段 1', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: '裁切片段 1', exact: true })).toBeEnabled();
+});
+
+for (const width of [1365, 390]) test(`Vue RAG evidence shows retrieval scope and citation jumps under CSP at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 1000 });
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  const app = await fixture(page);
+  await page.route('**/', route => route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.resolve(__dirname, '../../src/main/resources/static/index.html')),
+    headers: { 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'" } }));
+  await open(page);
+  await expect(page.locator('#find-results-view')).toHaveAttribute('data-v-app', '');
+  await expect(page.locator('#find-retrieval')).toContainText('BM25 召回');
+  await expect(page.locator('#find-retrieval')).toContainText('8 / 800');
+  await expect(page.locator('#find-results img')).toHaveCount(0);
+  await page.getByRole('button', { name: '1.000 秒', exact: true }).click();
+  await expect(page.locator('#find-preview-section')).toBeVisible();
+  await expect.poll(() => page.locator('#find-preview').evaluate(video => video.currentTime)).toBeGreaterThan(1.05);
+  await page.screenshot({ path: testInfo.outputPath(`vue-rag-evidence-${width}.png`), fullPage: true });
+  await page.locator('input[name="find-mode"][value="recommend"]').check();
+  await expect(page.locator('#find-retrieval')).toHaveCount(0);
+  await page.locator('#find-submit').click();
+  await expect(page.locator('#find-retrieval')).toContainText('均匀抽样候选');
+  expect(app.calls.filter(call => call.startsWith('POST /api/tasks') || call.startsWith('POST /api/operation-plans'))).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(errors).toEqual([]);
 });

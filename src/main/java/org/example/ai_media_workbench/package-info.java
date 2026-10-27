@@ -32,16 +32,19 @@
  * TranscriptionWorker与转换共享队列，使用临时16kHz单声道MP3调用腾讯/百炼；不持锁等待云端、不伪造字幕。
  * CloudSpeechRecognizer只访问官方域名，缺少凭据时关闭对应能力，取消/删除/过期运行不能发布迟到结果。
  * DeepSeekSubtitleCorrector只校对一段文字并返回瞬时建议，用户确认后仍通过版本PATCH保存；不执行模型指令。
- * OperationPlanner生成单步候选参数或固定补充问题；服务端再次白名单校验，READY方案仍需显式确认执行。
+ * OperationPlanner生成单步/有序工作流候选或固定问题；个人云端使用Function Calling，本地保留JSON协议。
+ * 工具仅允许提交方案或澄清，不执行命令；服务端再次白名单校验，READY方案仍需显式确认执行。
  * ProcessingServiceImpl在云端等待结束后才开启短事务，重新检查账号、素材和版本，拒绝删除后的迟到结果。
- * DeepSeekJsonClient共用固定官方域名、35秒超时及两个并发槽，不自动重试付费调用，不向日志输出正文或凭据。
+ * CloudTextJsonClient的JSON与工具调用共享固定官方域名、35秒超时及两个并发槽，不重试、不记录正文或凭据。
  * CloudCredentialController -> CloudCredentialService -> CloudCredentialMapper管理个人/站点/停用来源，V10只保存AES-GCM密文。
  * CloudCredentialCipher的独立主密钥不入库；AAD绑定账号/供应商，密钥丢失拒绝解密，不自动重建或回退站点。
  * 云端适配器显式接收用户ID，单次调用取得不可变配置；后台识别按任务用户在执行时读取，秘密不写方案/任务/VO。
  * 个人字段不回显，省略保留旧值，版本防覆盖；删除设为停用、注销物理删除。能力接口登录后按用户计算并禁止缓存。
- * 找片段从TranscriptAnalysisController -> TranscriptAnalysisService -> TranscriptAnalyzer阅读，不新建索引或草稿表。
+ * 找片段从TranscriptAnalysisController -> TranscriptAnalysisService -> TranscriptRetriever/TranscriptAnalyzer阅读。
+ * Lucene对本人当前已保存快照分块并做BM25召回，索引仅在请求内存中，不建立跨用户索引或新表。
  * 模型仅选择真实字幕段ID；原文和时间由后端重建，调用前后核验最新字幕ID与版本，拒绝重识别的同版本旧稿。
- * 单次最多600段、128KiB字幕，超过明确拒绝，不截断；前端带入已有裁切页仍需用户确认执行。
+ * 源字幕沿用3000段/2MiB上限；模型只收最多96段/32KiB候选，返回区间不得跨过未召回段。
+ * 无命中搜索不调用模型，推荐抽样明确标注；Vue/TypeScript结果组件带入原有裁切/拼接后仍须确认执行。
  * BurnSubtitleParameters复用明确参数方案与任务；首次执行要求最新字幕ID/版本，入队后只读取不可变历史稿。
  * TranscodeWorker生成受控私有ASS，AssSubtitles只序列化固定样式和转义文字，渲染交给FFmpeg/libass。
  * 字幕辅助文件在发布前清除；清理失败保留租约，过期回收及资源清理覆盖ASS，不新增迁移或外部文件入口。

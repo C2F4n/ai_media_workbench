@@ -52,6 +52,7 @@ async function deleteAccount(page, account, password = passphrase) {
 
 async function openAccount(page) {
   if (await page.locator('#account-panel').isHidden()) await page.getByRole('button', { name: '账户设置', exact: true }).click();
+  await page.getByRole('tab', { name: '账户安全', exact: true }).click();
 }
 
 test('registration, token validation, reload, logout and account deletion', async ({ page, context }) => {
@@ -123,9 +124,10 @@ test('desktop and mobile pages have assets and no horizontal overflow', async ({
     await page.setViewportSize(viewport);
     await page.goto('/');
     await expect(page.locator('#auth-view')).toBeVisible();
-    await expect(page.locator('.brand img')).toBeVisible();
-    expect(await page.locator('.brand img').evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);
-    expect(await page.locator('.brand svg').count()).toBe(0);
+    const photo = page.locator('#auth-gallery img').first();
+    await expect(photo).toBeVisible();
+    await expect.poll(() => photo.evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);
+    await expect(page.locator('#auth-theme-toggle svg')).toBeVisible();
     expect(await page.locator('.password-toggle svg').count()).toBeGreaterThan(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('login-' + viewport.width + '.png'), fullPage: true });

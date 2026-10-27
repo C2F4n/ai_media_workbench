@@ -28,6 +28,8 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-flyway'
     implementation 'org.flywaydb:flyway-mysql'
     implementation 'org.bouncycastle:bcprov-jdk18on:1.83'
+    implementation 'org.apache.lucene:lucene-core:10.3.2'
+    implementation 'org.apache.lucene:lucene-analysis-smartcn:10.3.2'
     implementation 'org.mybatis.spring.boot:mybatis-spring-boot-starter:4.0.1'
     compileOnly 'org.projectlombok:lombok'
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
@@ -46,4 +48,19 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+}
+
+tasks.register('frontendBuild', Exec) {
+    group = 'build'
+    description = 'Type-check Vue components and build the bundled browser assets (run npm ci in frontend first).'
+    workingDir 'frontend'
+    commandLine(System.getProperty('os.name').toLowerCase().contains('windows')
+            ? ['cmd', '/c', 'npm', 'run', 'build'] : ['npm', 'run', 'build'])
+    inputs.files(fileTree('frontend/src'), 'frontend/package.json', 'frontend/package-lock.json',
+            'frontend/tsconfig.json', 'frontend/vite.config.mts', 'frontend/scripts/contracts.mjs', 'docs/api/openapi.json')
+    outputs.dir('src/main/resources/static/assets/ui')
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('frontendBuild')
 }

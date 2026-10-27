@@ -60,7 +60,7 @@ async function fixture(page) {
 }
 
 test('the application contains no native confirm alert or prompt calls', () => {
-  const code = fs.readFileSync(path.resolve(__dirname, '../../src/main/resources/static/assets/app.js'), 'utf8');
+  const code = fs.readFileSync(path.resolve(__dirname, '../src/runtime/workbench.ts'), 'utf8');
   expect(code).not.toMatch(/\b(?:confirm|alert|prompt)\s*\(/);
   expect(code).toContain("addEventListener('beforeunload'");
 });

@@ -2,6 +2,8 @@
 
 Java 21 / Spring Boot 4.0.8 / Gradle Wrapper 9.7.1 / MyBatis / MySQL 8。
 
+比赛增强：全站页面已迁入Vue 3单文件组件，业务协调与请求代码使用严格TypeScript，Vite生成本地静态包，不再加载旧app.js。素材/历史列表、顺序步骤、字幕/翻译编辑和云端设置由Vue管理；原生视频、对话框和焦点操作保留类型化DOM协调。云端方案生成使用标准Function Calling，本地千问保留受约束JSON协议；字幕检索采用Lucene BM25召回后模型筛选。实现边界、构建和演示验收见[比赛增强说明](docs/competition/ai-enhancements.md)。
+
 ## 当前基础
 
 后端采用Controller -> Service接口 -> ServiceImpl -> Mapper。Controller通过构造器注入接口，由Spring注入实现；替换实现或使用测试替身不需要修改Controller，SQL集中在MyBatis XML中。当前仍为单模块应用，不为目录形式拆成多模块。
@@ -26,8 +28,9 @@ src/main/java/org/example/ai_media_workbench/
 src/main/resources/
   mapper/           MyBatis XML
   db/migration/     Flyway版本化建表脚本
-  static/           简易账户页面与本地图标资源
-deploy/nginx/       本地Nginx代理配置
+  static/           页面入口、样式、本地图标和构建后的Vue资源
+deploy/nginx/       本机HTTP代理与公网HTTPS部署模板
+frontend/src/       Vue页面/组件、严格TypeScript协调器与API数据类型
 frontend/tests/     浏览器端到端测试
 ```
 
@@ -36,6 +39,8 @@ frontend/tests/     浏览器端到端测试
 密码使用带随机盐的Argon2id哈希。登录令牌不是JWT，而是Spring Session JDBC管理的不透明会话ID，通过AMW_SESSION HttpOnly Cookie发送。会话及认证身份存入数据库，服务端检查会话、到期时间和账号状态，不依赖客户端自行判断令牌有效性；页面不读取令牌，也不将其保存到localStorage。退出撤销当前令牌，修改密码、退出全部设备与注销会撤销该用户全部令牌。CSRF令牌单独保护写请求，不是登录凭证，也不是JWT刷新令牌。
 
 ## 功能与API依赖
+
+公网访问请先阅读[HTTPS部署与验收](docs/deployment/https.md)。默认保留本机HTTP开发；显式启用`public`环境后仅接受可信代理确认的HTTPS请求，并启用Secure登录Cookie。开发模式的普通域名HTTP访问会在登录和凭据设置处显示明文传输警告；拼接编辑不再依赖仅限安全上下文的`crypto.randomUUID()`。本机可用不等于公网部署已验收。
 
 所有页面操作都使用本站后端接口；下表的“无需API”专指不需要第三方云端API或API Key，并非浏览器离线运行。FFmpeg/ffprobe运行在部署后端的机器上，远程部署时不是访客的电脑。
 
@@ -171,7 +176,7 @@ V4新增验证码表，并将邮箱归属唯一约束改为只约束已验证邮
 
 1. 安装JDK 21与MySQL 8，创建空库ai_media_workbench，确保开发账号只用于指定项目库。
 2. 在IDEA运行配置或当前终端中设置DB_PASSWORD。可选DB_URL、DB_USERNAME、SERVER_PORT等见[.env.example](.env.example)。示例文件只列变量，Spring Boot不会自动读取.env；不要将密码写入受版本管理的配置。应用也会自动读取当前项目工作目录下被Git忽略的`.local/database.properties`，其中可配置`local.database.password`及`local.server.port`；本机已配置，IDEA使用项目子目录作为工作目录即可运行。显式DB_PASSWORD/SERVER_PORT仍优先，其他电脑不携带这份私有文件，应自行设置数据库凭据。
-3. 运行AiMediaWorkbenchApplication，或使用工程Wrapper启动。
+3. 首次从源码开发先安装Node.js 22.12+或24 LTS，并在frontend目录运行`npm ci`；Gradle启动/打包会自动执行Vue/TypeScript校验及构建。IDEA直接运行主类使用已生成的静态包，修改组件源码后先执行`npm run build`。运行发行JAR不需要Node.js。随后运行AiMediaWorkbenchApplication，或使用工程Wrapper启动。
 
 ```powershell
 $env:JAVA_HOME = 'C:\Program Files\Java\jdk-21'
@@ -204,7 +209,7 @@ Cookie默认只适合本机HTTP联调；HTTPS部署设置COOKIE_SECURE=true。�
 
 ## 简易页面与Nginx
 
-页面随Spring Boot提供，不需要前端构建或外部CDN。先启动后端8081，再从项目根目录运行：
+页面随Spring Boot提供，不使用外部CDN；Vue组件构建后作为本地静态资源随JAR提供，运行时无需前端开发服务器。先启动后端8081，再从项目根目录运行：
 
 ```powershell
 .\deploy\run-nginx.ps1
@@ -392,6 +397,6 @@ capabilities含workflow才开放，除ffprobe及H.264/AAC还需FFV1/PCM编码器
 
 找片段页可按目标检索或在指定总时长内生成片段建议，查看对应原文和时间，预览兼容的原视频区间，并带入单段裁切或加入同源多段拼接。加入前重新检查字幕ID/版本，仍需用户确认导出才创建任务；不增加草稿表、项目层或自动导出。
 
-复用DeepSeek配置，仅分析当前完整已保存字幕，最多600段且segments序列化UTF-8 JSON不超过128KiB；超出明确返回TRANSCRIPT_ANALYSIS_TOO_LARGE，不截断。模型只选真实段ID，后端重建引文/时间并验证非重叠和推荐总时长；查无内容返回空结果。标题、理由和相关度为模型判断，仍需核对原文。请求绑定transcriptId和版本，重识别即使仍为v1也不能复用旧稿，调用前后均核验权限和版本。
+RAG仅检索本人当前已保存字幕，最多3000段/2MiB，与字幕保存边界一致。每次在内存建立短生命周期Lucene索引，中文分词加双字词字段使用BM25召回；按段/文字大小分块并保留邻接上下文，模型仅收到最多96段、32KiB候选字幕JSON，不再发送整份长稿。搜索无词汇匹配时直接返回空结果、不调用模型；片段建议无词汇命中时采用有界均匀抽样，retrieval.method=BM25_COVERAGE明确标注，不声称已理解全文。模型仅选候选真实段ID，后端拒绝跨过未召回字幕的区间，重建引文/时间并验证非重叠及推荐总时长。结果附带召回统计，可展开原文并点击时间预览。BM25不是embedding语义检索，对同义改写仍可能漏召回；标题、理由和分数需复核。调用前后均核验权限、字幕ID和版本，不建立跨账号索引、不缓存旧稿。
 
 检索/推荐共享每用户默认5分钟20次，与其他文字AI共享最多2个并发请求、本地默认120秒超时，不自动重试。调用前确认向云端发送目标与已保存字幕。当前未配置真实密钥，自动测试仅验证协议、权限、版本、时长边界与本地浏览器预览/带入流程，不代表已验收云端检索质量或费用。

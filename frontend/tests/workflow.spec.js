@@ -76,6 +76,7 @@ for (const width of [1365, 390]) test(`manual ordered workflow edits moves saves
   await page.getByRole('button', { name: '删除步骤 4', exact: true }).click(); await expect(page.locator('#execute-ai-plan')).toBeDisabled();
   await page.locator('#workflow-save').click(); await expect(page.locator('#ai-plan-summary')).toContainText('4 步');
   expect(app.state().patches[0].expectedVersion).toBe(1);
+  await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({ path: testInfo.outputPath(`workflow-${width}.png`), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.locator('#execute-ai-plan').click(); await expect(page.locator('#ai-plan-status')).toHaveText('已执行');

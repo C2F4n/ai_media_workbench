@@ -6,7 +6,7 @@ async function fixture(page, local = false) {
   await serveStatic(page);
   const now = '2026-10-24T00:00:00Z', mediaId = '22222222-2222-4222-8222-222222222222';
   const transcriptId = '66666666-6666-4666-8666-666666666666', segmentId = '77777777-7777-4777-8777-777777777777';
-  const state = { signedIn: true, userId: '11111111-1111-4111-8111-111111111111', calls: [], plan: null };
+  const state = { signedIn: true, userId: '11111111-1111-4111-8111-111111111111', calls: [], plan: null, task: null };
   const user = () => ({ id: state.userId, username: 'fixture_user', displayName: '确认测试', email: 'fixture@example.com', emailVerified: true, createdAt: now });
   const media = { id: mediaId, originalFilename: 'confirmation.mp4', kind: 'VIDEO', status: 'READY', sizeBytes: 123, previewUrl: null,
     metadata: { container: 'mp4', durationMs: 5000, width: 320, height: 180, videoCodec: 'h264', hasAudio: true, audioCodec: 'aac' }, createdAt: now, updatedAt: now };
@@ -26,7 +26,8 @@ async function fixture(page, local = false) {
     if (path === '/api/media') return reply({ items: [media], total: 1, page: 1, pageSize: 10 });
     if (path === `/api/media/${mediaId}`) return reply(media);
     if (path === `/api/media/${mediaId}/transcript` || path === `/api/transcripts/${transcriptId}`) return reply(transcript);
-    if (path === '/api/tasks') return reply({ items: [], total: 0, page: 1, pageSize: 10 });
+    if (path === '/api/tasks') return reply({ items: state.task ? [state.task] : [], total: state.task ? 1 : 0, page: 1, pageSize: 10 });
+    if (state.task && path === '/api/tasks/' + state.task.id) return reply(state.task);
     if (path === '/api/operation-plans' && method === 'GET') return reply({ items: state.plan ? [state.plan] : [], total: state.plan ? 1 : 0, page: 1, pageSize: 10 });
     if (method === 'POST' || method === 'PATCH') {
       state.calls.push({ path, body: request.postDataJSON() });
@@ -39,8 +40,11 @@ async function fixture(page, local = false) {
       if (path.endsWith('/clip-recommendations')) return reply({ mediaId, transcriptId, transcriptVersion: 1, clips: [], message: '未找到相关片段。' });
       if (path.endsWith('/corrections')) return reply({ transcriptId, version: 1, segmentId, originalText: segments[0].text, correctedText: '校对建议。' });
       if (path.endsWith('/translations')) return reply({ transcriptId, transcriptVersion: 1, targetLanguage: request.postDataJSON().targetLanguage, segments: [{ ...segments[0], text: 'Translated text.' }] });
-      if (path.endsWith('/transcriptions')) return reply({ id: '44444444-4444-4444-8444-444444444444', mediaId, kind: 'TRANSCRIPTION', status: 'SUCCEEDED', stage: 'DONE', progressPercent: 100,
-        transcript: { transcriptId, version: 1 }, outputs: [], error: null, createdAt: now });
+      if (path.endsWith('/transcriptions')) {
+        state.task = { id: '44444444-4444-4444-8444-444444444444', mediaId, kind: 'TRANSCRIPTION', status: 'SUCCEEDED', stage: 'DONE', progressPercent: 100,
+          transcript: { transcriptId, version: 1 }, outputs: [], error: null, createdAt: now };
+        return reply(state.task);
+      }
     }
     throw new Error('Unexpected fixture request: ' + method + ' ' + path);
   });

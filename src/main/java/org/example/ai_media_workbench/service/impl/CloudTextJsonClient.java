@@ -8,10 +8,12 @@ import java.util.Map;
 import java.util.concurrent.Semaphore;
 import org.example.ai_media_workbench.common.exception.*;
 import org.example.ai_media_workbench.service.CloudCredentialService;
+import org.example.ai_media_workbench.common.ai.MediaPlanTools;
+import org.example.ai_media_workbench.service.OperationPlanner;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.*;
 
-/** 个人文字模型适配：按供应商使用固定官方接口，共享双并发和JSON边界，不回退或重试。 */
+/** 个人文字模型适配：固定官方接口；JSON与原生工具调用共享双并发，不回退或重试。 */
 @Component
 public class CloudTextJsonClient {
     private final CloudCredentialService credentials;
@@ -23,6 +25,13 @@ public class CloudTextJsonClient {
     }
     public boolean isAvailable(String userId) { return credentials.available(userId,"deepseek"); }
     JsonNode complete(String prompt,String content,int maxTokens,ErrorCode failure,String userId) {
+        return complete(prompt,content,maxTokens,failure,userId,null);
+    }
+    JsonNode plan(String prompt,String content,OperationPlanner.Context context,String userId) {
+        return complete(prompt + "\n本次通过提供的function工具提交结果：必须且只能调用submit_media_plan或request_clarification一次，不输出普通JSON消息。",
+                content,3072,ErrorCode.AI_PLAN_FAILED,userId,MediaPlanTools.definitions(context));
+    }
+    private JsonNode complete(String prompt,String content,int maxTokens,ErrorCode failure,String userId,List<Map<String,Object>> tools) {
         if(userId==null) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
         var properties=credentials.effective(userId,"deepseek");
         if (!properties.textReady()) throw new BusinessException(ErrorCode.AI_UNAVAILABLE);
@@ -30,7 +39,10 @@ public class CloudTextJsonClient {
         try {
             var body=new java.util.LinkedHashMap<String,Object>();
             body.put("model",properties.deepseekModel()); body.put("stream",false);
-            body.put("response_format",Map.of("type","json_object"));
+            if (tools == null) body.put("response_format",Map.of("type","json_object"));
+            else {
+                body.put("tools",tools); body.put("tool_choice","auto"); body.put("parallel_tool_calls",false);
+            }
             body.put("messages",List.of(Map.of("role","system","content",prompt),Map.of("role","user","content",content)));
             if ("openai".equals(properties.textProvider())) {
                 body.put("max_completion_tokens",maxTokens); body.put("store",false);
@@ -48,6 +60,7 @@ public class CloudTextJsonClient {
                     .header("Authorization","Bearer "+properties.deepseekApiKey()).header("Content-Type","application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build();
             var response=json.readTree(transport.post(request,System.nanoTime()+Duration.ofSeconds(35).toNanos(),()->false,failure));
+            if (tools != null) return MediaPlanTools.readResponse(response,json);
             var choice=response.path("choices").path(0);
             if (!"stop".equals(choice.path("finish_reason").asText()) || !choice.path("message").path("content").isString())
                 throw new BusinessException(failure);

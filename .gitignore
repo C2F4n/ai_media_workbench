@@ -56,7 +56,7 @@ replay_pid*
 ### Frontend dependencies and test artifacts ###
 node_modules/
 frontend/playwright-report/
-frontend/test-results/
+frontend/test-results*/
 frontend/coverage/
 npm-debug.log*
 yarn-debug.log*

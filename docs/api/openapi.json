@@ -2,9 +2,9 @@
   "openapi": "3.0.3",
   "info": {
     "title": "AI音视频工作台接口文档",
-    "version": "2.24.0",
+    "version": "2.25.0",
     "x-source-policy": "SERVER表示服务端千问；PERSONAL文字供应商由deepseek槽位内的textProvider选择DeepSeek/OpenAI/千问百炼北京/豆包火山方舟北京。旧密文默认DeepSeek，同厂商省略秘密可保留，换厂商必须重填密钥。个人文字共用2并发/35秒，不回退、不付费重试；配置可用不等于余额、模型权限或网络已验证。本地推理超时依部署者LOCAL_AI_TIMEOUT_SECONDS配置，不支持ASR。",
-    "x-latest-change": "2.24新增语音模型选择：TranscriptionRequest.model与capabilities.asrModels。百炼适配千问语音3.1流式、Fun-ASR实时及原Paraformer，直接发送私有音频并读取真实时间戳；选定模型固定入队，失败不回退或重试。旧客户端省略model保持原模型，无新接口、表或迁移。",
+    "x-latest-change": "2.25个人云端方案改用标准Function Calling，本地保留JSON；字幕RAG使用Lucene BM25召回最多96段/32KiB候选后由模型筛选，结果新增retrieval统计，拒绝跨未召回段引用。无新接口、表或迁移。2.24.1公网public环境启用HTTPS、Secure Cookie及可信回环代理；2.24语音模型选择保持兼容。",
     "description": "轻量版契约，共58个接口，44个已实现。登录后直接使用，不创建项目或分类。业务JSON统一Result<T>，成功文件流除外。Spring Session JDBC的HttpOnly会话Cookie，不是JWT，写请求校验CSRF。支持账号/注册邮箱验证、个人凭据、素材/方案/任务/结果、FFmpeg转换压缩裁切静音音轨提取、字幕编辑/SRT/识别/校对/翻译/双语/检索/建议/烧录。2.17工作流支持有序裁切、同源拼接、缩放、静音和最终导出，按上一步时间轴校验，不穷举操作组合；确认后才执行，失败不发布半成品。2.18把SERVER站点配置改为本地千问：方案生成、文字校对及检索建议可使用本地模型或PERSONAL个人DeepSeek，任何来源失败均不回退。新增textAi状态、available和unavailableReason；本地health检查700ms/缓存2秒，推理超时依LOCAL_AI_TIMEOUT_SECONDS，不支持ASR。历史SERVER值、接口和表兼容。后文DeepSeek文字契约同样适用于其他所选文字模型，个人云端仍须自行配置凭据。真实云端效果及费用需另行验收。跨素材、拼接字幕重映射、任意滤镜及clip-drafts管理仍未实现。2.19自然语言重新生成完整替换提示词，新增方案删除和任务记录移除。2.20及2.21新增OpenAI、千问百炼和豆包文字适配；2.22新增分批字幕翻译建议，确认后以普通字幕版本保存和导出，不修改识别原文。"
   },
   "servers": [
@@ -4466,7 +4466,7 @@
             }
           }
         },
-        "description": "已实现，需要登录及CSRF。绑定当前素材的最新transcriptId和transcriptVersion，二者都必须匹配；修改或重识别后409 TRANSCRIPT_VERSION_CONFLICT，调用前后重查归属和版本，非本人/删除404。不依赖向量索引，不新增表或任务；仅分析完整已保存字幕，最多600段且segments序列化UTF-8 JSON不超过128KiB，超出422 TRANSCRIPT_ANALYSIS_TOO_LARGE，不截断。DeepSeek仅选择连续字幕段ID，后端重建全部真实原文与首尾时间；伪造ID、重叠区间或非法输出422 AI_ANALYSIS_FAILED。两种模式共享每用户默认5分钟20次；与方案/校对共享2个云端并发槽、35秒超时，不自动重试。未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY，限流429。结果按score降序，score只是AI相关度排序参考，不是准确率。没找到返回200 matches=[]；标题式理解仍需用户判断。",
+        "description": "已实现，需要登录及CSRF。绑定本人当前素材的最新transcriptId和transcriptVersion，调用前后重查归属和版本；编辑/重识别后409，非本人/删除404。字幕上限3000段/2MiB。RAG先建立隔离的内存Lucene中文分词及双字词索引，BM25召回最多96段/32KiB候选字幕JSON再发给模型；无词汇命中直接返回空matches且不调用模型。retrieval返回召回统计，不是embedding向量检索，不保证同义改写召回。模型只选候选ID，区间内每段必须已召回，后端重建原文及时间；伪造、跨遗漏、重叠或非法输出422 AI_ANALYSIS_FAILED。共享每用户5分钟20次、2个云端并发、35秒超时，不重试。未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY。分数只是相关度排序参考，不是准确率。无新表、任务或跨账号索引。",
         "responses": {
           "200": {
             "description": "有原文依据的结果。",
@@ -4549,7 +4549,7 @@
             "$ref": "#/components/responses/UnsupportedContentType"
           },
           "422": {
-            "description": "INVALID_PARAMETERS：请求边界不合法；TRANSCRIPT_ANALYSIS_TOO_LARGE：超过600段或128KiB；AI_ANALYSIS_FAILED：模型返回无效、重叠或超预算结果。",
+            "description": "INVALID_PARAMETERS：请求边界不合法；TRANSCRIPT_ANALYSIS_TOO_LARGE：源字幕超过3000段或2MiB；AI_ANALYSIS_FAILED：模型返回无效、跨未召回字幕、重叠或超预算结果。",
             "content": {
               "application/json": {
                 "schema": {
@@ -4624,7 +4624,7 @@
             }
           }
         },
-        "description": "已实现，需要登录及CSRF。绑定当前素材的最新transcriptId和transcriptVersion，二者都必须匹配；修改或重识别后409 TRANSCRIPT_VERSION_CONFLICT，调用前后重查归属和版本，非本人/删除404。不依赖向量索引，不新增表或任务；仅分析完整已保存字幕，最多600段且segments序列化UTF-8 JSON不超过128KiB，超出422 TRANSCRIPT_ANALYSIS_TOO_LARGE，不截断。DeepSeek仅选择连续字幕段ID，后端重建全部真实原文与首尾时间；伪造ID、重叠区间或非法输出422 AI_ANALYSIS_FAILED。两种模式共享每用户默认5分钟20次；与方案/校对共享2个云端并发槽、35秒超时，不自动重试。未配置503 AI_UNAVAILABLE，繁忙503 AI_BUSY，限流429。每个连续区间至少500ms；sum(endMs-startMs)不超过maxTotalDurationMs，包含区间内静音/字幕间隙；超预算拒绝而非截断。没找到返回200 clips=[]。title/reason由AI生成，须用户复核。页面可预览和带入已有单段裁切表单，不自动执行，不创建clip-draft或多段导出。",
+        "description": "已实现，需要登录及CSRF。按本人最新字幕快照进行RAG，源字幕最多3000段/2MiB；中文全文索引BM25召回最多96段/32KiB候选字幕JSON交给模型。无词汇命中时改用有界均匀抽样，retrieval.method=BM25_COVERAGE明确标注，不声称全文语义覆盖。调用前后检查归属、ID和版本。仅可返回召回范围内的真实连续段，跨未召回段、伪造ID或非法输出422 AI_ANALYSIS_FAILED。每段至少500ms，合计时长不超过maxTotalDurationMs，超预算拒绝而非截断。title/reason为模型判断，须复核。原限流、并发、超时及不重试策略不变；无结果200 clips=[]。不自动执行，不新增表、任务或向量数据库。",
         "responses": {
           "200": {
             "description": "推荐片段。",
@@ -4708,7 +4708,7 @@
             "$ref": "#/components/responses/UnsupportedContentType"
           },
           "422": {
-            "description": "INVALID_PARAMETERS：请求边界不合法；TRANSCRIPT_ANALYSIS_TOO_LARGE：超过600段或128KiB；AI_ANALYSIS_FAILED：模型返回无效、重叠或超预算结果。",
+            "description": "INVALID_PARAMETERS：请求边界不合法；TRANSCRIPT_ANALYSIS_TOO_LARGE：源字幕超过3000段或2MiB；AI_ANALYSIS_FAILED：模型返回无效、跨未召回字幕、重叠或超预算结果。",
             "content": {
               "application/json": {
                 "schema": {
@@ -7835,11 +7835,11 @@
           },
           "semanticSearch": {
             "type": "boolean",
-            "description": "所选本地千问/个人DeepSeek可用；每次要求本人已保存的当前字幕且不超过600段/128KiB，本地还受部署上下文限制。不代表效果或云端余额已验收。"
+            "description": "所选文字模型可用；本人当前已保存字幕最多3000段/2MiB，RAG召回最多96段/32KiB候选供模型筛选。不代表召回效果或云端余额已验收。"
           },
           "clipRecommendations": {
             "type": "boolean",
-            "description": "所选本地千问/个人DeepSeek可用；每次要求本人已保存的当前字幕且不超过600段/128KiB，本地还受部署上下文限制。不代表效果或云端余额已验收。"
+            "description": "所选文字模型可用；本人当前已保存字幕最多3000段/2MiB，RAG有界召回后由模型筛选；无命中时推荐明确标注均匀抽样。不代表效果或云端余额已验收。"
           },
           "mediaTool": {
             "type": "boolean",
@@ -8372,6 +8372,7 @@
             "type": "integer",
             "minimum": 1
           },
+          "retrieval": { "$ref": "#/components/schemas/Retrieval" },
           "matches": {
             "type": "array",
             "items": {
@@ -8487,6 +8488,7 @@
             "type": "integer",
             "minimum": 1
           },
+          "retrieval": { "$ref": "#/components/schemas/Retrieval" },
           "clips": {
             "type": "array",
             "items": {
@@ -8498,6 +8500,18 @@
             "nullable": true
           }
         }
+      },
+      "Retrieval": {
+        "type": "object", "additionalProperties": false,
+        "required": ["method", "totalSegments", "indexedChunks", "retrievedSegments", "contextBytes"],
+        "properties": {
+          "method": {"type": "string", "enum": ["BM25", "BM25_COVERAGE"]},
+          "totalSegments": {"type": "integer", "minimum": 0, "maximum": 3000},
+          "indexedChunks": {"type": "integer", "minimum": 0},
+          "retrievedSegments": {"type": "integer", "minimum": 0, "maximum": 96},
+          "contextBytes": {"type": "integer", "minimum": 0, "maximum": 32768, "description": "候选字幕JSON的UTF-8字节数，不是完整请求token数。"}
+        },
+        "description": "本次隔离字幕快照的全文召回统计；BM25_COVERAGE为推荐无词汇命中时的有界均匀抽样。"
       },
       "ClipItem": {
         "type": "object",
@@ -9703,7 +9717,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "AMW_SESSION",
-        "description": "服务端会话ID；生产环境HttpOnly、Secure、SameSite=Lax。浏览器自动携带，GET播放同样鉴权。"
+        "description": "服务端会话ID；生产环境HttpOnly、Secure、SameSite=Lax。浏览器自动携带，GET播放同样鉴权。public环境强制HTTPS；明文请求在业务处理前返回403及Result错误码HTTPS_REQUIRED。仅信任回环代理，公网入口及证书需单独配置。"
       }
     }
   },

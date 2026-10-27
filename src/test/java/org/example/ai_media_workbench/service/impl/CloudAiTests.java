@@ -97,11 +97,13 @@ class CloudAiTests {
         assertThatThrownBy(()->corrector.correct("原文",USER)).isInstanceOf(BusinessException.class);
     }
 
-    @Test void plannerUsesTheSharedJsonApiAndOnlySendsInstructionAndControlledMetadata() throws Exception {
+    @Test void plannerUsesFunctionCallingAndOnlySendsInstructionAndControlledMetadata() throws Exception {
         var transport=mock(CloudTransport.class); var client=textClient(transport);
         var planner=new DeepSeekOperationPlanner(client,json);
         String content="{\"parameters\":{\"operation\":\"mute\",\"outputFormat\":\"mp4\",\"resolutionPreset\":\"source\"}}";
-        when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content",content))))));
+        var call=Map.of("id","plan-1","type","function","function",Map.of("name","submit_media_plan","arguments",content));
+        var response=Map.of("choices",List.of(Map.of("finish_reason","tool_calls","message",Map.of("tool_calls",List.of(call)))));
+        when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(response));
         var context=new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mp4",5000,160,90,"h264",true,"aac"),12345,List.of("mute"),null,null,List.of(),List.of(),1073741824L);
         var proposal=planner.propose("静音",context,USER);
         assertThat(proposal.parameters().path("operation").asText()).isEqualTo("mute"); assertThat(proposal.questions()).isEmpty();
@@ -113,7 +115,9 @@ class CloudAiTests {
             @Override public void onComplete() { finished.complete(null); }
             @Override public void onError(Throwable error) { finished.completeExceptionally(error); }
         }); finished.get(1,TimeUnit.SECONDS);
-        var body=json.readTree(bytes.toByteArray()); assertThat(body.path("response_format").path("type").asText()).isEqualTo("json_object");
+        var body=json.readTree(bytes.toByteArray()); assertThat(body.has("response_format")).isFalse();
+        assertThat(body.path("tools").size()).isEqualTo(2);
+        assertThat(body.path("parallel_tool_calls").asBoolean()).isFalse();
         var sent=json.readTree(body.path("messages").get(1).path("content").asText());
         assertThat(sent.path("instruction").asText()).isEqualTo("静音"); assertThat(sent.path("context").path("sizeBytes").asLong()).isEqualTo(12345);
         assertThat(sent.toString()).doesNotContain("storageKey","userId","SecretKeyForTests","sk-deepseek-tests");
@@ -133,13 +137,13 @@ class CloudAiTests {
     @Test void plannerPromptSupportsBoundedCompositeExportsOrderedJoinsAndClarificationContext() {
         var client=mock(TextAiJsonClient.class); var planner=new DeepSeekOperationPlanner(client,json);
         var parameters=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","360p",null,null,"keep",0L,5000L,null,false);
-        when(client.complete(anyString(),anyString(),eq(3072),eq(ErrorCode.AI_PLAN_FAILED),eq(USER)))
+        when(client.plan(anyString(),anyString(),any(),eq(USER)))
                 .thenReturn(json.valueToTree(Map.of("parameters",parameters)));
         var context=new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mov",20000,1920,1080,"h264",true,"aac"),1000000,
                 List.of("export","join_clips"),parameters,"保留前5秒转成360p",List.of("mp4","webm"),List.of("h264","vp9"),1073741824L);
         assertThat(planner.propose("再静音，其他不变",context,USER).parameters().path("resolutionPreset").asText()).isEqualTo("360p");
         var prompt=ArgumentCaptor.forClass(String.class); var content=ArgumentCaptor.forClass(String.class);
-        verify(client).complete(prompt.capture(),content.capture(),eq(3072),eq(ErrorCode.AI_PLAN_FAILED),eq(USER));
+        verify(client).plan(prompt.capture(),content.capture(),eq(context),eq(USER));
         assertThat(prompt.getValue()).contains("operation=export","operation=join_clips","CLIP_RANGES_REQUIRED","压缩至360p/720p","不能只做其中一步","保留/删除歧义",
                 "operation=workflow", "每一步都消费上一步结果", "不能在导出后继续处理", "拼接后缩放");
         assertThat(prompt.getValue()).doesNotContain("只允许context.supportedOperations中的单步操作");
