@@ -3,6 +3,8 @@
 /~a8093cNRXN~:/
 链接：https://pan.quark.cn/s/7aab8f6b0e52?pwd=Lk2x
 提取码：Lk2x
+
+请先安装JAVA21和mysql数据库才可本地部署
 # FrameFlow
 Java 21 / Spring Boot 4.0.8 / Gradle Wrapper 9.7.1 / MyBatis / MySQL 8。
 
