@@ -1,25 +1,19 @@
 # FrameFlow
-
 Java 21 / Spring Boot 4.0.8 / Gradle Wrapper 9.7.1 / MyBatis / MySQL 8。
 
-比赛增强：全站页面已迁入Vue 3单文件组件，业务协调与请求代码使用严格TypeScript，Vite生成本地静态包，不再加载旧app.js。素材/历史列表、顺序步骤、字幕/翻译编辑和云端设置由Vue管理；原生视频、对话框和焦点操作保留类型化DOM协调。云端方案生成使用标准Function Calling，本地千问保留受约束JSON协议；字幕检索采用Lucene BM25召回后模型筛选。实现边界、构建和演示验收见[比赛增强说明](docs/competition/ai-enhancements.md)。
-
+全站页面已迁入Vue 3单文件组件，业务协调与请求代码使用严格TypeScript，Vite编写本地静态包素材/历史列表、顺序步骤、字幕/翻译编辑和云端设置由Vue管理；
+原生视频、对话框和焦点操作保留类型化DOM协调。
+云端方案生成使用标准Function Calling，本地千问保留受约束JSON协议；字幕检索采用Lucene BM25召回后模型筛选。实现边界、构建和演示验收见[比赛增强说明](docs/competition/ai-enhancements.md)。
 ## 开发规范
-
 统一的 import、分层约定和检查命令见[代码规范与检查](docs/development/code-conventions.md)。提交前运行 `gradlew check`；前端使用 `npm run check`，自动整理导入使用 `npm run lint:fix`。
-
 ## Windows 独立运行包
-
-运行包将已构建的前端与后端打进 `app/frameflow.jar`，附带 Java 21、Nginx、FFmpeg/FFprobe，不需要 IDEA、Node.js 或 Gradle。MySQL 8.x 由使用者自行安装；在 `config/database.properties` 填写连接信息后，首次启动自动建库并执行 Flyway 建表。数据库账号需具备对应建库、建表权限。分发包不会复制开发数据库、`.local`、SMTP 授权码、API Key、素材或本地模型。
-
+运行包将已构建的前端与后端打进 `app/frameflow.jar`，附带 Java 21、Nginx、FFmpeg/FFprobe，不需要 IDEA、Node.js 或 Gradle。
+MySQL 8.x 由使用者自行安装，在 `config/database.properties` 填写连接信息后，首次启动自动建库并执行 Flyway 建表。
+数据库账号需具备对应建库、建表权限。分发包不会复制开发数据库、`.local`、SMTP 授权码、API Key、素材或本地模型。
 开发者使用 `powershell -NoProfile -ExecutionPolicy Bypass -File deploy/package-windows.ps1` 生成外层 `FrameFlow-Windows` 文件夹。脚本默认先执行 `bootJar`，可用 `-JavaHome`、`-NginxDirectory`、`-FfmpegDirectory` 指定依赖来源，用 `-OutputDirectory` 指定新目录；拒绝覆盖非空目录，避免覆盖使用者配置和数据。
-
 使用者双击 `Start.cmd`，默认通过 Nginx 访问 `http://127.0.0.1:8088`，后端只监听 `127.0.0.1:18081`。用 `Stop.cmd` 停止、`Status.cmd` 查看状态、`Check.cmd` 预检查。端口和监听地址统一在 `config/launcher.json` 修改；启动时生成 `run/nginx.conf`。目录可整体搬迁，但要先停止。SMTP 在 `config/mail.properties` 配置，启用后才能按当前邮件验证流程注册。更多说明见[运行包使用说明](deploy/windows/README.txt)。
-
 ## 当前基础
-
 后端采用Controller -> Service接口 -> ServiceImpl -> Mapper。Controller通过构造器注入接口，由Spring注入实现；替换实现或使用测试替身不需要修改Controller，SQL集中在MyBatis XML中。当前仍为单模块应用，不为目录形式拆成多模块。
-
 ```text
 src/main/java/org/example/ai_media_workbench/
   controller/       请求校验、调用Service接口、VO与Result响应
@@ -45,7 +39,6 @@ deploy/nginx/       本机HTTP代理与公网HTTPS部署模板
 frontend/src/       Vue页面/组件、严格TypeScript协调器与API数据类型
 frontend/tests/     浏览器端到端测试
 ```
-
 轻量工作台不提供项目创建或分类，登录后直接使用工具。当前44个已实现接口覆盖账号/邮箱验证、个人云端凭据、素材上传检测/预览/删除、转换/压缩/裁切/静音/MP3提取/字幕烧录/同源多段拼接、明确参数或文字模型自然语言生成的版本方案、任务/取消、结果播放/下载/删除、云端字幕识别/编辑/SRT/单句校对/翻译与双语字幕，以及按字幕找片段和片段建议。缺少邮件/云端配置时关闭对应调用，不模拟成功；已有账号可登录、已有方案可确认执行、已有字幕可编辑导出和本地烧录。跨素材、拼接字幕重映射和命名草稿管理尚未实现。
 
 密码使用带随机盐的Argon2id哈希。登录令牌不是JWT，而是Spring Session JDBC管理的不透明会话ID，通过AMW_SESSION HttpOnly Cookie发送。会话及认证身份存入数据库，服务端检查会话、到期时间和账号状态，不依赖客户端自行判断令牌有效性；页面不读取令牌，也不将其保存到localStorage。退出撤销当前令牌，修改密码、退出全部设备与注销会撤销该用户全部令牌。CSRF令牌单独保护写请求，不是登录凭证，也不是JWT刷新令牌。
