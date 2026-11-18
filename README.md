@@ -8,6 +8,14 @@ Java 21 / Spring Boot 4.0.8 / Gradle Wrapper 9.7.1 / MyBatis / MySQL 8。
 
 统一的 import、分层约定和检查命令见[代码规范与检查](docs/development/code-conventions.md)。提交前运行 `gradlew check`；前端使用 `npm run check`，自动整理导入使用 `npm run lint:fix`。
 
+## Windows 独立运行包
+
+运行包将已构建的前端与后端打进 `app/frameflow.jar`，附带 Java 21、Nginx、FFmpeg/FFprobe，不需要 IDEA、Node.js 或 Gradle。MySQL 8.x 由使用者自行安装；在 `config/database.properties` 填写连接信息后，首次启动自动建库并执行 Flyway 建表。数据库账号需具备对应建库、建表权限。分发包不会复制开发数据库、`.local`、SMTP 授权码、API Key、素材或本地模型。
+
+开发者使用 `powershell -NoProfile -ExecutionPolicy Bypass -File deploy/package-windows.ps1` 生成外层 `FrameFlow-Windows` 文件夹。脚本默认先执行 `bootJar`，可用 `-JavaHome`、`-NginxDirectory`、`-FfmpegDirectory` 指定依赖来源，用 `-OutputDirectory` 指定新目录；拒绝覆盖非空目录，避免覆盖使用者配置和数据。
+
+使用者双击 `Start.cmd`，默认通过 Nginx 访问 `http://127.0.0.1:8088`，后端只监听 `127.0.0.1:18081`。用 `Stop.cmd` 停止、`Status.cmd` 查看状态、`Check.cmd` 预检查。端口和监听地址统一在 `config/launcher.json` 修改；启动时生成 `run/nginx.conf`。目录可整体搬迁，但要先停止。SMTP 在 `config/mail.properties` 配置，启用后才能按当前邮件验证流程注册。更多说明见[运行包使用说明](deploy/windows/README.txt)。
+
 ## 当前基础
 
 后端采用Controller -> Service接口 -> ServiceImpl -> Mapper。Controller通过构造器注入接口，由Spring注入实现；替换实现或使用测试替身不需要修改Controller，SQL集中在MyBatis XML中。当前仍为单模块应用，不为目录形式拆成多模块。
