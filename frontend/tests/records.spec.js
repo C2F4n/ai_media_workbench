@@ -57,9 +57,11 @@ async function fixture(page, decide) {
         return ok(plan);
       }
     }
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected records request: ' + method + ' ' + path);
   });
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   return state;
 }
 
@@ -67,8 +69,8 @@ for (const width of [1365, 390]) {
   test(`history is separate, expandable and deletable at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 }); const errors = []; page.on('pageerror', error => errors.push(error.message));
     let accept = false; const state = await fixture(page, () => accept);
-    await page.locator('#phase-export-tab').click(); await expect(page.locator('#task-section')).toBeHidden();
-    await selectTool(page, 'history'); await expect(page.locator('#workspace-tool-title')).toHaveText('处理记录');
+    await selectTool(page, 'convert'); await page.locator('#phase-export-tab').click(); await expect(page.locator('#task-section')).toBeHidden();
+    await selectTool(page, 'history'); await expect(page.locator('#dependency-title')).toHaveText('处理记录');
     await expect(page.locator('#workspace-phases')).toBeHidden(); await expect(page.locator('#phase-export')).toBeHidden();
     const rows = page.locator('#task-list > li'); await expect(rows).toHaveCount(3);
     await rows.nth(1).locator('summary').click(); await expect(rows.nth(1)).toContainText('测试失败描述');
@@ -81,7 +83,7 @@ for (const width of [1365, 390]) {
     await page.screenshot({ path: testInfo.outputPath(`history-${width}.png`), fullPage: true, animations: 'disabled' });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await rows.first().getByRole('button', { name: '打开处理结果', exact: true }).click();
-    await expect(page.locator('#workspace-tool-title')).toHaveText('提取音频'); await expect(page.locator('#phase-export')).toBeVisible();
+    await expect(page.locator('#dependency-title')).toHaveText('提取音频'); await expect(page.locator('#phase-export')).toBeVisible();
     await expect(page.locator('#workspace-file-state')).toHaveText('record-source.mp4');
     await page.reload(); await selectTool(page, 'history'); await expect(rows).toHaveCount(2); expect(errors).toEqual([]);
   });
@@ -99,7 +101,7 @@ for (const width of [1365, 390]) {
     const first = page.locator('#plan-list > li').first(); await first.locator('summary').click(); await expect(first).toContainText('m4a');
     await page.screenshot({ path: testInfo.outputPath(`plans-${width}.png`), fullPage: true, animations: 'disabled' });
     await first.getByRole('button', { name: '恢复这个方案', exact: true }).click();
-    await expect(page.locator('#workspace-tool-title')).toHaveText('提取音频'); await expect(page.locator('#phase-edit')).toBeVisible();
+    await expect(page.locator('#dependency-title')).toHaveText('提取音频'); await expect(page.locator('#phase-edit')).toBeVisible();
     await expect(page.locator('#export-audio-format')).toHaveValue('m4a');
     await selectTool(page, 'history'); await first.getByRole('button', { name: '删除保存的方案', exact: true }).click();
     await expect(page.locator('#plan-total')).toHaveText('12 个方案'); expect(state.removed).toHaveLength(1);
@@ -108,7 +110,7 @@ for (const width of [1365, 390]) {
 
   test(`settings use horizontal categories and retain drafts at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 }); await fixture(page);
-    await page.locator('#header-account').click(); await expect(page.locator('#profile-section')).toBeVisible();
+    await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click(); await expect(page.locator('#profile-section')).toBeVisible();
     await expect(page.locator('#security-section')).toBeHidden(); await expect(page.locator('#cloud-section')).toBeHidden();
     await page.locator('#account-cloud-tab').click(); await expect(page.locator('#cloud-section')).toBeVisible();
     await expect(page.locator('#cloud-deepseek .model-warning')).toContainText('理解能力有限');
@@ -143,7 +145,7 @@ test('repeated AI regeneration keeps only the current rewritten prompt', async (
 });
 
 test('a delayed task list cannot restore a deleted history entry', async ({ page }) => {
-  const state = await fixture(page); await expect(page.locator('#task-list > li')).toHaveCount(3);
+  const state = await fixture(page); await selectTool(page, 'history'); await expect(page.locator('#task-list > li')).toHaveCount(3);
   await page.clock.install(); await selectTool(page, 'history'); page.on('dialog', dialog => dialog.accept());
   let release, captured, finished, hold = true;
   const gate = new Promise(resolve => { release = resolve; });

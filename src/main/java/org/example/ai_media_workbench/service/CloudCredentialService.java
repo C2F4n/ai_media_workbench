@@ -1,9 +1,10 @@
 package org.example.ai_media_workbench.service;
 
 import java.util.List;
-import org.example.ai_media_workbench.dto.cloud.*;
-import org.example.ai_media_workbench.vo.cloud.CloudCredentialVO;
+import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest;
 import org.example.ai_media_workbench.properties.AiProperties;
+import org.example.ai_media_workbench.vo.cloud.CloudCredentialVO;
+import org.example.ai_media_workbench.vo.system.TextAiStatusVO;
 
 public interface CloudCredentialService {
     List<CloudCredentialVO> list(String userId);
@@ -13,5 +14,5 @@ public interface CloudCredentialService {
     AiProperties effective(String userId,String provider);
     boolean available(String userId,String provider);
     SaveCloudCredentialRequest.Mode source(String userId,String provider);
-    org.example.ai_media_workbench.vo.system.TextAiStatusVO textStatus(String userId);
+    TextAiStatusVO textStatus(String userId);
 }

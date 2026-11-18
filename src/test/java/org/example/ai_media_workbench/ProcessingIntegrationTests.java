@@ -1,27 +1,50 @@
 package org.example.ai_media_workbench;
 
 import jakarta.servlet.http.Cookie;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Callable;
-import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.stream.IntStream;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
-import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
 import org.example.ai_media_workbench.dto.processing.CompressionParameters;
-import org.example.ai_media_workbench.dto.processing.TrimParameters;
+import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
+import org.example.ai_media_workbench.dto.processing.ExportParameters;
 import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
 import org.example.ai_media_workbench.dto.processing.JoinClipsParameters.ClipRange;
+import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
+import org.example.ai_media_workbench.dto.processing.UpdatePlanRequest;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
 import org.example.ai_media_workbench.mapper.ProcessingMapper;
-import org.example.ai_media_workbench.service.*;
+import org.example.ai_media_workbench.service.AccountCleanupService;
+import org.example.ai_media_workbench.service.MediaProbe;
+import org.example.ai_media_workbench.service.MediaService;
+import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.OperationPlanner;
+import org.example.ai_media_workbench.service.ProcessingService;
+import org.example.ai_media_workbench.service.UserService;
 import org.example.ai_media_workbench.service.impl.TranscodeWorker;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -38,15 +61,36 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
-import tools.jackson.databind.ObjectMapper;
+import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.isNull;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {"spring.datasource.url=jdbc:h2:mem:processing_tests;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
         "app.transcode.queue-limit=2"})
@@ -70,7 +114,7 @@ class ProcessingIntegrationTests {
     @MockitoBean MediaTranscoder transcoder;
     @MockitoBean OperationPlanner planner;
     private static final String PASSWORD = "Testing-2026!";
-    private static final byte[] OUTPUT = "verified-output-bytes".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final byte[] OUTPUT = "verified-output-bytes".getBytes(StandardCharsets.UTF_8);
     private final MediaMetadataVO metadata = new MediaMetadataVO("mov,mp4", 1200, 160, 90, "h264", false, null);
     private final Map<String, String> parameters = Map.of("operation", "transcode", "outputFormat", "mp4", "resolutionPreset", "720p", "audioMode", "keep");
 
@@ -147,10 +191,10 @@ class ProcessingIntegrationTests {
         var download = mvc.perform(get("/api/outputs/" + outputId + "/download").cookie(owner.cookie()).header("Range", "bytes=0-3"))
                 .andExpect(request().asyncStarted()).andReturn();
         mvc.perform(asyncDispatch(download)).andExpect(status().isOk()).andExpect(content().bytes(OUTPUT))
-                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("filename*=")));
-        assertPreview(owner, outputId, "bytes=0-3", 206, java.util.Arrays.copyOfRange(OUTPUT, 0, 4));
-        assertPreview(owner, outputId, "bytes=-3", 206, java.util.Arrays.copyOfRange(OUTPUT, OUTPUT.length - 3, OUTPUT.length));
-        assertPreview(owner, outputId, "bytes=3-", 206, java.util.Arrays.copyOfRange(OUTPUT, 3, OUTPUT.length));
+                .andExpect(header().string("Content-Disposition", Matchers.containsString("filename*=")));
+        assertPreview(owner, outputId, "bytes=0-3", 206, Arrays.copyOfRange(OUTPUT, 0, 4));
+        assertPreview(owner, outputId, "bytes=-3", 206, Arrays.copyOfRange(OUTPUT, OUTPUT.length - 3, OUTPUT.length));
+        assertPreview(owner, outputId, "bytes=3-", 206, Arrays.copyOfRange(OUTPUT, 3, OUTPUT.length));
         assertPreview(owner, outputId, "bytes=0-1,4-5", 200, OUTPUT);
         assertPreview(owner, outputId, "not-a-range", 200, OUTPUT);
         mvc.perform(get("/api/outputs/" + outputId + "/preview").cookie(owner.cookie()).header("Range", "bytes=99999-"))
@@ -214,7 +258,7 @@ class ProcessingIntegrationTests {
         mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
                 .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId", mediaId, "instruction", "convert"))))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("code").value("AI_UNAVAILABLE"));
-        var forged = new java.util.HashMap<>(parameters); forged.put("outputPath", "outside.mp4");
+        var forged = new HashMap<>(parameters); forged.put("outputPath", "outside.mp4");
         mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
                 .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId", mediaId, "parameters", forged))))
                 .andExpect(status().isUnprocessableEntity());
@@ -249,10 +293,10 @@ class ProcessingIntegrationTests {
     @Test void concurrentExecuteRequestsShareOneTask() throws Exception {
         Browser owner = login(); String plan = create(owner, source(owner));
         try (var executor = Executors.newFixedThreadPool(4)) {
-            List<Callable<String>> calls = java.util.stream.IntStream.range(0, 4)
+            List<Callable<String>> calls = IntStream.range(0, 4)
                     .mapToObj(i -> (Callable<String>) () -> processing.execute(owner.id(), plan, 1).id()).toList();
             var results = executor.invokeAll(calls);
-            var ids = new java.util.HashSet<String>();
+            var ids = new HashSet<String>();
             for (var result : results) ids.add(result.get());
             assertThat(ids).hasSize(1);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM media_task WHERE plan_id=?", Integer.class, plan)).isEqualTo(1);
@@ -261,7 +305,7 @@ class ProcessingIntegrationTests {
 
     @Test void compressionSnapshotsAreTypedAndACompleteResultMustMeetTheRequestedLimit() throws Exception {
         Browser owner = login(); String mediaId = source(owner, 400_000);
-        var params = new java.util.HashMap<String, Object>(parameters);
+        var params = new HashMap<String, Object>(parameters);
         params.put("operation", "compress"); params.put("targetSizeBytes", 120_000);
         var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(params), null));
         assertThat(plan.parameters()).isInstanceOf(CompressionParameters.class);
@@ -277,7 +321,7 @@ class ProcessingIntegrationTests {
 
     @Test void missedCompressionTargetsNeverPublishOutputsAndCleanEncodingCaches() throws Exception {
         Browser owner = login(); String mediaId = source(owner, 400_000);
-        var params = new java.util.HashMap<String, Object>(parameters);
+        var params = new HashMap<String, Object>(parameters);
         params.put("operation", "compress"); params.put("targetSizeBytes", 120_000);
         var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(params), null));
         var task = processing.execute(owner.id(), plan.id(), 1);
@@ -295,8 +339,8 @@ class ProcessingIntegrationTests {
 
     @Test void invalidAndUnachievableTargetsAreRejectedBeforeEnqueue() throws Exception {
         Browser owner = login(); String mediaId = source(owner, 400_000);
-        for (Object target : new Object[]{0, -1, "120000", 1.5, new java.math.BigInteger("99999999999999999999999999"), 400_000, 500_000, 1000}) {
-            var params = new java.util.HashMap<String, Object>(parameters);
+        for (Object target : new Object[]{0, -1, "120000", 1.5, new BigInteger("99999999999999999999999999"), 400_000, 500_000, 1000}) {
+            var params = new HashMap<String, Object>(parameters);
             params.put("operation", "compress"); params.put("targetSizeBytes", target);
             mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token", owner.csrf())
                     .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mediaId", mediaId, "parameters", params))))
@@ -339,7 +383,7 @@ class ProcessingIntegrationTests {
         var result = mvc.perform(get(output.previewUrl()).cookie(owner.cookie()).header("Range", "bytes=0-3"))
                 .andExpect(request().asyncStarted()).andReturn();
         mvc.perform(asyncDispatch(result)).andExpect(status().isPartialContent()).andExpect(content().contentType("audio/mpeg"))
-                .andExpect(content().bytes(java.util.Arrays.copyOfRange(OUTPUT, 0, 4)));
+                .andExpect(content().bytes(Arrays.copyOfRange(OUTPUT, 0, 4)));
         var download = mvc.perform(get(output.downloadUrl()).cookie(owner.cookie())).andExpect(request().asyncStarted()).andReturn();
         mvc.perform(asyncDispatch(download)).andExpect(status().isOk()).andExpect(content().contentType("audio/mpeg")).andExpect(content().bytes(OUTPUT));
     }
@@ -433,7 +477,7 @@ class ProcessingIntegrationTests {
         doAnswer(call->{
             Files.write(call.getArgument(1,Path.class),OUTPUT);
             mediaService.delete(owner.id(),mediaId);
-            assertThat(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue();
+            assertThat(call.getArgument(4,BooleanSupplier.class).getAsBoolean()).isTrue();
             throw new BusinessException(ErrorCode.TASK_CANCELLED);
         }).when(transcoder).convert(any(),any(),any(),any(),any());
         worker.runOne();
@@ -442,7 +486,7 @@ class ProcessingIntegrationTests {
         assertThat(jdbc.queryForObject("SELECT status FROM media_task WHERE id=?",String.class,task.id())).isEqualTo("CANCELLED");
         try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isEqualTo(1); }
         assertThat(jdbc.queryForObject("SELECT next_attempt_at FROM account_cleanup_job WHERE user_id=?",LocalDateTime.class,owner.id()))
-                .isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(6));
+                .isAfter(LocalDateTime.now(ZoneOffset.UTC).plusMinutes(6));
         jdbc.update("UPDATE account_cleanup_job SET next_attempt_at=? WHERE user_id=?",LocalDateTime.now().minusDays(1),owner.id());
         cleanup.runPending();
         try(var files=Files.list(root.resolve(owner.id()))) { assertThat(files.count()).isZero(); }
@@ -495,7 +539,7 @@ class ProcessingIntegrationTests {
         assertThat(result.status().name()).isEqualTo("SUCCEEDED");
         var output=result.outputs().getFirst(); assertThat(output.filename()).endsWith("-trimmed.mp4");
         assertThat(output.metadata().durationMs()).isEqualTo(700);
-        assertPreview(owner,output.id(),"bytes=0-3",206,java.util.Arrays.copyOfRange(OUTPUT,0,4));
+        assertPreview(owner,output.id(),"bytes=0-3",206,Arrays.copyOfRange(OUTPUT,0,4));
         mvc.perform(get("/api/outputs/"+output.id()+"/download").cookie(other.cookie())).andExpect(status().isNotFound());
         assertThat(mediaService.get(owner.id(),mediaId).metadata().durationMs()).isEqualTo(1200);
     }
@@ -503,8 +547,8 @@ class ProcessingIntegrationTests {
     @Test void trimRejectsInvalidNumericRangesExtraFieldsAndMissingCodecsBeforeEnqueueing() throws Exception {
         Browser owner=login(); String mediaId=source(owner);
         for(Object[] values:List.of(new Object[]{-1,800},new Object[]{100,500},new Object[]{700,700},new Object[]{900,800},
-                new Object[]{0,1201},new Object[]{0.5,800},new Object[]{"0",800},new Object[]{0,new java.math.BigInteger("9223372036854775808")})) {
-            var parameters=new java.util.HashMap<String,Object>();
+                new Object[]{0,1201},new Object[]{0.5,800},new Object[]{"0",800},new Object[]{0,new BigInteger("9223372036854775808")})) {
+            var parameters=new HashMap<String,Object>();
             parameters.put("operation","trim"); parameters.put("outputFormat","mp4"); parameters.put("audioMode","keep");
             parameters.put("startMs",values[0]); parameters.put("endMs",values[1]);
             mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
@@ -512,7 +556,7 @@ class ProcessingIntegrationTests {
                     .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("INVALID_PARAMETERS"));
         }
         var extra=json.valueToTree(trimInput(mediaId,0,500));
-        ((tools.jackson.databind.node.ObjectNode)extra.path("parameters")).put("resolutionPreset","720p");
+        ((ObjectNode)extra.path("parameters")).put("resolutionPreset","720p");
         mvc.perform(post("/api/operation-plans").cookie(owner.cookie()).header("X-CSRF-Token",owner.csrf())
                 .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(extra))).andExpect(status().isUnprocessableEntity());
         when(transcoder.isAvailable()).thenReturn(false);
@@ -544,7 +588,7 @@ class ProcessingIntegrationTests {
         var removed=processing.execute(owner.id(),processing.create(owner.id(),input).id(),1);
         doAnswer(call->{
             Files.write(call.getArgument(1,Path.class),OUTPUT); mediaService.delete(owner.id(),mediaId);
-            assertThat(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue();
+            assertThat(call.getArgument(4,BooleanSupplier.class).getAsBoolean()).isTrue();
             return null;
         }).when(transcoder).convert(any(),any(),any(),any(),any());
         worker.runOne(); assertThat(mapper.taskOutputs(owner.id(),removed.id())).isEmpty();
@@ -570,7 +614,7 @@ class ProcessingIntegrationTests {
         var output = result.outputs().getFirst(); assertThat(output.filename()).endsWith("-muted.mp4");
         assertThat(output.metadata().hasAudio()).isFalse(); assertThat(output.metadata().audioCodec()).isNull();
         assertThat(output.metadata().durationMs()).isEqualTo(1200);
-        assertPreview(owner, output.id(), "bytes=0-3", 206, java.util.Arrays.copyOfRange(OUTPUT, 0, 4));
+        assertPreview(owner, output.id(), "bytes=0-3", 206, Arrays.copyOfRange(OUTPUT, 0, 4));
         mvc.perform(get("/api/outputs/" + output.id() + "/download").cookie(other.cookie())).andExpect(status().isNotFound());
         assertThat(mediaService.get(owner.id(), mediaId).metadata().hasAudio()).isTrue();
         assertThat(mapper.countTasks(owner.id(), null)).isEqualTo(1);
@@ -618,7 +662,7 @@ class ProcessingIntegrationTests {
         var removed = processing.execute(owner.id(), processing.create(owner.id(), input).id(), 1);
         doAnswer(call -> {
             Files.write(call.getArgument(1, Path.class), OUTPUT); mediaService.delete(owner.id(), mediaId);
-            assertThat(call.getArgument(4, java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue(); return null;
+            assertThat(call.getArgument(4, BooleanSupplier.class).getAsBoolean()).isTrue(); return null;
         }).when(transcoder).convert(any(), any(), any(), any(), any());
         worker.runOne(); assertThat(mapper.taskOutputs(owner.id(), removed.id())).isEmpty();
         assertThat(mapper.activeCount()).isZero();
@@ -628,7 +672,7 @@ class ProcessingIntegrationTests {
         Browser owner=login(); String mediaId=source(owner);
         when(planner.isAvailable(anyString())).thenReturn(true);
         when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
-            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             var context=call.getArgument(1,OperationPlanner.Context.class);
             assertThat(context.metadata().durationMs()).isEqualTo(1200);
             assertThat(context.supportedOperations()).contains("trim","compress","mute").doesNotContain("extract_audio");
@@ -644,7 +688,7 @@ class ProcessingIntegrationTests {
         var first=processing.execute(owner.id(),planId,1); var repeated=processing.execute(owner.id(),planId,1);
         assertThat(repeated.id()).isEqualTo(first.id());
         assertThat(first.parameters()).isInstanceOf(TrimParameters.class);
-        assertThatThrownBy(()->processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"改成静音")))
+        assertThatThrownBy(()->processing.update(owner.id(),planId,new UpdatePlanRequest(1,null,"改成静音")))
                 .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.RESOURCE_CONFLICT));
         verify(planner,times(1)).propose(anyString(),any(),anyString());
     }
@@ -673,7 +717,7 @@ class ProcessingIntegrationTests {
         var task = processing.execute(owner.id(), manual.id(), 1);
         assertThat(processing.execute(owner.id(), manual.id(), 1).id()).isEqualTo(task.id());
         doAnswer(call -> {
-            assertThat(call.getArgument(4, org.example.ai_media_workbench.dto.processing.WorkflowParameters.class)).isEqualTo(manual.parameters());
+            assertThat(call.getArgument(4, WorkflowParameters.class)).isEqualTo(manual.parameters());
             Files.write(call.getArgument(1, Path.class), OUTPUT); Files.write(call.getArgument(2, Path.class), OUTPUT);
             Files.writeString(Path.of(call.getArgument(1, Path.class) + ".workflow-0.mkv"), "private-cache"); return null;
         }).when(transcoder).workflow(any(), any(), any(), any(), any(), any());
@@ -730,8 +774,8 @@ class ProcessingIntegrationTests {
         jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",10000,640,360,"h264",true,"aac")),mediaId);
         when(planner.isAvailable(anyString())).thenReturn(true);
         when(transcoder.exportFormats()).thenReturn(List.of("mp4","webm","mp3")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264","vp9"));
-        var first=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","360p",null,null,"mute",0L,5000L,120000L,false);
-        var edited=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","480p",null,null,"mute",0L,5000L,120000L,false);
+        var first=new ExportParameters("export","mp4","h264","360p",null,null,"mute",0L,5000L,120000L,false);
+        var edited=new ExportParameters("export","mp4","h264","480p",null,null,"mute",0L,5000L,120000L,false);
         when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
             var context=call.getArgument(1,OperationPlanner.Context.class);
             assertThat(context.supportedOperations()).contains("export","join_clips");
@@ -742,11 +786,11 @@ class ProcessingIntegrationTests {
         });
         var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"保留前5秒，压缩至360p，静音并压到120000字节，发回来"));
         assertThat(plan.parameters()).isEqualTo(first); assertThat(mapper.activeCount()).isZero();
-        var updated=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"保留前5秒，转480p，静音并压到120000字节"));
+        var updated=processing.update(owner.id(),plan.id(),new UpdatePlanRequest(1,null,"保留前5秒，转480p，静音并压到120000字节"));
         assertThat(updated.parameters()).isEqualTo(edited); assertThat(updated.version()).isEqualTo(2); assertThat(mapper.activeCount()).isZero();
         var task=processing.execute(owner.id(),plan.id(),2); assertThat(processing.execute(owner.id(),plan.id(),2).id()).isEqualTo(task.id());
         when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov,mp4",5000,640,360,"h264",false,null));
-        doAnswer(call->{ assertThat(call.getArgument(4,org.example.ai_media_workbench.dto.processing.ExportParameters.class)).isEqualTo(edited); Files.write(call.getArgument(1,Path.class),OUTPUT); return null; })
+        doAnswer(call->{ assertThat(call.getArgument(4,ExportParameters.class)).isEqualTo(edited); Files.write(call.getArgument(1,Path.class),OUTPUT); return null; })
                 .when(transcoder).export(any(),any(),isNull(),any(),any(),any());
         worker.runOne(); var done=processing.task(owner.id(),task.id()); assertThat(done.status().name()).isEqualTo("SUCCEEDED");
         assertThat(done.outputs()).hasSize(1); assertThat(done.outputs().getFirst().metadata().hasAudio()).isFalse();
@@ -778,7 +822,7 @@ class ProcessingIntegrationTests {
             var context=call.getArgument(1,OperationPlanner.Context.class); assertThat(context.previousInstruction()).isNull(); assertThat(context.previousParameters()).isNull();
             return new OperationPlanner.Proposal(json.valueToTree(new JoinClipsParameters("join_clips","mp4",List.of(new ClipRange(0,5000),new ClipRange(15000,20000)),"keep")),List.of());
         });
-        var ready=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,replacement));
+        var ready=processing.update(owner.id(),plan.id(),new UpdatePlanRequest(1,null,replacement));
         assertThat(ready.version()).isEqualTo(2); assertThat(ready.status().name()).isEqualTo("READY");
         assertThat(processing.plan(owner.id(),plan.id()).instruction()).isEqualTo(replacement);
         assertThat(mapper.activeCount()).isZero();
@@ -806,9 +850,9 @@ class ProcessingIntegrationTests {
         var owner=login(); String mediaId=source(owner); when(planner.isAvailable(anyString())).thenReturn(true);
         when(planner.propose(anyString(),any(),anyString())).thenReturn(new OperationPlanner.Proposal(null,List.of(OperationPlanner.Question.TRIM_RANGE_REQUIRED)));
         var plan=processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"a".repeat(1990)));
-        var updated=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"b".repeat(20)));
+        var updated=processing.update(owner.id(),plan.id(),new UpdatePlanRequest(1,null,"b".repeat(20)));
         assertThat(updated.instruction()).isEqualTo("b".repeat(20));
-        assertThatThrownBy(()->processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(2,null,"c".repeat(2001))))
+        assertThatThrownBy(()->processing.update(owner.id(),plan.id(),new UpdatePlanRequest(2,null,"c".repeat(2001))))
                 .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.INVALID_PARAMETERS));
         verify(planner,times(2)).propose(anyString(),any(),anyString()); assertThat(processing.plan(owner.id(),plan.id()).version()).isEqualTo(2);
     }
@@ -822,7 +866,7 @@ class ProcessingIntegrationTests {
         assertThat(plan.questions().getFirst().code()).isEqualTo("TARGET_SIZE_REQUIRED");
         assertThat(processing.plan(owner.id(),plan.id()).questions()).isEqualTo(plan.questions());
         assertThatThrownBy(()->processing.execute(owner.id(),plan.id(),1)).isInstanceOf(BusinessException.class);
-        var completed=processing.update(owner.id(),plan.id(),new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,json.valueToTree(new org.example.ai_media_workbench.dto.processing.MuteParameters("mute","mp4","source")),null));
+        var completed=processing.update(owner.id(),plan.id(),new UpdatePlanRequest(1,json.valueToTree(new MuteParameters("mute","mp4","source")),null));
         assertThat(completed.version()).isEqualTo(2); assertThat(completed.status().name()).isEqualTo("READY");
         assertThat(completed.instruction()).isNull(); assertThat(completed.questions()).isEmpty();
         verify(planner,times(1)).propose(anyString(),any(),anyString());
@@ -833,11 +877,11 @@ class ProcessingIntegrationTests {
         when(planner.isAvailable(anyString())).thenReturn(true);
         when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
             assertThat(call.getArgument(1,OperationPlanner.Context.class).previousParameters()).isNull();
-            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-            processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,json.valueToTree(new org.example.ai_media_workbench.dto.processing.MuteParameters("mute","mp4","source")),null));
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            processing.update(owner.id(),planId,new UpdatePlanRequest(1,json.valueToTree(new MuteParameters("mute","mp4","source")),null));
             return new OperationPlanner.Proposal(json.valueToTree(new TrimParameters("trim","mp4",0L,1000L,"keep")),List.of());
         });
-        assertThatThrownBy(()->processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"改成前1秒")))
+        assertThatThrownBy(()->processing.update(owner.id(),planId,new UpdatePlanRequest(1,null,"改成前1秒")))
                 .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.PLAN_VERSION_CONFLICT));
         var preserved=processing.plan(owner.id(),planId); assertThat(preserved.version()).isEqualTo(2);
         assertThat(preserved.parameters().operation()).isEqualTo("mute");
@@ -847,11 +891,11 @@ class ProcessingIntegrationTests {
         Browser owner=login(); String mediaId=source(owner);
         when(planner.isAvailable(anyString())).thenReturn(true);
         when(planner.propose(anyString(),any(),anyString())).thenAnswer(call->{
-            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             try(var executor=Executors.newSingleThreadExecutor()) {
-                executor.submit(()->mediaService.delete(owner.id(),mediaId)).get(2,java.util.concurrent.TimeUnit.SECONDS);
+                executor.submit(()->mediaService.delete(owner.id(),mediaId)).get(2,TimeUnit.SECONDS);
             }
-            return new OperationPlanner.Proposal(json.valueToTree(new org.example.ai_media_workbench.dto.processing.MuteParameters("mute","mp4","source")),List.of());
+            return new OperationPlanner.Proposal(json.valueToTree(new MuteParameters("mute","mp4","source")),List.of());
         });
         assertThatThrownBy(()->processing.create(owner.id(),new CreatePlanRequest(UUID.fromString(mediaId),null,"移除声音")))
                 .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.RESOURCE_NOT_FOUND));
@@ -883,7 +927,7 @@ class ProcessingIntegrationTests {
         Browser owner=login(); String mediaId=source(owner); String planId=create(owner,mediaId);
         when(planner.isAvailable(anyString())).thenReturn(true);
         when(planner.propose(anyString(),any(),anyString())).thenThrow(new BusinessException(ErrorCode.AI_PLAN_FAILED));
-        assertThatThrownBy(()->processing.update(owner.id(),planId,new org.example.ai_media_workbench.dto.processing.UpdatePlanRequest(1,null,"test")))
+        assertThatThrownBy(()->processing.update(owner.id(),planId,new UpdatePlanRequest(1,null,"test")))
                 .isInstanceOf(BusinessException.class);
         assertThat(processing.plan(owner.id(),planId).version()).isEqualTo(1);
         assertThat(processing.plan(owner.id(),planId).parameters().operation()).isEqualTo("transcode");
@@ -892,7 +936,7 @@ class ProcessingIntegrationTests {
 
     private CreatePlanRequest muteInput(String mediaId, String resolution) {
         return new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(
-                new org.example.ai_media_workbench.dto.processing.MuteParameters("mute", "mp4", resolution)), null);
+                new MuteParameters("mute", "mp4", resolution)), null);
     }
 
     @Test void clipJoinFreezesOrderedParametersReusesOneTaskAndCleansPrivatePartsBeforePublishing() throws Exception {
@@ -904,7 +948,7 @@ class ProcessingIntegrationTests {
         String taskId=data(execute(owner,id,1).andExpect(status().isAccepted()).andReturn()).path("id").asText();
         execute(owner,id,1).andExpect(jsonPath("data.id").value(taskId)); execute(other,id,1).andExpect(status().isNotFound());
         doAnswer(call->{
-            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             Path target=call.getArgument(1); Files.write(target,OUTPUT);
             Files.writeString(Path.of(target+".join-0.mp4"),"private part"); Files.writeString(Path.of(target+".join.ffconcat"),"private manifest"); return null;
         }).when(transcoder).convert(any(),any(),any(),any(),any());
@@ -920,10 +964,10 @@ class ProcessingIntegrationTests {
     @Test void invalidJoinCountsRangesTotalsAndUnexpectedJsonAreRejectedWithoutEnqueuing() throws Exception {
         var owner=login(); String id=source(owner);
         for(var clips:List.of(List.<ClipRange>of(),List.of(new ClipRange(0,499)),List.of(new ClipRange(-1,600)),List.of(new ClipRange(0,1201)),
-                List.of(new ClipRange(Long.MIN_VALUE,Long.MAX_VALUE)),java.util.Collections.nCopies(21,new ClipRange(0,600))))
+                List.of(new ClipRange(Long.MIN_VALUE,Long.MAX_VALUE)),Collections.nCopies(21,new ClipRange(0,600))))
             assertThatThrownBy(()->processing.create(owner.id(),joinInput(id,clips))).isInstanceOf(BusinessException.class);
         jdbc.update("UPDATE media SET metadata_json=? WHERE id=?",json.writeValueAsString(new MediaMetadataVO("mov",900000,160,90,"h264",false,null)),id);
-        assertThatThrownBy(()->processing.create(owner.id(),joinInput(id,java.util.Collections.nCopies(20,new ClipRange(0,60000)))))
+        assertThatThrownBy(()->processing.create(owner.id(),joinInput(id,Collections.nCopies(20,new ClipRange(0,60000)))))
                 .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.INVALID_PARAMETERS));
         var valid=joinInput(id,List.of(new ClipRange(0,600)));
         for(String clip:List.of("{\"startMs\":0.5,\"endMs\":600}","{\"startMs\":\"0\",\"endMs\":600}","{\"startMs\":0,\"endMs\":600,\"path\":\"outside.mp4\"}")) {
@@ -945,7 +989,7 @@ class ProcessingIntegrationTests {
         var cancelled=processing.execute(owner.id(),second.id(),1);
         doAnswer(call->{
             Path target=call.getArgument(1); Files.write(target,OUTPUT); Files.writeString(Path.of(target+".join-0.mp4"),"part");
-            processing.cancel(owner.id(),cancelled.id()); assertThat(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()).isTrue(); return null;
+            processing.cancel(owner.id(),cancelled.id()); assertThat(call.getArgument(4,BooleanSupplier.class).getAsBoolean()).isTrue(); return null;
         }).when(transcoder).convert(any(),any(),any(),any(),any());
         worker.runOne(); assertThat(processing.task(owner.id(),cancelled.id()).status().name()).isEqualTo("CANCELLED");
         var third=processing.create(owner.id(),joinInput(id,List.of(new ClipRange(0,600)))); var deleted=processing.execute(owner.id(),third.id(),1);
@@ -974,7 +1018,7 @@ class ProcessingIntegrationTests {
     @Test void compositeExportPublishesBothFilesAtomicallyWithOwnershipAndDownloadOnlyForHevc() throws Exception {
         var owner = login(); var other = login(); String mediaId = audioSource(owner);
         when(transcoder.exportFormats()).thenReturn(List.of("mp4", "webm", "flac")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264", "hevc", "vp9"));
-        var p = new org.example.ai_media_workbench.dto.processing.ExportParameters("export", "mp4", "hevc", "source", null, null, "mute", 200L, 1000L, null, true);
+        var p = new ExportParameters("export", "mp4", "hevc", "source", null, null, "mute", 200L, 1000L, null, true);
         var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(p), null));
         var task = processing.execute(owner.id(), plan.id(), 1);
         when(probe.inspect(any())).thenReturn(new MediaMetadataVO("mov,mp4", 800, 160, 90, "hevc", false, null));
@@ -994,7 +1038,7 @@ class ProcessingIntegrationTests {
     @Test void failedOrCancelledCompanionExportPublishesNothingAndRemovesAllFiles() throws Exception {
         var owner = login(); String mediaId = audioSource(owner);
         when(transcoder.exportFormats()).thenReturn(List.of("mp4")); when(transcoder.exportVideoCodecs()).thenReturn(List.of("h264"));
-        var p = new org.example.ai_media_workbench.dto.processing.ExportParameters("export", "mp4", "h264", "source", null, null, "mute", null, null, null, true);
+        var p = new ExportParameters("export", "mp4", "h264", "source", null, null, "mute", null, null, null, true);
         var plan = processing.create(owner.id(), new CreatePlanRequest(UUID.fromString(mediaId), json.valueToTree(p), null));
         var first = processing.execute(owner.id(), plan.id(), 1);
         doAnswer(call -> { Files.write(call.getArgument(1, Path.class), OUTPUT); Files.write(call.getArgument(2, Path.class), OUTPUT); throw new BusinessException(ErrorCode.TRANSCODE_FAILED); })
@@ -1013,22 +1057,22 @@ class ProcessingIntegrationTests {
         var owner=login(); String firstSource=source(owner),secondSource=source(owner);
         var first=processing.execute(owner.id(),create(owner,firstSource),1);
         var second=processing.execute(owner.id(),create(owner,secondSource),1);
-        var entered=new java.util.concurrent.CountDownLatch(2); var release=new java.util.concurrent.CountDownLatch(1);
+        var entered=new CountDownLatch(2); var release=new CountDownLatch(1);
         doAnswer(call->{
-            entered.countDown(); assertThat(release.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            if(call.getArgument(4,java.util.function.BooleanSupplier.class).getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+            entered.countDown(); assertThat(release.await(5,TimeUnit.SECONDS)).isTrue();
+            if(call.getArgument(4,BooleanSupplier.class).getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);
             Files.write(call.getArgument(1,Path.class),OUTPUT); return null;
         }).when(transcoder).convert(any(),any(),any(),any(),any());
         try(var executor=Executors.newVirtualThreadPerTaskExecutor()) {
             var a=executor.submit(()->worker.runOne()); var b=executor.submit(()->worker.runOne());
             try {
-                assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue();
                 assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM media_task WHERE user_id=? AND status='RUNNING'",Integer.class,owner.id())).isEqualTo(2);
                 var download=mvc.perform(get("/api/media/"+firstSource+"/preview").cookie(owner.cookie())).andExpect(request().asyncStarted()).andReturn();
                 download.getAsyncResult(2000); mvc.perform(asyncDispatch(download)).andExpect(status().isOk());
                 processing.cancel(owner.id(),first.id());
             } finally { release.countDown(); }
-            assertThat(a.get(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue(); assertThat(b.get(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(a.get(3,TimeUnit.SECONDS)).isTrue(); assertThat(b.get(3,TimeUnit.SECONDS)).isTrue();
         }
         assertThat(processing.task(owner.id(),first.id()).status().name()).isEqualTo("CANCELLED");
         assertThat(processing.task(owner.id(),second.id()).status().name()).isEqualTo("SUCCEEDED");
@@ -1038,14 +1082,14 @@ class ProcessingIntegrationTests {
 
     @Test void concurrentClaimsNeverExecuteTheSameTaskTwice() throws Exception {
         var owner=login(); var task=processing.execute(owner.id(),create(owner,source(owner)),1);
-        var entered=new java.util.concurrent.CountDownLatch(1); var release=new java.util.concurrent.CountDownLatch(1);
-        doAnswer(call->{ entered.countDown(); release.await(5,java.util.concurrent.TimeUnit.SECONDS); Files.write(call.getArgument(1,Path.class),OUTPUT); return null; })
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        doAnswer(call->{ entered.countDown(); release.await(5,TimeUnit.SECONDS); Files.write(call.getArgument(1,Path.class),OUTPUT); return null; })
                 .when(transcoder).convert(any(),any(),any(),any(),any());
         try(var executor=Executors.newVirtualThreadPerTaskExecutor()) {
             var a=executor.submit(()->worker.runOne()); var b=executor.submit(()->worker.runOne());
-            try { assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue(); }
+            try { assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue(); }
             finally { release.countDown(); }
-            assertThat(List.of(a.get(3,java.util.concurrent.TimeUnit.SECONDS),b.get(3,java.util.concurrent.TimeUnit.SECONDS))).containsExactlyInAnyOrder(true,false);
+            assertThat(List.of(a.get(3,TimeUnit.SECONDS),b.get(3,TimeUnit.SECONDS))).containsExactlyInAnyOrder(true,false);
         }
         verify(transcoder,times(1)).convert(any(),any(),any(),any(),any());
         assertThat(mapper.taskOutputs(owner.id(),task.id())).hasSize(1);
@@ -1053,21 +1097,21 @@ class ProcessingIntegrationTests {
 
     @Test void recoveryDoesNotDeleteFilesBelongingToAnExecutionStillRunningInThisProcess() throws Exception {
         var owner=login(); var task=processing.execute(owner.id(),create(owner,source(owner)),1);
-        var entered=new java.util.concurrent.CountDownLatch(1); var release=new java.util.concurrent.CountDownLatch(1);
-        var file=new java.util.concurrent.atomic.AtomicReference<Path>();
+        var entered=new CountDownLatch(1); var release=new CountDownLatch(1);
+        var file=new AtomicReference<Path>();
         doAnswer(call->{
             Path target=call.getArgument(1,Path.class); Files.write(target,OUTPUT); file.set(target);
             jdbc.update("UPDATE media_task SET lease_started_at=? WHERE id=?",LocalDateTime.now().minusDays(1),task.id());
-            entered.countDown(); release.await(5,java.util.concurrent.TimeUnit.SECONDS); return null;
+            entered.countDown(); release.await(5,TimeUnit.SECONDS); return null;
         }).when(transcoder).convert(any(),any(),any(),any(),any());
         try(var executor=Executors.newVirtualThreadPerTaskExecutor()) {
             var running=executor.submit(()->worker.runOne());
             try {
-                assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue(); worker.recoverExpired();
+                assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue(); worker.recoverExpired();
                 assertThat(Files.exists(file.get())).isTrue(); assertThat(processing.task(owner.id(),task.id()).status().name()).isEqualTo("RUNNING");
                 jdbc.update("UPDATE media_task SET lease_started_at=? WHERE id=?",LocalDateTime.now(),task.id());
             } finally { release.countDown(); }
-            assertThat(running.get(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(running.get(3,TimeUnit.SECONDS)).isTrue();
         }
         assertThat(processing.task(owner.id(),task.id()).status().name()).isEqualTo("SUCCEEDED");
     }
@@ -1088,7 +1132,7 @@ class ProcessingIntegrationTests {
                 .andExpect(request().asyncStarted()).andReturn();
         mvc.perform(asyncDispatch(result)).andExpect(status().is(status)).andExpect(content().bytes(bytes));
     }
-    private org.springframework.test.web.servlet.ResultActions execute(Browser user, String plan, int version) throws Exception {
+    private ResultActions execute(Browser user, String plan, int version) throws Exception {
         return mvc.perform(post("/api/operation-plans/" + plan + "/execute").cookie(user.cookie()).header("X-CSRF-Token", user.csrf())
                 .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("expectedVersion", version))));
     }

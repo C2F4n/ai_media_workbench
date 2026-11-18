@@ -1,8 +1,11 @@
 package org.example.ai_media_workbench.controller;
 
+import jakarta.servlet.http.HttpServletResponse;
 import org.example.ai_media_workbench.common.result.Result;
+import org.example.ai_media_workbench.common.security.AccountPrincipal;
 import org.example.ai_media_workbench.service.SystemService;
 import org.example.ai_media_workbench.vo.system.CapabilitiesVO;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -21,8 +24,8 @@ public class SystemController {
 
     /** 获取当前可用功能及上传限制。 */
     @GetMapping("/capabilities")
-    public Result<CapabilitiesVO> capabilities(@org.springframework.security.core.annotation.AuthenticationPrincipal org.example.ai_media_workbench.common.security.AccountPrincipal user,
-                                              jakarta.servlet.http.HttpServletResponse response) {
+    public Result<CapabilitiesVO> capabilities(@AuthenticationPrincipal AccountPrincipal user,
+                                              HttpServletResponse response) {
         response.setHeader("Cache-Control","no-store");
         return Result.success(systemService.getCapabilities(user==null ? null : user.userId()));
     }

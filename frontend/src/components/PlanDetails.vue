@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+
 import { planRows } from '../plan-format';
 import type { PlanDetails } from '../types';
 const props = defineProps<{ plan: PlanDetails | null }>();

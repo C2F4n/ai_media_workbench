@@ -42,6 +42,9 @@ async function fixture(page, savedText = {}, decide) {
       return ok(entries.find((entry) => entry.provider === provider));
     }
     if (['/api/media', '/api/tasks'].includes(url.pathname)) return ok({ items: [], total: 0, page: 1, pageSize: 10 });
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + request.method() + ' ' + url.pathname);
   });
   await page.goto('http://workbench.test/');

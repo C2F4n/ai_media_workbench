@@ -1,30 +1,36 @@
 package org.example.ai_media_workbench;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
+import javax.imageio.ImageIO;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
-import org.example.ai_media_workbench.dto.processing.TranscodeParameters;
-import org.example.ai_media_workbench.dto.processing.CompressionParameters;
-import org.example.ai_media_workbench.dto.processing.OperationParameters;
-import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
-import org.example.ai_media_workbench.dto.processing.TrimParameters;
-import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
+import org.example.ai_media_workbench.dto.processing.CompressionParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
 import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
 import org.example.ai_media_workbench.dto.processing.JoinClipsParameters.ClipRange;
+import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.TranscodeParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
 import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
-import org.example.ai_media_workbench.service.impl.AssSubtitles;
-import org.example.ai_media_workbench.service.impl.CompressionBudget;
 import org.example.ai_media_workbench.properties.MediaToolProperties;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.service.impl.AssSubtitles;
+import org.example.ai_media_workbench.service.impl.CompressionBudget;
 import org.example.ai_media_workbench.service.impl.FfmpegMediaTranscoder;
 import org.example.ai_media_workbench.service.impl.FfprobeMediaProbe;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
@@ -38,7 +44,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockConstruction;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class FfmpegMediaTranscoderTests {
     @TempDir Path root;
@@ -54,7 +66,7 @@ class FfmpegMediaTranscoderTests {
         try {
             run("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x800:rate=5",
                     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "0.6", "-c:v", "mpeg4", "-c:a", "pcm_s16le", "-y", source.toString());
-        } catch (java.io.IOException missing) { assumeTrue(false, "Install ffmpeg for native conversion checks"); return; }
+        } catch (IOException missing) { assumeTrue(false, "Install ffmpeg for native conversion checks"); return; }
         var converter = new FfmpegMediaTranscoder(properties(Duration.ofSeconds(20)));
         assertThat(converter.isAvailable()).isTrue();
         byte[] original = Files.readAllBytes(source);
@@ -82,9 +94,9 @@ class FfmpegMediaTranscoderTests {
         run("ffmpeg","-v","error","-f","lavfi","-i","color=c=black:s=640x360:r=20:d=3",
                 "-f","lavfi","-i","sine=frequency=440:sample_rate=48000:duration=3","-c:v","libx264","-c:a","aac","-pix_fmt","yuv420p","-y",source.toString());
         byte[] original=Files.readAllBytes(source);
-        var segment=new TranscriptSegment(java.util.UUID.randomUUID(),1000L,2000L,"中文测试 {\\alpha&HFF&}可见字幕\\N原文\n第二行");
+        var segment=new TranscriptSegment(UUID.randomUUID(),1000L,2000L,"中文测试 {\\alpha&HFF&}可见字幕\\N原文\n第二行");
         Files.writeString(ass,AssSubtitles.render(List.of(segment),640,360),StandardCharsets.UTF_8);
-        var parameters=new BurnSubtitleParameters("burn_subtitles","mp4",java.util.UUID.randomUUID(),1,"source","keep");
+        var parameters=new BurnSubtitleParameters("burn_subtitles","mp4",UUID.randomUUID(),1,"source","keep");
         converter.burnSubtitles(source,output,probe.inspect(source),parameters,ass,()->false);
         var actual=probe.inspect(output); assertThat(actual.videoCodec()).isEqualTo("h264"); assertThat(actual.audioCodec()).isEqualTo("aac");
         assertThat(actual.width()).isEqualTo(640); assertThat(actual.height()).isEqualTo(360);
@@ -98,7 +110,7 @@ class FfmpegMediaTranscoderTests {
     }
 
     @Test void subtitleSerializationPreservesPlainTextAndEscapesOverrideTagsAndControls() {
-        var segment=new TranscriptSegment(java.util.UUID.randomUUID(),101L,109L,"{\\p1}\\N<b>文字</b>\n下一行\t尾部");
+        var segment=new TranscriptSegment(UUID.randomUUID(),101L,109L,"{\\p1}\\N<b>文字</b>\n下一行\t尾部");
         var ass=AssSubtitles.render(List.of(segment),640,360);
         assertThat(ass).contains("0:00:00.10,0:00:00.11","\\{\\\u2060p1}\\\u2060N<b>文字</b>\\N下一行    尾部");
         assertThat(ass.lines().filter(line->line.startsWith("Dialogue:")).count()).isEqualTo(1);
@@ -107,7 +119,7 @@ class FfmpegMediaTranscoderTests {
     private long brightPixels(Path video,double seconds) throws Exception {
         Path image=root.resolve("frame-"+seconds+".png");
         run("ffmpeg","-v","error","-ss",Double.toString(seconds),"-i",video.toString(),"-frames:v","1","-y",image.toString());
-        var pixels=javax.imageio.ImageIO.read(image.toFile()); long bright=0;
+        var pixels=ImageIO.read(image.toFile()); long bright=0;
         for(int y=0;y<pixels.getHeight();y++) for(int x=0;x<pixels.getWidth();x++) if((pixels.getRGB(x,y)&255)>100) bright++;
         return bright;
     }
@@ -127,7 +139,7 @@ class FfmpegMediaTranscoderTests {
             assertThat(actual.durationMs()).isBetween(2750L,3250L); assertThat(actual.hasAudio()).isEqualTo(input.equals(source));
             for(double seconds:new double[]{0.5,1.5,2.5}) {
                 Path image=root.resolve("join-frame-"+seconds+".png"); run("ffmpeg","-v","error","-ss",Double.toString(seconds),"-i",output.toString(),"-frames:v","1","-y",image.toString());
-                int pixel=javax.imageio.ImageIO.read(image.toFile()).getRGB(80,45);
+                int pixel=ImageIO.read(image.toFile()).getRGB(80,45);
                 assertThat(seconds==1.5 ? (pixel>>16)&255 : pixel&255).isGreaterThan(150);
             }
             if(actual.hasAudio()) {
@@ -136,7 +148,7 @@ class FfmpegMediaTranscoderTests {
                 assertThat(audioRms(output,2.2)).isLessThan(0.005);
             }
             assertThat(Files.readAllBytes(input)).isEqualTo(original);
-            for(String suffix:org.example.ai_media_workbench.common.storage.LocalMediaStorage.JOIN_SUFFIXES) Files.deleteIfExists(Path.of(output+suffix));
+            for(String suffix:LocalMediaStorage.JOIN_SUFFIXES) Files.deleteIfExists(Path.of(output+suffix));
         }
         var json=new ObjectMapper(); assertThat(json.readValue(json.writeValueAsString(parameters),OperationParameters.class)).isEqualTo(parameters);
         assertThat(json.readTree(json.writeValueAsString(parameters)).size()).isEqualTo(4);
@@ -145,7 +157,7 @@ class FfmpegMediaTranscoderTests {
     private double audioRms(Path input,double start) throws Exception {
         Path raw=root.resolve("join-audio-"+start+".raw");
         run("ffmpeg","-v","error","-ss",Double.toString(start),"-i",input.toString(),"-t","0.2","-vn","-ac","1","-ar","48000","-f","f32le","-y",raw.toString());
-        var samples=java.nio.ByteBuffer.wrap(Files.readAllBytes(raw)).order(java.nio.ByteOrder.LITTLE_ENDIAN); double sum=0; int count=0;
+        var samples=ByteBuffer.wrap(Files.readAllBytes(raw)).order(ByteOrder.LITTLE_ENDIAN); double sum=0; int count=0;
         while(samples.hasRemaining()) { double sample=samples.getFloat(); sum+=sample*sample; count++; }
         return Math.sqrt(sum/count);
     }
@@ -181,7 +193,7 @@ class FfmpegMediaTranscoderTests {
         try {
             run("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=20",
                     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3", "-c:v", "mpeg4", "-q:v", "2", "-c:a", "pcm_s16le", "-y", source.toString());
-        } catch (java.io.IOException missing) { assumeTrue(false, "Install ffmpeg for native compression checks"); return; }
+        } catch (IOException missing) { assumeTrue(false, "Install ffmpeg for native compression checks"); return; }
         run("ffmpeg", "-v", "error", "-i", source.toString(), "-an", "-c:v", "copy", "-y", silent.toString());
         var converter = new FfmpegMediaTranscoder(properties(Duration.ofSeconds(20)));
         assertThat(converter.isAvailable()).isTrue();
@@ -198,7 +210,7 @@ class FfmpegMediaTranscoderTests {
             assertThat(actual.videoCodec()).isEqualTo("h264"); assertThat(actual.hasAudio()).isEqualTo(original.hasAudio());
             assertThat(Math.abs(actual.durationMs() - original.durationMs())).isLessThanOrEqualTo(250);
             assertThat(Files.size(input)).isEqualTo(originalSize);
-            for (String suffix : org.example.ai_media_workbench.common.storage.LocalMediaStorage.ENCODING_LOG_SUFFIXES)
+            for (String suffix : LocalMediaStorage.ENCODING_LOG_SUFFIXES)
                 assertThat(Files.exists(Path.of(output + suffix))).isFalse();
         }
     }
@@ -247,7 +259,7 @@ class FfmpegMediaTranscoderTests {
             run("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=160x90:r=10:d=1",
                     "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
                     "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-y", source.toString());
-        } catch (java.io.IOException missing) { assumeTrue(false, "Install ffmpeg for native mute checks"); return; }
+        } catch (IOException missing) { assumeTrue(false, "Install ffmpeg for native mute checks"); return; }
         run("ffmpeg", "-v", "error", "-i", source.toString(), "-an", "-c:v", "copy", "-y", silent.toString());
         run("ffmpeg", "-v", "error", "-display_rotation", "90", "-i", source.toString(), "-map", "0", "-c", "copy", "-y", rotated.toString());
         var converter = new FfmpegMediaTranscoder(properties(Duration.ofSeconds(20)));
@@ -279,7 +291,7 @@ class FfmpegMediaTranscoderTests {
                     "-f","lavfi","-i","color=c=red:s=160x90:r=10:d=2","-f","lavfi","-i","sine=frequency=440:duration=3",
                     "-filter_complex","[0:v][1:v]concat=n=2:v=1:a=0[v]","-map","[v]","-map","2:a",
                     "-c:v","libx264","-g","30","-pix_fmt","yuv420p","-c:a","aac","-y",source.toString());
-        } catch(java.io.IOException missing) { assumeTrue(false,"Install ffmpeg for native trim checks"); return; }
+        } catch(IOException missing) { assumeTrue(false,"Install ffmpeg for native trim checks"); return; }
         run("ffmpeg","-v","error","-i",source.toString(),"-an","-c:v","copy","-y",silent.toString());
         run("ffmpeg","-v","error","-display_rotation","90","-i",source.toString(),"-c","copy","-y",rotated.toString());
         run("ffmpeg","-v","error","-f","lavfi","-i","color=c=red:s=160x90:r=10:d=3",
@@ -337,7 +349,7 @@ class FfmpegMediaTranscoderTests {
                     "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=0.8",
                     "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=1.5",
                     "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-y", source.toString());
-        } catch (java.io.IOException missing) { assumeTrue(false, "Install ffmpeg for native audio checks"); return; }
+        } catch (IOException missing) { assumeTrue(false, "Install ffmpeg for native audio checks"); return; }
         assertThat(probe.inspect(source).durationMs()).isBetween(1900L, 2100L);
         var firstTrack = probe.inspectAudio(source);
         assertThat(firstTrack.durationMs()).isBetween(750L, 900L);

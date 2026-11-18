@@ -10,13 +10,15 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.example.ai_media_workbench.properties.TaskExecutionProperties;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /** 数据库仍是唯一等待队列；有空闲线程且资源允许时才领取任务，不建立隐藏的内存积压。 */
 @Component
 public class MediaTaskDispatcher {
-    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(MediaTaskDispatcher.class);
+    private static final Logger log=LoggerFactory.getLogger(MediaTaskDispatcher.class);
     private final TranscodeWorker worker;
     private final TranscodeProperties transcode;
     private final TaskExecutionProperties properties;

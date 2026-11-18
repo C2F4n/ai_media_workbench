@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue';
 import { ChevronDown } from '@lucide/vue';
+import { computed } from 'vue';
 const props = defineProps<{ recordKey: string; title: string; parameters: object | null; instruction?: string | null; error?: string | null; expanded: Set<string>; operation: (value: string) => string }>();
 const emit = defineEmits<{ expand: [open: boolean] }>();
 const labels: Record<string, string> = { operation: '处理方式', outputFormat: '输出格式', videoCodec: '视频编码', resolutionPreset: '分辨率', width: '最大宽度', height: '最大高度', audioMode: '音轨', startMs: '开始（毫秒）', endMs: '结束（毫秒）', targetSizeBytes: '目标体积（字节）', extractAudio: '另存音轨', clips: '拼接区间', steps: '处理步骤', transcriptId: '字幕', transcriptVersion: '字幕版本', useOriginal: '保留原文' };

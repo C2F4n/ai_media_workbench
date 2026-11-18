@@ -8,10 +8,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 import java.util.concurrent.Semaphore;
-import org.apache.lucene.analysis.cn.smart.SmartChineseAnalyzer;
-import org.apache.lucene.analysis.cjk.CJKAnalyzer;
-import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
+import java.util.stream.Collectors;
 import org.apache.lucene.analysis.Analyzer;
+import org.apache.lucene.analysis.cjk.CJKAnalyzer;
+import org.apache.lucene.analysis.cn.smart.SmartChineseAnalyzer;
+import org.apache.lucene.analysis.miscellaneous.PerFieldAnalyzerWrapper;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
@@ -64,7 +65,7 @@ public class LuceneTranscriptRetriever implements TranscriptRetriever {
                     var chunk = chunks.get(index);
                     document.add(new StoredField("chunk", index));
                     String text = segments.subList(chunk.start(), chunk.end()).stream()
-                            .map(TranscriptSegment::text).collect(java.util.stream.Collectors.joining("\n"));
+                            .map(TranscriptSegment::text).collect(Collectors.joining("\n"));
                     document.add(new TextField("text", text, Field.Store.NO));
                     document.add(new TextField("cjk", text, Field.Store.NO));
                     writer.addDocument(document);

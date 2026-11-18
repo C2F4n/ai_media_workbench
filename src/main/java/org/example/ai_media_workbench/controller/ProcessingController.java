@@ -10,15 +10,25 @@ import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.common.security.AccountPrincipal;
 import org.example.ai_media_workbench.dto.common.PageQuery;
-import org.example.ai_media_workbench.dto.processing.*;
+import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
+import org.example.ai_media_workbench.dto.processing.ExecutePlanRequest;
+import org.example.ai_media_workbench.dto.processing.UpdatePlanRequest;
+import org.example.ai_media_workbench.entity.enums.TaskStatus;
 import org.example.ai_media_workbench.service.ProcessingService;
 import org.example.ai_media_workbench.vo.common.PageVO;
 import org.example.ai_media_workbench.vo.processing.PlanVO;
 import org.example.ai_media_workbench.vo.processing.TaskVO;
-import org.example.ai_media_workbench.entity.enums.TaskStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 处理方案与任务的 HTTP 入口：创建方案只保存参数，execute 才将确认过的方案放入后台队列。

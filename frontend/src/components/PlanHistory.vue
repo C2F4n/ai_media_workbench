@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { RotateCcw, Trash2 } from '@lucide/vue';
-import RecordDetails from './RecordDetails.vue';
+
 import type { Plan as OperationPlan } from '../runtime/types';
+import RecordDetails from './RecordDetails.vue';
 defineProps<{ items: OperationPlan[]; busy: boolean; expanded: Set<string>; operation: (value: string) => string }>();
 const emit = defineEmits<{ restore: [plan: OperationPlan]; remove: [plan: OperationPlan] }>();
 </script>

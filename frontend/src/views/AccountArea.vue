@@ -1,18 +1,17 @@
 <script setup lang="ts">
-import WorkbenchScreen from './WorkbenchScreen.vue';
-import AccountSettings from './AccountSettings.vue';
-import WorkbenchHomeScreen from './WorkbenchHomeScreen.vue';
 import type { WorkbenchHome } from '../types';
+import AccountSettings from './AccountSettings.vue';
+import WorkbenchContent from './WorkbenchContent.vue';
+import WorkbenchHomeScreen from './WorkbenchHomeScreen.vue';
 
-defineProps<{ home: WorkbenchHome | null }>();
+defineProps<{ home: WorkbenchHome }>();
 </script>
 
 <template>
-  <section id="account-view" class="account-shell" :class="{ 'workspace-home-account': home }" hidden>
-    <WorkbenchHomeScreen v-if="home" :home="home">
+  <section id="account-view" class="account-shell workspace-home-account" hidden>
+    <WorkbenchHomeScreen :home="home">
       <AccountSettings />
     </WorkbenchHomeScreen>
-    <AccountSettings v-else />
-    <WorkbenchScreen :home="home" />
+    <WorkbenchContent :home="home" />
   </section>
 </template>

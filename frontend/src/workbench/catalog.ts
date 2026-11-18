@@ -24,9 +24,6 @@ export function isTool(value: string): value is ToolId { return tools.some(tool 
 export function isPhase(value: string): value is PhaseId { return phases.some(phase => phase === value); }
 
 export interface NavigationState {
-  tool: ToolId; phase: PhaseId; open: boolean; pinned: boolean; narrow: boolean; visible: boolean; busy: boolean;
-  groups: Record<ToolGroup, boolean>;
-  localTextAI: boolean; textService: string | null;
-  indicator: { visible: boolean; top: number; height: number };
+  tool: ToolId; phase: PhaseId; visible: boolean; busy: boolean;
 }
-export interface NavigationServices { selectTool(tool: ToolId): void; selectPhase(phase: PhaseId): void }
+export interface NavigationServices { selectPhase(phase: PhaseId): void }

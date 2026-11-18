@@ -1,11 +1,21 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.net.http.*;
+import java.io.IOException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.net.http.WebSocketHandshakeException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
@@ -55,7 +65,9 @@ public class CloudTransport implements DisposableBean {
                 if (cancelled.getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);
                 if (System.nanoTime() >= deadline) throw new BusinessException(cloud ? ErrorCode.CLOUD_TIMEOUT : ErrorCode.TRANSCODE_TIMEOUT);
                 try { return future.get(200, TimeUnit.MILLISECONDS); }
-                catch (TimeoutException waiting) { }
+                catch (TimeoutException waiting) {
+                    // 单次等待结束后继续检查取消标记与整体期限，不代表调用已经超时。
+                }
             }
         } catch (BusinessException exception) { throw exception; }
         catch (InterruptedException exception) {
@@ -67,7 +79,7 @@ public class CloudTransport implements DisposableBean {
             if (cloud && cause instanceof WebSocketHandshakeException handshake)
                 throw new BusinessException(CloudFailures.http(handshake.getResponse().statusCode(), new byte[0]));
             if (cloud && cause instanceof HttpTimeoutException) throw new BusinessException(ErrorCode.CLOUD_TIMEOUT);
-            if (cloud && cause instanceof java.io.IOException) throw new BusinessException(ErrorCode.CLOUD_NETWORK_ERROR);
+            if (cloud && cause instanceof IOException) throw new BusinessException(ErrorCode.CLOUD_NETWORK_ERROR);
             throw new BusinessException(failure);
         }
         finally { if (!future.isDone()) future.cancel(true); }

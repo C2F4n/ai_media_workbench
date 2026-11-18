@@ -4,24 +4,42 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import org.example.ai_media_workbench.common.ai.AsrModel;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.security.AuthRateLimiter;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
-import org.example.ai_media_workbench.dto.transcript.*;
-import org.example.ai_media_workbench.entity.*;
-import org.example.ai_media_workbench.entity.enums.*;
-import org.example.ai_media_workbench.mapper.*;
+import org.example.ai_media_workbench.dto.transcript.CorrectTranscriptRequest;
+import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
+import org.example.ai_media_workbench.dto.transcript.TranscriptionRequest;
+import org.example.ai_media_workbench.dto.transcript.UpdateTranscriptRequest;
+import org.example.ai_media_workbench.entity.MediaEntity;
+import org.example.ai_media_workbench.entity.TaskEntity;
+import org.example.ai_media_workbench.entity.TranscriptEntity;
+import org.example.ai_media_workbench.entity.TranscriptRevisionEntity;
+import org.example.ai_media_workbench.entity.UserStatus;
+import org.example.ai_media_workbench.entity.enums.MediaStatus;
+import org.example.ai_media_workbench.entity.enums.TaskKind;
+import org.example.ai_media_workbench.entity.enums.TaskStage;
+import org.example.ai_media_workbench.entity.enums.TaskStatus;
+import org.example.ai_media_workbench.mapper.MediaMapper;
+import org.example.ai_media_workbench.mapper.ProcessingMapper;
+import org.example.ai_media_workbench.mapper.TranscriptMapper;
+import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
-import org.example.ai_media_workbench.service.SpeechRecognizer;
-import org.example.ai_media_workbench.service.TranscriptService;
 import org.example.ai_media_workbench.service.MediaProbe;
 import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.SpeechRecognizer;
+import org.example.ai_media_workbench.service.SubtitleCorrector;
+import org.example.ai_media_workbench.service.TranscriptService;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.example.ai_media_workbench.vo.processing.TaskVO;
+import org.example.ai_media_workbench.vo.transcript.TranscriptCorrectionVO;
 import org.example.ai_media_workbench.vo.transcript.TranscriptVO;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,8 +55,8 @@ public class TranscriptServiceImpl implements TranscriptService {
     private final SpeechRecognizer recognizer;
     private final MediaProbe probe;
     private final MediaTranscoder transcoder;
-    private final org.example.ai_media_workbench.service.SubtitleCorrector corrector;
-    private final org.example.ai_media_workbench.common.security.AuthRateLimiter limiter;
+    private final SubtitleCorrector corrector;
+    private final AuthRateLimiter limiter;
     private final LocalMediaStorage storage;
     private final TranscodeProperties limits;
     private final ObjectMapper json;
@@ -47,8 +65,8 @@ public class TranscriptServiceImpl implements TranscriptService {
     public TranscriptServiceImpl(TranscriptMapper transcripts, MediaMapper media, UserMapper users, ProcessingMapper tasks,
                                   ProcessingViews views, SpeechRecognizer recognizer, LocalMediaStorage storage,
                                   TranscodeProperties limits, ObjectMapper json, Clock clock, MediaProbe probe, MediaTranscoder transcoder,
-                                  org.example.ai_media_workbench.service.SubtitleCorrector corrector,
-                                  org.example.ai_media_workbench.common.security.AuthRateLimiter limiter) {
+                                  SubtitleCorrector corrector,
+                                  AuthRateLimiter limiter) {
         this.transcripts=transcripts; this.media=media; this.users=users; this.tasks=tasks; this.views=views;
         this.recognizer=recognizer; this.storage=storage; this.limits=limits; this.json=json; this.clock=clock;
         this.probe=probe; this.transcoder=transcoder;
@@ -58,7 +76,7 @@ public class TranscriptServiceImpl implements TranscriptService {
     @Override @Transactional
     public TaskVO transcribe(String userId, String mediaId, TranscriptionRequest input) {
         lockUser(userId); var source = source(userId, mediaId);
-        var model=org.example.ai_media_workbench.common.ai.AsrModel.resolve(input.provider(),input.model());
+        var model=AsrModel.resolve(input.provider(),input.model());
         if (source.getStatus() != MediaStatus.READY || source.getMetadataJson() == null || !storage.exists(source.getStorageKey()))
             throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
         if (!metadata(source).hasAudio()) throw new BusinessException(ErrorCode.SOURCE_HAS_NO_AUDIO);
@@ -104,7 +122,7 @@ public class TranscriptServiceImpl implements TranscriptService {
         return view(item, null);
     }
 
-    @Override public org.example.ai_media_workbench.vo.transcript.TranscriptCorrectionVO correct(String userId,String id,CorrectTranscriptRequest input) {
+    @Override public TranscriptCorrectionVO correct(String userId,String id,CorrectTranscriptRequest input) {
         var item=get(userId,id,null);
         if(item.version()!=input.expectedVersion()) throw new BusinessException(ErrorCode.TRANSCRIPT_VERSION_CONFLICT);
         var segment=item.segments().stream().filter(value->value.id().equals(input.segmentId())).findFirst()
@@ -114,7 +132,7 @@ public class TranscriptServiceImpl implements TranscriptService {
         String corrected=corrector.correct(segment.text(),userId);
         // 云端等待期间不持锁；返回建议前重新检查归属、删除状态和版本，避免过时结果。
         if(get(userId,id,null).version()!=input.expectedVersion()) throw new BusinessException(ErrorCode.TRANSCRIPT_VERSION_CONFLICT);
-        return new org.example.ai_media_workbench.vo.transcript.TranscriptCorrectionVO(id,item.version(),segment.id(),segment.text(),corrected);
+        return new TranscriptCorrectionVO(id,item.version(),segment.id(),segment.text(),corrected);
     }
 
     @Override public SrtFile srt(String userId, String id, Integer version) {
@@ -147,5 +165,5 @@ public class TranscriptServiceImpl implements TranscriptService {
         if(user==null||user.getStatus()!=UserStatus.ACTIVE) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
     }
     private static String timestamp(long ms) { return String.format(Locale.ROOT,"%02d:%02d:%02d,%03d",ms/3600000,ms/60000%60,ms/1000%60,ms%1000); }
-    private LocalDateTime now() { return LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC).truncatedTo(java.time.temporal.ChronoUnit.MICROS); }
+    private LocalDateTime now() { return LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS); }
 }

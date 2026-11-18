@@ -1,9 +1,9 @@
 package org.example.ai_media_workbench.dto.auth;
 
-import org.example.ai_media_workbench.common.validation.CodePointLength;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import org.example.ai_media_workbench.common.validation.CodePointLength;
 
 /** 注册入参 DTO：record 自动提供构造器和访问器；约束由 Controller 的 @Valid 触发。 */
 public record RegisterRequest(

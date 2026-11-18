@@ -1,22 +1,23 @@
 package org.example.ai_media_workbench.service.impl;
 
-import org.example.ai_media_workbench.common.exception.BusinessException;
-import org.example.ai_media_workbench.common.exception.ErrorCode;
-import org.example.ai_media_workbench.dto.user.ChangePasswordRequest;
-import org.example.ai_media_workbench.dto.user.UpdateUserRequest;
-import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
-import org.example.ai_media_workbench.entity.UserEntity;
-import org.example.ai_media_workbench.entity.UserStatus;
-import org.example.ai_media_workbench.mapper.AuthTokenMapper;
-import org.example.ai_media_workbench.mapper.UserMapper;
-import org.example.ai_media_workbench.mapper.AccountCleanupMapper;
-import org.example.ai_media_workbench.service.AccountCleanupService;
-import org.example.ai_media_workbench.service.SessionService;
-import org.example.ai_media_workbench.service.UserService;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Locale;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.dto.user.ChangePasswordRequest;
+import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
+import org.example.ai_media_workbench.dto.user.UpdateUserRequest;
+import org.example.ai_media_workbench.entity.UserEntity;
+import org.example.ai_media_workbench.entity.UserStatus;
+import org.example.ai_media_workbench.mapper.AccountCleanupMapper;
+import org.example.ai_media_workbench.mapper.AuthTokenMapper;
+import org.example.ai_media_workbench.mapper.CloudCredentialMapper;
+import org.example.ai_media_workbench.mapper.UserMapper;
+import org.example.ai_media_workbench.service.AccountCleanupService;
+import org.example.ai_media_workbench.service.SessionService;
+import org.example.ai_media_workbench.service.UserService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,12 +32,12 @@ public class UserServiceImpl implements UserService {
     private final Clock clock;
     private final AccountCleanupMapper cleanupMapper;
     private final AccountCleanupService cleanupService;
-    private final org.example.ai_media_workbench.mapper.CloudCredentialMapper cloudCredentials;
+    private final CloudCredentialMapper cloudCredentials;
 
     public UserServiceImpl(UserMapper userMapper, AuthTokenMapper tokenMapper,
                            PasswordEncoder passwordEncoder, SessionService sessionService, Clock clock,
                            AccountCleanupMapper cleanupMapper, AccountCleanupService cleanupService,
-                           org.example.ai_media_workbench.mapper.CloudCredentialMapper cloudCredentials) {
+                           CloudCredentialMapper cloudCredentials) {
         this.userMapper = userMapper;
         this.tokenMapper = tokenMapper;
         this.passwordEncoder = passwordEncoder;

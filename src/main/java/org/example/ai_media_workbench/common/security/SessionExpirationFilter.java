@@ -1,15 +1,16 @@
 package org.example.ai_media_workbench.common.security;
 
-import org.example.ai_media_workbench.common.exception.ErrorCode;
-import org.example.ai_media_workbench.common.exception.BusinessException;
-import org.example.ai_media_workbench.service.UserService;
-import org.example.ai_media_workbench.common.exception.ApiErrorWriter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.Clock;
+import org.example.ai_media_workbench.common.exception.ApiErrorWriter;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.service.UserService;
+import org.springframework.dao.DataAccessException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -42,7 +43,7 @@ public class SessionExpirationFilter extends OncePerRequestFilter {
                 } catch (BusinessException exception) {
                     if (exception.code() != ErrorCode.UNAUTHENTICATED) throw exception;
                     invalid = true;
-                } catch (org.springframework.dao.DataAccessException exception) {
+                } catch (DataAccessException exception) {
                     writer.write(request, response, ErrorCode.INTERNAL_ERROR);
                     return;
                 }

@@ -1,24 +1,25 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.time.Clock;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
+import org.example.ai_media_workbench.common.web.MediaPreview;
 import org.example.ai_media_workbench.dto.common.PageQuery;
 import org.example.ai_media_workbench.entity.MediaEntity;
 import org.example.ai_media_workbench.entity.UserStatus;
-import org.example.ai_media_workbench.entity.enums.MediaStatus;
 import org.example.ai_media_workbench.entity.enums.MediaKind;
+import org.example.ai_media_workbench.entity.enums.MediaStatus;
 import org.example.ai_media_workbench.mapper.MediaMapper;
 import org.example.ai_media_workbench.mapper.UserMapper;
+import org.example.ai_media_workbench.service.AccountCleanupService;
 import org.example.ai_media_workbench.service.MediaProbe;
 import org.example.ai_media_workbench.service.MediaService;
-import org.example.ai_media_workbench.service.AccountCleanupService;
 import org.example.ai_media_workbench.vo.common.PageVO;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.example.ai_media_workbench.vo.media.MediaVO;
@@ -105,7 +106,7 @@ public class MediaServiceImpl implements MediaService {
             var path = storage.resolve(item.getStorageKey());
             if (item.getSizeBytes() <= 0 || Files.size(path) != item.getSizeBytes() || !Files.isReadable(path))
                 throw new IOException("Source file unavailable");
-            return new MediaFile(path, item.getSizeBytes(), item.getOriginalFilename(), org.example.ai_media_workbench.common.web.MediaPreview.videoType(metadata));
+            return new MediaFile(path, item.getSizeBytes(), item.getOriginalFilename(), MediaPreview.videoType(metadata));
         } catch (IOException exception) {
             // 在发送响应头前统一文件不可用错误；不返回磁盘路径，也不修改检测状态。
             throw new BusinessException(ErrorCode.MEDIA_PREVIEW_UNAVAILABLE);
@@ -162,7 +163,7 @@ public class MediaServiceImpl implements MediaService {
     private boolean previewable(MediaEntity item, MediaMetadataVO metadata) {
         // 根据实际检测的容器与编码决定预览，不信任文件扩展名。
         return item.getStatus() == MediaStatus.READY && item.getKind() == MediaKind.VIDEO && metadata != null
-                && org.example.ai_media_workbench.common.web.MediaPreview.supported(metadata);
+                && MediaPreview.supported(metadata);
     }
 
     private String displayName(String input) {

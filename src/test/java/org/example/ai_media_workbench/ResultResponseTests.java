@@ -1,7 +1,7 @@
 package org.example.ai_media_workbench;
 
-import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.DispatcherType;
+import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -16,6 +16,7 @@ import org.example.ai_media_workbench.common.web.RequestIdFilter;
 import org.example.ai_media_workbench.vo.common.ErrorDetailVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.http.HttpStatus;
@@ -121,7 +122,7 @@ class ResultResponseTests {
             assertThat(Result.error(ErrorCode.INTERNAL_ERROR).requestId()).isEqualTo("original-request-id");
         });
         assertThat(response.getHeader("X-Request-Id")).isEqualTo("original-request-id");
-        assertThat(org.slf4j.MDC.get("requestId")).isNull();
+        assertThat(MDC.get("requestId")).isNull();
     }
 
     @Test

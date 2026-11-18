@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import AccountArea from './views/AccountArea.vue';
-import AuthScreen from './views/AuthScreen.vue';
-import AppHeader from './views/AppHeader.vue';
-import ConfirmationDialogs from './views/ConfirmationDialogs.vue';
 import type { AuthEntryServices } from './auth/types';
 import type { WorkbenchHome } from './types';
+import AccountArea from './views/AccountArea.vue';
+import AuthScreen from './views/AuthScreen.vue';
+import ConfirmationDialogs from './views/ConfirmationDialogs.vue';
 
-defineProps<{ auth: AuthEntryServices; home: WorkbenchHome | null }>();
+defineProps<{ auth: AuthEntryServices; home: WorkbenchHome }>();
 </script>
 <template>
-<AppHeader />
+
 
   <main>
     <section id="loading-view" class="loading-view" aria-live="polite">

@@ -3,16 +3,24 @@ package org.example.ai_media_workbench.controller;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.UUID;
-import org.example.ai_media_workbench.common.web.MediaStreams;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.common.security.AccountPrincipal;
+import org.example.ai_media_workbench.common.web.MediaStreams;
 import org.example.ai_media_workbench.dto.common.PageQuery;
 import org.example.ai_media_workbench.service.OutputService;
 import org.example.ai_media_workbench.vo.common.PageVO;
 import org.example.ai_media_workbench.vo.processing.OutputVO;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 /**
@@ -50,7 +58,7 @@ public class OutputController {
     public ResponseEntity<StreamingResponseBody> preview(@AuthenticationPrincipal AccountPrincipal user, @PathVariable UUID id,
                                       @RequestHeader(value = "Range", required = false) String header) {
         var file = outputs.file(user.userId(), id.toString());
-        if (file.info().previewUrl() == null) throw new org.example.ai_media_workbench.common.exception.BusinessException(org.example.ai_media_workbench.common.exception.ErrorCode.MEDIA_PREVIEW_UNAVAILABLE);
+        if (file.info().previewUrl() == null) throw new BusinessException(ErrorCode.MEDIA_PREVIEW_UNAVAILABLE);
         return MediaStreams.preview(file.path(), file.info().sizeBytes(), file.info().contentType(), file.info().filename(), header);
     }
 }

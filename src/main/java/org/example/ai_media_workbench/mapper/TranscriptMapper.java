@@ -2,9 +2,9 @@ package org.example.ai_media_workbench.mapper;
 
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.example.ai_media_workbench.entity.TaskEntity;
 import org.example.ai_media_workbench.entity.TranscriptEntity;
 import org.example.ai_media_workbench.entity.TranscriptRevisionEntity;
-import org.example.ai_media_workbench.entity.TaskEntity;
 import org.example.ai_media_workbench.vo.transcript.TranscriptReference;
 
 @Mapper

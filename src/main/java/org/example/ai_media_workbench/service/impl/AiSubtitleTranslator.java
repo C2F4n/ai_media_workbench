@@ -1,11 +1,16 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
 import org.example.ai_media_workbench.service.SubtitleTranslator;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.*;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /** 翻译复用所选文字模型；只允许逐段返回ID和译文，不能改写时间轴。 */
 @Component

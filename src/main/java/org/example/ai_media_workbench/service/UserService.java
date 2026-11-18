@@ -1,8 +1,8 @@
 package org.example.ai_media_workbench.service;
 
 import org.example.ai_media_workbench.dto.user.ChangePasswordRequest;
-import org.example.ai_media_workbench.dto.user.UpdateUserRequest;
 import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
+import org.example.ai_media_workbench.dto.user.UpdateUserRequest;
 import org.example.ai_media_workbench.entity.UserEntity;
 
 /** 账号业务契约；实现类负责事务，接口不依赖 Servlet 请求或具体存储实现。 */

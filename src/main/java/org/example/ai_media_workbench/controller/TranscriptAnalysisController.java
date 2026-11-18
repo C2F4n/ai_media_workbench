@@ -4,11 +4,16 @@ import jakarta.validation.Valid;
 import java.util.UUID;
 import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.common.security.AccountPrincipal;
-import org.example.ai_media_workbench.dto.transcript.*;
+import org.example.ai_media_workbench.dto.transcript.RecommendClipsRequest;
+import org.example.ai_media_workbench.dto.transcript.SearchTranscriptRequest;
 import org.example.ai_media_workbench.service.TranscriptAnalysisService;
-import org.example.ai_media_workbench.vo.transcript.*;
+import org.example.ai_media_workbench.vo.transcript.ClipRecommendationsVO;
+import org.example.ai_media_workbench.vo.transcript.TranscriptSearchVO;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 基于已保存字幕的内容分析入口：按文字要求搜索片段，或按目标和时长预算推荐片段。

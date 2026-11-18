@@ -29,15 +29,18 @@ async function fixture(page) {
       return ok({ ...entry(), mode: state.mode, personalStored: state.mode === 'PERSONAL', available: state.mode === 'PERSONAL' || state.ready });
     }
     if (['/api/media', '/api/tasks'].includes(url.pathname)) return ok({ items: [], total: 0, page: 1, pageSize: 10 });
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + req.method() + ' ' + url.pathname);
   });
-  await page.goto('/'); await expect(page.locator('#workbench-panel')).toBeVisible();
+  await page.goto('/'); await expect(page.getByRole('region', { name: '工作台主界面' })).toBeVisible();
   return state;
 }
 
 test('credential formats fail locally with actionable feedback and no save or paid request', async ({ page }) => {
   const state = await fixture(page);
-  await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click(); await page.locator('#account-cloud-tab').click();
   const card = page.locator('#cloud-deepseek');
   await card.locator('select[name=mode]').selectOption('PERSONAL');
   await expect(card).toContainText('保存仅检查格式，不验证密钥、权限或余额');
@@ -60,7 +63,7 @@ for (const width of [1365, 390]) test(`local model reports unavailability and re
   const state = await fixture(page), errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('dialog', dialog => dialog.accept());
-  await page.locator('#header-account').click();
+  await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click();
   await page.locator('#account-cloud-tab').click();
   const card = page.locator('#cloud-deepseek');
   await expect(card.locator('select[name=mode] option[value=SERVER]')).toHaveText('服务端部署 · 千问');

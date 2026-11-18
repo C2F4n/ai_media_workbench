@@ -16,6 +16,9 @@ async function fixture(page) {
     if (url.pathname === '/api/users/me/cloud-credentials') return reply([]);
     if (url.pathname === '/api/auth/logout') { if (state.logoutGate) await state.logoutGate; state.signedIn = false; return reply(null); }
     if (['/api/media', '/api/tasks', '/api/operation-plans'].includes(url.pathname) && request.method() === 'GET') return reply({ items: [], page: 1, pageSize: 10, total: 0 });
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + url.pathname);
   });
   return state;
@@ -40,86 +43,22 @@ test('each tool remembers its own phase, while history hides all media panels wi
   await expect(page.locator('#phase-edit')).toBeVisible(); expect(state.writes).toBe(0);
 });
 
-test('rapid tool switches leave exactly one selection and the last matching phase; motion changes cancel animations', async ({ page }) => {
-  const state = await fixture(page); await page.goto('/');
-  await expect(page.locator('#detect-tool')).toBeVisible();
-  await page.evaluate(() => {
-    window.toolSlides = 0;
-    const stage = document.getElementById('tool-stage'), original = stage.animate.bind(stage);
-    stage.animate = (...args) => { window.toolSlides++; return original(...args); };
-    for (const tool of ['convert', 'trim', 'detect', 'compress', 'mute', 'convert']) document.getElementById(tool + '-tool').click();
-  });
-  expect(await page.evaluate(() => window.toolSlides)).toBe(6);
-  await expect(page.locator('.tool-choice[aria-current="page"]')).toHaveCount(1);
-  await expect(page.locator('#convert-tool')).toHaveClass(/active/);
-  await expect(page.locator('#phase-edit')).toBeVisible();
-  await expect.poll(() => page.locator('#tool-stage').evaluate(element => element.getAnimations().length)).toBe(0);
-  await page.evaluate(() => { document.getElementById('trim-tool').click(); document.getElementById('tool-stage').getAnimations().forEach(animation => animation.pause()); });
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await expect.poll(() => page.locator('#tool-stage').evaluate(element => element.getAnimations().length)).toBe(0);
-  await page.locator('#phase-import-tab').click();
-  expect(await page.locator('#phase-import').evaluate(element => element.getAnimations().length)).toBe(0);
-  expect(state.writes).toBe(0);
-});
-
-test('mobile drawer traps keyboard focus, returns focus on close and restores desktop layout on resize', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 }); await fixture(page); await page.goto('/');
-  await page.locator('#toggle-sidebar').click(); await expect(page.locator('#detect-tool')).toBeFocused();
-  await page.locator('#close-sidebar').focus(); await page.keyboard.press('Shift+Tab');
-  await expect(page.locator('#history-tool')).toBeFocused();
-  await page.keyboard.press('Tab'); await expect(page.locator('#close-sidebar')).toBeFocused();
-  await page.keyboard.press('Escape'); await expect(page.locator('#toggle-sidebar')).toBeFocused();
-  await expect(page.locator('#tool-content')).not.toHaveAttribute('inert');
-  await page.locator('#toggle-sidebar').click();
-  await page.locator('#ai-group-toggle').click(); await expect(page.locator('#ai-group-body')).toHaveAttribute('inert', '');
-  await page.setViewportSize({ width: 1365, height: 900 });
-  await expect(page.locator('#sidebar-backdrop')).toBeHidden(); await expect(page.locator('#tool-sidebar')).toBeVisible();
-  await expect(page.locator('#tool-sidebar')).toHaveAttribute('role', 'complementary');
-  expect(await page.locator('#tool-content').evaluate(element => element.inert)).toBe(false);
-});
-
-for (const storage of ['corrupt', 'disabled']) test(`navigation works with ${storage} browser storage without persisting tool/media state`, async ({ page }) => {
-  const state = await fixture(page);
-  await page.addInitScript(mode => {
-    if (mode === 'disabled') {
-      for (const name of ['getItem', 'setItem']) Object.defineProperty(Storage.prototype, name, { value() { throw new DOMException('Storage blocked', 'SecurityError'); } });
-    } else {
-      localStorage.setItem('amw-navigation', '{invalid-json');
-      localStorage.setItem('amw-tool-groups', JSON.stringify({ regular: 'false', ai: false, history: 123 }));
-    }
-  }, storage);
-  const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto('/'); await expect(page.locator('#detect-tool')).toBeVisible();
-  await page.locator('#ai-group-toggle').click();
-  await page.locator('#regular-group-toggle').click(); await expect(page.locator('#regular-group-body')).toHaveAttribute('inert', '');
-  await page.locator('#regular-group-toggle').click(); await page.locator('#convert-tool').click();
-  await page.locator('#phase-export-tab').click(); await page.locator('#pin-sidebar').click();
-  await page.keyboard.press('Escape'); await expect(page.locator('#toggle-sidebar')).toBeFocused();
-  if (storage !== 'disabled') {
-    const preferences = await page.evaluate(() => ({ navigation: JSON.parse(localStorage.getItem('amw-navigation')), groups: JSON.parse(localStorage.getItem('amw-tool-groups')) }));
-    expect(preferences.navigation).toEqual({ pinned: false, open: false });
-    expect(preferences.groups).toEqual({ regular: true, ai: true, history: true });
-  }
-  expect(state.writes).toBe(0); expect(errors).toEqual([]);
-});
-
 test('navigation controls remain locked during logout and a new login resets per-tool phase memory', async ({ page }) => {
   const state = await fixture(page); let release;
   state.logoutGate = new Promise(resolve => { release = resolve; });
   try {
     await page.goto('/'); await selectTool(page, 'convert'); await page.locator('#phase-export-tab').click();
-    await page.locator('#header-logout').click();
-    await expect(page.locator('#trim-tool')).toBeDisabled(); await expect(page.locator('#phase-edit-tab')).toBeDisabled();
-    await expect(page.locator('#toggle-sidebar')).toBeDisabled();
-    await page.evaluate(() => { document.getElementById('trim-tool').click(); document.getElementById('phase-edit-tab').click(); });
-    await expect(page.locator('#convert-tool')).toHaveAttribute('aria-current', 'page');
+    await page.locator('#workspace-home-sidebar').getByRole('button', { name: '退出登录', exact: true }).click();
+    await expect(page.locator('#workspace-tool-tab-trim')).toBeDisabled(); await expect(page.locator('#phase-edit-tab')).toBeDisabled();
+    await page.evaluate(() => { document.getElementById('workspace-tool-tab-trim').click(); document.getElementById('phase-edit-tab').click(); });
+    await expect(page.locator('#workspace-tool-tab-convert')).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#phase-export-tab')).toHaveAttribute('aria-selected', 'true');
     release(); await expect(page.locator('#auth-view')).toBeVisible();
     await expect(page.locator('#auth-notice')).toBeHidden();
     state.signedIn = true;
     await page.evaluate(() => { const channel = new BroadcastChannel('amw-account'); channel.postMessage('account-changed'); channel.close(); });
     await expect(page.locator('#account-view')).toBeVisible();
-    await expect(page.locator('#detect-tool')).toHaveAttribute('aria-current', 'page'); await expect(page.locator('#phase-import')).toBeVisible();
+    await expect(page.locator('#workspace-tool-tab-detect')).toHaveAttribute('aria-selected', 'true'); await expect(page.locator('.media-detect')).toBeVisible();
     await selectTool(page, 'convert'); await expect(page.locator('#phase-edit')).toBeVisible();
     expect(state.writes).toBe(1);
   } finally { release(); }
@@ -130,9 +69,9 @@ test('an account change in another tab clears the former account navigation and 
   await selectTool(page, 'convert'); await page.locator('#phase-export-tab').click();
   state.user = { ...state.user, id: '22222222-2222-4222-8222-222222222222', displayName: '另一个用户' };
   await page.evaluate(() => { const channel = new BroadcastChannel('amw-account'); channel.postMessage('account-changed'); channel.close(); });
-  await expect(page.locator('#workspace-user')).toHaveText('另一个用户');
-  await expect(page.locator('#detect-tool')).toHaveAttribute('aria-current', 'page');
-  await expect(page.locator('#phase-import')).toBeVisible();
+  await expect(page.locator('.workspace-home-identity')).toContainText('另一个用户');
+  await expect(page.locator('#workspace-tool-tab-detect')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.media-detect')).toBeVisible();
   await selectTool(page, 'convert'); await expect(page.locator('#phase-edit')).toBeVisible();
   expect(state.writes).toBe(0);
 });
@@ -149,6 +88,5 @@ test('Vue sidebar and phase navigation work under the production CSP', async ({ 
   }));
   await page.goto('/'); await selectTool(page, 'convert'); await page.locator('#phase-export-tab').click();
   await expect(page.locator('#phase-export')).toBeVisible();
-  await page.locator('#regular-group-toggle').click(); await expect(page.locator('#tool-indicator')).toBeHidden();
   expect(await page.evaluate(() => window.cspViolations)).toEqual([]);
 });

@@ -4,10 +4,12 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import org.example.ai_media_workbench.common.exception.*;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.service.OperationPlanner;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.*;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * 自然语言转方案的适配器。名称沿用早期 DeepSeek 实现，实际供应商由 TextAiJsonClient 根据账号配置选择。

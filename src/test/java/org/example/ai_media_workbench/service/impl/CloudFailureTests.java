@@ -1,22 +1,46 @@
 package org.example.ai_media_workbench.service.impl;
 
 import com.sun.net.httpserver.HttpServer;
-import java.net.*;
-import java.net.http.*;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.net.http.WebSocket;
+import java.net.http.WebSocketHandshakeException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest;
 import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
 import org.example.ai_media_workbench.properties.AiProperties;
-import org.example.ai_media_workbench.service.*;
+import org.example.ai_media_workbench.service.CloudCredentialService;
+import org.example.ai_media_workbench.service.OperationPlanner;
+import org.example.ai_media_workbench.service.TranscriptAnalyzer;
+import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class CloudFailureTests {
     private final ObjectMapper json = new ObjectMapper();
@@ -47,7 +71,7 @@ class CloudFailureTests {
 
     @Test void httpTransportMapsErrorsOnceAndKeepsLocalModelErrorsSeparate() throws Exception {
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        var hits = new java.util.concurrent.atomic.AtomicInteger();
+        var hits = new AtomicInteger();
         server.createContext("/", exchange -> {
             hits.incrementAndGet(); var body = bytes("{\"error\":{\"code\":\"invalid_api_key\",\"message\":\"secret-key\"}}");
             exchange.sendResponseHeaders(401, body.length);
@@ -68,7 +92,7 @@ class CloudFailureTests {
     }
 
     @Test void cloudAwaitClassifiesNetworkTimeoutHandshakeAndPreservesCancellation() {
-        expectCode(() -> CloudTransport.awaitCloud(CompletableFuture.failedFuture(new java.io.IOException("secret-url")), deadline(), () -> false, ErrorCode.ASR_FAILED), ErrorCode.CLOUD_NETWORK_ERROR);
+        expectCode(() -> CloudTransport.awaitCloud(CompletableFuture.failedFuture(new IOException("secret-url")), deadline(), () -> false, ErrorCode.ASR_FAILED), ErrorCode.CLOUD_NETWORK_ERROR);
         expectCode(() -> CloudTransport.awaitCloud(CompletableFuture.failedFuture(new CompletionException(new HttpTimeoutException("private"))), deadline(), () -> false, ErrorCode.ASR_FAILED), ErrorCode.CLOUD_TIMEOUT);
         var response = mock(HttpResponse.class); when(response.statusCode()).thenReturn(401);
         expectCode(() -> CloudTransport.awaitCloud(CompletableFuture.failedFuture(new WebSocketHandshakeException(response)), deadline(), () -> false, ErrorCode.ASR_FAILED), ErrorCode.CLOUD_AUTH_FAILED);
@@ -90,7 +114,7 @@ class CloudFailureTests {
             when(transport.post(any(), anyLong(), any(), any())).thenThrow(new BusinessException(failure));
             var client = new TextAiJsonClient(credentials, new CloudTextJsonClient(credentials, transport, json), local);
             var segments = List.of(new TranscriptSegment(UUID.randomUUID(), 0L, 1000L, "字幕"));
-            var context = new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mp4", 5000, 160, 90, "h264", true, "aac"),
+            var context = new OperationPlanner.Context(new MediaMetadataVO("mp4", 5000, 160, 90, "h264", true, "aac"),
                     12345, List.of("mute"), null, null, List.of(), List.of(), 1073741824L);
             expectCode(() -> new DeepSeekSubtitleCorrector(client, json).correct("字幕", "owner"), failure);
             expectCode(() -> new DeepSeekOperationPlanner(client, json).propose("静音", context, "owner"), failure);
@@ -117,7 +141,7 @@ class CloudFailureTests {
         }
     }
 
-    private static void expectCode(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, ErrorCode code) {
+    private static void expectCode(ThrowingCallable call, ErrorCode code) {
         assertThatThrownBy(call).isInstanceOfSatisfying(BusinessException.class, error -> {
             assertThat(error.code()).isEqualTo(code);
             assertThat(error.getMessage()).doesNotContain("secret-key", "secret-url", "private");

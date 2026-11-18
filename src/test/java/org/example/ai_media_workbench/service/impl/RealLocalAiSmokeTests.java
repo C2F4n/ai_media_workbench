@@ -1,17 +1,20 @@
 package org.example.ai_media_workbench.service.impl;
 
 import java.util.List;
+import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest.Mode;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.properties.LocalAiProperties;
 import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.example.ai_media_workbench.service.OperationPlanner;
-import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest.Mode;
-import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import tools.jackson.databind.ObjectMapper;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.Mockito.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 /** 显式启用的真实模型冒烟测试；平时不启动推理进程，不写数据库、不执行FFmpeg。 */
 @EnabledIfEnvironmentVariable(named="LOCAL_AI_SMOKE_PORT",matches="[0-9]+")

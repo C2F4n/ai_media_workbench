@@ -1,7 +1,8 @@
 import { createApp, h, reactive, shallowReactive } from 'vue';
+
+import type { TranscriptSegment } from '../api/contracts';
 import SubtitleSegments from '../components/SubtitleSegments.vue';
 import TranslationSegments from '../components/TranslationSegments.vue';
-import type { TranscriptSegment } from '../api/contracts';
 
 export function mountTranscriptEditors(services: { changed(): void; correct(segmentId: string): Promise<string | null> }) {
   const state = shallowReactive({ segments: [] as TranscriptSegment[], source: [] as TranscriptSegment[], translated: [] as TranscriptSegment[], revision: 0, disabled: true, canCorrect: false, correctionTitle: '', duration: 0, translationDisabled: false, bilingual: false });

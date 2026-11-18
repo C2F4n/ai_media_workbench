@@ -1,21 +1,56 @@
 package org.example.ai_media_workbench;
 
 import jakarta.servlet.http.Cookie;
-import java.nio.file.*;
-import java.time.*;
-import java.util.*;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
-import org.example.ai_media_workbench.common.exception.*;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
-import org.example.ai_media_workbench.dto.transcript.*;
-import org.example.ai_media_workbench.dto.processing.*;
+import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
+import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
+import org.example.ai_media_workbench.dto.transcript.CorrectTranscriptRequest;
+import org.example.ai_media_workbench.dto.transcript.RecommendClipsRequest;
+import org.example.ai_media_workbench.dto.transcript.SearchTranscriptRequest;
+import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
+import org.example.ai_media_workbench.dto.transcript.TranscriptionRequest;
+import org.example.ai_media_workbench.dto.transcript.TranslateTranscriptRequest;
+import org.example.ai_media_workbench.dto.transcript.UpdateTranscriptRequest;
 import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
-import org.example.ai_media_workbench.mapper.*;
-import org.example.ai_media_workbench.service.*;
+import org.example.ai_media_workbench.mapper.ProcessingMapper;
+import org.example.ai_media_workbench.properties.MediaToolProperties;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.service.MediaProbe;
+import org.example.ai_media_workbench.service.MediaService;
+import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.ProcessingService;
+import org.example.ai_media_workbench.service.SpeechRecognizer;
+import org.example.ai_media_workbench.service.SubtitleCorrector;
+import org.example.ai_media_workbench.service.SubtitleTranslator;
+import org.example.ai_media_workbench.service.TranscriptAnalysisService;
+import org.example.ai_media_workbench.service.TranscriptAnalyzer;
+import org.example.ai_media_workbench.service.TranscriptService;
+import org.example.ai_media_workbench.service.TranscriptTranslationService;
+import org.example.ai_media_workbench.service.UserService;
+import org.example.ai_media_workbench.service.impl.FfmpegMediaTranscoder;
+import org.example.ai_media_workbench.service.impl.FfprobeMediaProbe;
 import org.example.ai_media_workbench.service.impl.TranscodeWorker;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
-import org.example.ai_media_workbench.vo.transcript.*;
-import org.junit.jupiter.api.*;
+import org.example.ai_media_workbench.vo.transcript.TranscriptReference;
+import org.example.ai_media_workbench.vo.transcript.TranscriptVO;
+import org.hamcrest.Matchers;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -24,17 +59,56 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.test.context.*;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
-import org.springframework.test.web.servlet.*;
-import tools.jackson.databind.*;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.unit.DataSize;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.endsWith;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyList;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.argThat;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.endsWith;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties={"spring.datasource.url=jdbc:h2:mem:transcript_tests;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE","app.transcode.queue-limit=2"})
 @AutoConfigureMockMvc @ActiveProfiles("test")
@@ -101,7 +175,7 @@ class TranscriptIntegrationTests {
         assertThat(((TranscriptReference)processing.task(owner.id,taskId).transcript()).version()).isEqualTo(1);
         mvc.perform(get("/api/transcripts/"+original.id()+"/srt").cookie(owner.cookie).param("version","1"))
                 .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
-                .andExpect(content().bytes("1\r\n00:00:00,100 --> 00:00:01,100\r\n你好，世界。\r\n\r\n2\r\n00:00:02,000 --> 00:00:04,000\r\n第二段字幕。\r\n\r\n".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                .andExpect(content().bytes("1\r\n00:00:00,100 --> 00:00:01,100\r\n你好，世界。\r\n\r\n2\r\n00:00:02,000 --> 00:00:04,000\r\n第二段字幕。\r\n\r\n".getBytes(StandardCharsets.UTF_8)));
         for(String path:List.of("/api/media/"+mediaId+"/transcript","/api/transcripts/"+original.id(),"/api/transcripts/"+original.id()+"/srt")) {
             mvc.perform(get(path).cookie(other.cookie)).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("RESOURCE_NOT_FOUND"));
             mvc.perform(get(path)).andExpect(status().isUnauthorized());
@@ -246,7 +320,7 @@ class TranscriptIntegrationTests {
     @Test void cleanupFailureKeepsTheTokenUntilExpiredFilesCanBeRemoved() throws Exception {
         var owner=login(); String mediaId=source(owner);
         var task=transcripts.transcribe(owner.id,mediaId,new TranscriptionRequest("zh-CN",false,"tencent"));
-        doThrow(new java.io.IOException("test disk failure")).when(storage).discardOutput(anyString());
+        doThrow(new IOException("test disk failure")).when(storage).discardOutput(anyString());
         worker.runOne();
         var current=tasks.task(owner.id,task.id());
         assertThat(current.getRunToken()).isNotNull(); assertThat(current.getStatus().name()).isEqualTo("RUNNING");
@@ -307,7 +381,7 @@ class TranscriptIntegrationTests {
         var saved=transcripts.get(owner.id,item.id(),null);
         assertThat(saved.originalSegments()).isEqualTo(item.segments()); assertThat(transcripts.get(owner.id,item.id(),1).segments()).isEqualTo(item.segments());
         mvc.perform(get("/api/transcripts/"+item.id()+"/srt").cookie(owner.cookie).param("version","2"))
-                .andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("你好，世界。\r\nHello 1\r\n")));
+                .andExpect(status().isOk()).andExpect(content().string(Matchers.containsString("你好，世界。\r\nHello 1\r\n")));
         translation.translate(owner.id,item.id(),translationRequest(saved,true));
         verify(translator,atLeastOnce()).translate(eq(item.originalSegments()),eq("en"),eq(owner.id));
         prepareBurn();
@@ -362,7 +436,7 @@ class TranscriptIntegrationTests {
         for(String change:List.of("edit","recognize","delete","revoke")) {
             var owner=login(); var item=generate(owner,source(owner)); prepareTranslation();
             doAnswer(call->{
-                assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
                 switch(change) {
                     case "edit" -> transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(1,item.segments()));
                     case "recognize" -> generate(owner,item.mediaId(),true);
@@ -448,7 +522,7 @@ class TranscriptIntegrationTests {
         var owner=login(); var item=generate(owner,source(owner)); var first=item.segments().getFirst();
         when(analyzer.isAvailable(anyString())).thenReturn(true);
         when(analyzer.analyze(anyString(),anyList(),any(),anyInt(),anyLong(),anyString())).thenAnswer(call->{
-            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(1,item.segments()));
             return List.of(new TranscriptAnalyzer.Selection(first.id(),first.id(),0.9,null,null));
         });
@@ -506,7 +580,7 @@ class TranscriptIntegrationTests {
         var task=processing.execute(owner.id,plan.id(),1); assertThat(processing.execute(owner.id,plan.id(),1).id()).isEqualTo(task.id());
         transcripts.update(owner.id,item.id(),new UpdateTranscriptRequest(1,List.of(new TranscriptSegment(UUID.randomUUID(),100L,1100L,"新版文字"))));
         doAnswer(call->{
-            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             Path ass=call.getArgument(4,Path.class); assertThat(Files.readString(ass)).contains("你好，世界。").doesNotContain("新版文字");
             Files.write(call.getArgument(1,Path.class),new byte[]{2,3,4}); return null;
         }).when(transcoder).burnSubtitles(any(),any(),any(),any(),any(),any());
@@ -530,13 +604,13 @@ class TranscriptIntegrationTests {
         var make=new ProcessBuilder("ffmpeg","-v","error","-f","lavfi","-i","color=c=black:s=160x90:r=20:d=5",
                 "-f","lavfi","-i","sine=frequency=440:sample_rate=48000:duration=5","-c:v","libx264","-c:a","aac","-pix_fmt","yuv420p","-f","mp4","-y",input.toString())
                 .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
-        try { assertThat(make.waitFor(15,java.util.concurrent.TimeUnit.SECONDS)).isTrue(); assertThat(make.exitValue()).isZero(); }
+        try { assertThat(make.waitFor(15,TimeUnit.SECONDS)).isTrue(); assertThat(make.exitValue()).isZero(); }
         finally { make.destroyForcibly(); }
         byte[] original=Files.readAllBytes(input);
         jdbc.update("UPDATE media SET size_bytes=? WHERE id=?",original.length,item.mediaId());
-        var nativeTool=new org.example.ai_media_workbench.service.impl.FfmpegMediaTranscoder(new org.example.ai_media_workbench.properties.TranscodeProperties(
-                "ffmpeg",Duration.ofSeconds(20),Duration.ofMinutes(7),20,org.springframework.util.unit.DataSize.ofMegabytes(10),false));
-        var nativeProbe=new org.example.ai_media_workbench.service.impl.FfprobeMediaProbe(new org.example.ai_media_workbench.properties.MediaToolProperties(
+        var nativeTool=new FfmpegMediaTranscoder(new TranscodeProperties(
+                "ffmpeg",Duration.ofSeconds(20),Duration.ofMinutes(7),20,DataSize.ofMegabytes(10),false));
+        var nativeProbe=new FfprobeMediaProbe(new MediaToolProperties(
                 "ffprobe",Duration.ofSeconds(10),Duration.ofMinutes(2),1000,false),json);
         assertThat(nativeTool.isSubtitleBurnAvailable()).isTrue();
         when(probe.inspect(any())).thenAnswer(call->nativeProbe.inspect(call.getArgument(0,Path.class)));
@@ -580,13 +654,13 @@ class TranscriptIntegrationTests {
         var valid=burnParameters(item);
         var invalid=new ArrayList<JsonNode>();
         for(String key:List.of("transcriptId","transcriptVersion","resolutionPreset","audioMode")) {
-            var node=(tools.jackson.databind.node.ObjectNode)valid.deepCopy(); node.remove(key); invalid.add(node);
+            var node=(ObjectNode)valid.deepCopy(); node.remove(key); invalid.add(node);
         }
-        invalid.add(((tools.jackson.databind.node.ObjectNode)valid.deepCopy()).put("transcriptVersion",1.5));
-        invalid.add(((tools.jackson.databind.node.ObjectNode)valid.deepCopy()).put("transcriptVersion",0));
-        invalid.add(((tools.jackson.databind.node.ObjectNode)valid.deepCopy()).put("transcriptId","../../external.ass"));
-        invalid.add(((tools.jackson.databind.node.ObjectNode)valid.deepCopy()).put("audioMode","mute"));
-        invalid.add(((tools.jackson.databind.node.ObjectNode)valid.deepCopy()).put("font","../../file"));
+        invalid.add(((ObjectNode)valid.deepCopy()).put("transcriptVersion",1.5));
+        invalid.add(((ObjectNode)valid.deepCopy()).put("transcriptVersion",0));
+        invalid.add(((ObjectNode)valid.deepCopy()).put("transcriptId","../../external.ass"));
+        invalid.add(((ObjectNode)valid.deepCopy()).put("audioMode","mute"));
+        invalid.add(((ObjectNode)valid.deepCopy()).put("font","../../file"));
         for(var node:invalid) mvc.perform(post("/api/operation-plans").cookie(owner.cookie).header("X-CSRF-Token",owner.csrf)
                 .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(Map.of("mediaId",item.mediaId(),"parameters",node))))
                 .andExpect(status().isUnprocessableEntity());
@@ -622,7 +696,7 @@ class TranscriptIntegrationTests {
         var owner=login(); var item=generate(owner,source(owner)); prepareBurn();
         var plan=processing.create(owner.id,new CreatePlanRequest(UUID.fromString(item.mediaId()),burnParameters(item),null));
         var task=processing.execute(owner.id,plan.id(),1);
-        doThrow(new java.io.IOException("test failure")).when(storage).discardOutputAuxiliary(endsWith(".mp4"));
+        doThrow(new IOException("test failure")).when(storage).discardOutputAuxiliary(endsWith(".mp4"));
         worker.runOne();
         assertThat(jdbc.queryForObject("SELECT run_token FROM media_task WHERE id=?",String.class,task.id())).isNotBlank();
         assertThat(processing.task(owner.id,task.id()).outputs()).isEmpty();

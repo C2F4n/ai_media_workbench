@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { ListPlus,Play, Scissors } from '@lucide/vue';
 import { computed } from 'vue';
-import { Play, Scissors, ListPlus } from '@lucide/vue';
+
 import type { ClipAction, ClipResult, FindState } from '../types';
 const props = defineProps<FindState>();
 const emit = defineEmits<{ action: [action: ClipAction, item: ClipResult] }>();

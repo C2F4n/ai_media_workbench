@@ -1,8 +1,9 @@
 import { createApp, h, shallowReactive } from 'vue';
-import CloudProvider from '../components/CloudProvider.vue';
-import { providers } from './catalog';
-import type { CloudServices } from './catalog';
+
 import type { CloudCredential } from '../api/contracts';
+import CloudProvider from '../components/CloudProvider.vue';
+import type { CloudServices } from './catalog';
+import { providers } from './catalog';
 export function mountCloudSettings(services: CloudServices) {
   const state = shallowReactive({ entries: [] as CloudCredential[], disabled: true, resetKey: 0 });
   const apps = ['text', 'speech'].map(category => {

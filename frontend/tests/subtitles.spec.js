@@ -67,6 +67,9 @@ async function fixture(page, enabled = true, existing = false, models = null) {
       return route.fulfill({ status: 200, contentType: 'application/x-subrip;charset=UTF-8', headers: { 'Content-Disposition': 'attachment; filename="subtitles.srt"' },
         body: `1\r\n00:00:00,100 --> 00:00:01,100\r\n${text}\r\n\r\n` });
     }
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + method + ' ' + url.pathname);
   });
   return { calls, versions, selection, writes: () => writes };
@@ -83,7 +86,7 @@ for (const width of [1365, 390, 320]) test(`speech model selection follows its s
   await page.setViewportSize({ width, height: 900 });
   const state = await fixture(page, true, false, speechModels);
   await page.removeLocatorHandler(page.locator('#cloud-confirm-dialog[open]'));
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'subtitle');
   await page.locator('#asr-provider').selectOption('aliyun');
   await expect(page.locator('#asr-model option')).toHaveCount(3);
@@ -126,7 +129,7 @@ test('cloud subtitle workflow supports editing, versions, safe correction sugges
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept());
   const state = await fixture(page);
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'subtitle'); await expect(page.locator('#subtitle-state')).toHaveText('暂无字幕');
   await page.locator('#asr-provider').selectOption('aliyun'); await page.locator('#start-transcription').click();
   await expect(page.locator('#subtitle-editor')).toBeVisible({ timeout: 12000 });
@@ -171,7 +174,7 @@ test('cloud subtitle workflow supports editing, versions, safe correction sugges
 
 test('missing cloud credentials disable new recognition but retain existing subtitle editing/export', async ({ page }) => {
   await fixture(page, false, true);
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'subtitle');
   await expect(page.locator('#subtitle-editor')).toBeVisible();
   await expect(page.locator('#subtitle-state')).toHaveText('语音识别服务尚未配置。');

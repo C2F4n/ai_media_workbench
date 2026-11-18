@@ -1,7 +1,10 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.List;
+import java.util.UUID;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
 import org.example.ai_media_workbench.service.SubtitleCorrector;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -23,7 +26,7 @@ public class DeepSeekSubtitleCorrector implements SubtitleCorrector {
         try {
             if (!result.isObject() || result.size()!=1 || !result.path("text").isString()) throw new BusinessException(ErrorCode.AI_FAILED);
             String corrected=result.path("text").asText().strip();
-            TranscriptSegments.checked(List.of(new org.example.ai_media_workbench.dto.transcript.TranscriptSegment(UUID.randomUUID(),0L,1L,corrected)),1,json);
+            TranscriptSegments.checked(List.of(new TranscriptSegment(UUID.randomUUID(),0L,1L,corrected)),1,json);
             return corrected;
         } catch (Exception exception) { throw new BusinessException(ErrorCode.AI_FAILED); }
     }

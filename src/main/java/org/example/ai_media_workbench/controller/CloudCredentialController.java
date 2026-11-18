@@ -5,11 +5,18 @@ import jakarta.validation.Valid;
 import java.util.List;
 import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.common.security.AccountPrincipal;
-import org.example.ai_media_workbench.dto.cloud.*;
+import org.example.ai_media_workbench.dto.cloud.DeleteCloudCredentialRequest;
+import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest;
 import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.example.ai_media_workbench.vo.cloud.CloudCredentialVO;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 当前账号的云端配置入口（/api/users/me/cloud-credentials）：查询、保存和删除供应商凭据及服务来源。

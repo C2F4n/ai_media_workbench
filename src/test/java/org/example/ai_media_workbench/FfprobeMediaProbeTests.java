@@ -1,9 +1,10 @@
 package org.example.ai_media_workbench;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -42,7 +43,7 @@ class FfprobeMediaProbeTests {
             generator=new ProcessBuilder("ffmpeg","-v","error","-f","lavfi","-i","color=c=blue:s=160x90:r=10:d=0.4",
                     "-an","-c:v","libx264","-pix_fmt","yuv420p","-y",video.toString())
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
-        } catch(java.io.IOException exception) { assumeTrue(false,"Install ffmpeg to generate fixture"); return; }
+        } catch(IOException exception) { assumeTrue(false,"Install ffmpeg to generate fixture"); return; }
         try { assertThat(generator.waitFor(10,TimeUnit.SECONDS)).isTrue(); assertThat(generator.exitValue()).isZero(); }
         finally { generator.destroyForcibly(); }
         var metadata=probe.inspect(video);

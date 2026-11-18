@@ -2,6 +2,7 @@ package org.example.ai_media_workbench.service.impl;
 
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Locale;
@@ -17,9 +18,9 @@ import org.example.ai_media_workbench.properties.RegistrationMailProperties;
 import org.example.ai_media_workbench.service.RegistrationEmailService;
 import org.example.ai_media_workbench.service.RegistrationMailSender;
 import org.example.ai_media_workbench.vo.auth.RegistrationEmailVO;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,7 +54,7 @@ public class RegistrationEmailServiceImpl implements RegistrationEmailService {
         if (!auth.registrationEnabled()) throw new BusinessException(ErrorCode.REGISTRATION_DISABLED);
         if (!mail.isAvailable()) throw new BusinessException(ErrorCode.EMAIL_DELIVERY_UNAVAILABLE);
         String canonical = email.strip().toLowerCase(Locale.ROOT);
-        try (var permit = limiter.reserve("registration-mail:email:" + canonical, properties.sendAttempts(), java.time.Duration.ofMinutes(1))) {
+        try (var permit = limiter.reserve("registration-mail:email:" + canonical, properties.sendAttempts(), Duration.ofMinutes(1))) {
             String code = String.format(Locale.ROOT, "%06d", random.nextInt(1_000_000));
             var challenge = new RegistrationEmailEntity();
             challenge.setId(UUID.randomUUID().toString());

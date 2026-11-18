@@ -45,15 +45,18 @@ async function fixture(page, local = false) {
         return reply(state.task);
       }
     }
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + method + ' ' + path);
   });
   page.on('dialog', dialog => { throw new Error('Unexpected native dialog: ' + dialog.message()); });
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   return state;
 }
 
 async function openSettings(page) {
-  await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click(); await page.locator('#account-cloud-tab').click();
   await expect(page.locator('#skip-cloud-confirmation')).toBeVisible();
 }
 async function start(page, feature) {
@@ -114,15 +117,15 @@ test('cancel close and Escape never commit the checkbox or call a supplier', asy
 test('accepted suppression survives reload, synchronizes with settings and resets on a new login', async ({ page }) => {
   const state = await fixture(page); await start(page, 'ai'); await page.locator('#cloud-confirm-skip').check(); await page.locator('#accept-cloud-confirm').click();
   await expect.poll(() => state.calls.length).toBe(1); await openSettings(page); await expect(page.locator('#skip-cloud-confirmation')).toBeChecked();
-  await page.reload(); await expect(page.locator('#media-status')).toHaveText('已就绪'); await start(page, 'ai'); await expect.poll(() => state.calls.length).toBe(2);
+  await page.reload(); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await start(page, 'ai'); await expect.poll(() => state.calls.length).toBe(2);
   await expect(page.locator('#cloud-confirm-dialog')).toBeHidden();
   await openSettings(page); await page.locator('#skip-cloud-confirmation').uncheck(); await page.locator('#back-workbench').click();
   await start(page, 'ai'); await expect(page.locator('#cloud-confirm-dialog')).toBeVisible(); await page.locator('#cancel-cloud-confirm').click();
-  await openSettings(page); await page.locator('#skip-cloud-confirmation').check(); await page.locator('#header-logout').click();
+  await openSettings(page); await page.locator('#skip-cloud-confirmation').check(); await page.locator('#workspace-home-sidebar').getByRole('button', { name: '退出登录', exact: true }).click();
   await expect(page.locator('#auth-view')).toBeVisible(); expect(await page.evaluate(() => localStorage.getItem('amw-cloud-confirmation'))).toBeNull();
   state.signedIn = true;
   await page.evaluate(() => { const channel = new BroadcastChannel('amw-account'); channel.postMessage('account-changed'); channel.close(); });
-  await expect(page.locator('#media-status')).toHaveText('已就绪'); await start(page, 'ai'); await expect(page.locator('#cloud-confirm-dialog')).toBeVisible();
+  await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await start(page, 'ai'); await expect(page.locator('#cloud-confirm-dialog')).toBeVisible();
   expect(state.calls).toHaveLength(2);
 });
 

@@ -64,10 +64,13 @@ async function fixture(page, { count = 2, enabled = true, failBatch = 0, failCod
         parameters: burns.at(-1).parameters, outputs: [], createdAt: now }; return ok(task);
     }
     if (url.pathname === '/api/tasks') return ok({ items: task ? [task] : [], total: task ? 1 : 0, page: 1, pageSize: 10 });
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + method + ' ' + url.pathname);
   });
   page.on('dialog', dialog => dialog.accept());
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'subtitle'); await expect(page.locator('#subtitle-editor')).toBeVisible();
   return { calls, patches, burns, original, versions, release, change: () => versions.set(latestVersion() + 1, structuredClone(original)) };
 }

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { Download, FolderInput, SlidersHorizontal } from '@lucide/vue';
-import { phases } from '../workbench/catalog';
+
 import type { NavigationState, PhaseId } from '../workbench/catalog';
+import { phases } from '../workbench/catalog';
 const props = defineProps<{ state: NavigationState }>();
 const emit = defineEmits<{ select: [phase: PhaseId] }>();
 const labels = { import: '导入', edit: '编辑', export: '导出' };

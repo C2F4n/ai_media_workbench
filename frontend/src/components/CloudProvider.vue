@@ -1,26 +1,30 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { Save, Trash2 } from '@lucide/vue';
-import { credentialRules, customModelPattern, textVendors } from '../cloud/catalog';
-import type { CloudServices, Provider, TextVendor } from '../cloud/catalog';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
+
 import type { CloudCredential } from '../api/contracts';
+import type { CloudServices, Provider, TextVendor } from '../cloud/catalog';
+import { credentialRules, customModelPattern, textVendors } from '../cloud/catalog';
 const props = defineProps<{ provider: Provider; saved: CloudCredential; disabled: boolean; resetKey: number; services: CloudServices }>();
 const article = ref<HTMLElement>(), form = ref<HTMLFormElement>();
-const mode = ref(props.saved.mode), vendor = ref<TextVendor>(props.saved.textProvider || 'deepseek'), dirty = ref(false);
-const draft = reactive<Record<string, string>>({ appId: props.saved.appId || '', workspaceId: props.saved.workspaceId || '', apiKey: '', secretId: '', secretKey: '', model: props.saved.mode === 'PERSONAL' ? props.saved.model || '' : textVendors[vendor.value].model, customModel: '' });
-const text = props.provider.id === 'deepseek';
+// 保存版本变化时父级通过 key 重建组件；编辑中的草稿独立于已保存凭据，避免覆盖用户输入。
+function initialCredential() { return props.saved; }
+const initial = initialCredential();
+const mode = ref(initial.mode), vendor = ref<TextVendor>(initial.textProvider || 'deepseek'), dirty = ref(false);
+const draft = reactive<Record<string, string>>({ appId: initial.appId || '', workspaceId: initial.workspaceId || '', apiKey: '', secretId: '', secretKey: '', model: initial.mode === 'PERSONAL' ? initial.model || '' : textVendors[vendor.value].model, customModel: '' });
+const text = computed(() => props.provider.id === 'deepseek');
 const selection = computed(() => textVendors[vendor.value]);
-const keepKey = computed(() => props.saved.personalStored && props.saved.mode === 'PERSONAL' && (!text || vendor.value === (props.saved.textProvider || 'deepseek')));
+const keepKey = computed(() => props.saved.personalStored && props.saved.mode === 'PERSONAL' && (!text.value || vendor.value === (props.saved.textProvider || 'deepseek')));
 const models = computed(() => {
   const result = [...selection.value.models];
   if (props.saved.mode === 'PERSONAL' && vendor.value === (props.saved.textProvider || 'deepseek') && props.saved.model && !result.some(([id]) => id === props.saved.model)) result.push([props.saved.model, '已保存：' + props.saved.model]);
   return result;
 });
 if (props.saved.mode === 'PERSONAL' && !selection.value.models.some(([id]) => id === props.saved.model)) draft.customModel = props.saved.model || '';
-const custom = computed(() => text && draft.model === '__custom__');
+const custom = computed(() => text.value && draft.model === '__custom__');
 const available = computed(() => props.saved.available ?? props.saved.configured);
 const status = computed(() => dirty.value ? '未保存' : props.saved.mode === 'OFF' ? '已停用' : props.saved.mode === 'SERVER'
-  ? available.value ? '服务端模型已就绪' : text ? '服务端模型暂不可用，请检查模型服务是否已启动。' : '服务端模型不支持语音识别，请配置我的凭据'
+  ? available.value ? '服务端模型已就绪' : text.value ? '服务端模型暂不可用，请检查模型服务是否已启动。' : '服务端模型不支持语音识别，请配置我的凭据'
   : available.value ? '个人凭据已配置' : props.saved.unavailableReason || (props.saved.personalStored ? '个人凭据不可读取' : '个人凭据尚未配置'));
 const endpoint = computed(() => vendor.value === 'bailian' && /^[A-Za-z0-9][A-Za-z0-9-]{0,79}$/.test(draft.workspaceId)
   ? `https://${draft.workspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions` : selection.value.endpoint);
@@ -28,7 +32,7 @@ function changed() { dirty.value = true; }
 function clearSecrets() { draft.apiKey = ''; draft.secretId = ''; draft.secretKey = ''; }
 watch(() => props.resetKey, clearSecrets);
 function switchVendor() { clearSecrets(); draft.customModel = ''; draft.workspaceId = ''; draft.model = selection.value.model; changed(); }
-function label(name: string, fallback: string) { return text && name === 'apiKey' ? selection.value.name + ' API Key' : text && name === 'model' ? selection.value.name + ' 模型' : fallback; }
+function label(name: string, fallback: string) { return text.value && name === 'apiKey' ? selection.value.name + ' API Key' : text.value && name === 'model' ? selection.value.name + ' 模型' : fallback; }
 function current(context: string) { return !props.disabled && article.value?.isConnected && props.services.context() === context; }
 async function save() {
   if (props.disabled) return;
@@ -45,8 +49,8 @@ async function save() {
   if (!form.value?.reportValidity()) return;
   const context = props.services.context(), body: Record<string, unknown> = { expectedVersion: props.saved.version, mode: mode.value };
   if (mode.value === 'PERSONAL') {
-    if (text) body.textProvider = vendor.value;
-    for (const [name, , secret] of props.provider.fields) if (!(text && name === 'workspaceId' && vendor.value !== 'bailian') && (!secret || draft[name])) body[name] = draft[name];
+    if (text.value) body.textProvider = vendor.value;
+    for (const [name, , secret] of props.provider.fields) if (!(text.value && name === 'workspaceId' && vendor.value !== 'bailian') && (!secret || draft[name])) body[name] = draft[name];
     if (custom.value) body.model = draft.customModel;
     if (!await props.services.confirm({ title: '保存个人凭据', message: `将${props.provider.name}的个人凭据加密保存在此服务器。后续调用使用你在对应服务商的额度，保存本身不会发起付费调用。`, confirmLabel: '保存凭据', kind: 'info', icon: 'key-round' })) return;
   } else if (props.saved.personalStored && !await props.services.confirm({ title: '切换服务来源', message: '这会删除此供应商已保存的个人凭据，并切换到所选服务来源。恢复个人服务时需要重新填写凭据。', confirmLabel: '删除并切换', kind: 'danger', icon: 'key-round' })) return;

@@ -1,23 +1,45 @@
 package org.example.ai_media_workbench.service.impl;
 
 import com.sun.net.httpserver.HttpServer;
-import java.net.*;
-import java.net.http.*;
+import java.io.ByteArrayOutputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpRequest;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest.Mode;
 import org.example.ai_media_workbench.properties.LocalAiProperties;
 import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.ObjectMapper;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class LocalAiTests {
     private final ObjectMapper json = new ObjectMapper();
@@ -142,7 +164,7 @@ class LocalAiTests {
         }
     }
     private byte[] body(HttpRequest request) throws Exception {
-        var bytes=new java.io.ByteArrayOutputStream(); var finished=new CompletableFuture<Void>();
+        var bytes=new ByteArrayOutputStream(); var finished=new CompletableFuture<Void>();
         request.bodyPublisher().orElseThrow().subscribe(new Flow.Subscriber<ByteBuffer>() {
             public void onSubscribe(Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
             public void onNext(ByteBuffer buffer) { var chunk=new byte[buffer.remaining()]; buffer.get(chunk); bytes.writeBytes(chunk); }

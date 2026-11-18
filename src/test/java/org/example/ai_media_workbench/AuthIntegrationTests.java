@@ -1,34 +1,37 @@
 package org.example.ai_media_workbench;
 
 import jakarta.servlet.http.Cookie;
-import java.time.Instant;
-import java.time.Clock;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
-import org.junit.jupiter.api.BeforeEach;
-import org.example.ai_media_workbench.service.RegistrationEmailService;
-import org.example.ai_media_workbench.service.RegistrationMailSender;
-import org.example.ai_media_workbench.service.AuthService;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.security.SessionPolicy;
 import org.example.ai_media_workbench.dto.auth.RegisterRequest;
 import org.example.ai_media_workbench.entity.UserEntity;
 import org.example.ai_media_workbench.entity.UserStatus;
-import org.example.ai_media_workbench.common.exception.BusinessException;
-import org.example.ai_media_workbench.common.exception.ErrorCode;
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.example.ai_media_workbench.common.security.SessionPolicy;
-import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.mapper.AccountCleanupMapper;
+import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.properties.AccountCleanupProperties;
+import org.example.ai_media_workbench.properties.MediaToolProperties;
 import org.example.ai_media_workbench.properties.StorageProperties;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.service.AuthService;
+import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.RegistrationEmailService;
+import org.example.ai_media_workbench.service.RegistrationMailSender;
 import org.example.ai_media_workbench.service.impl.AccountCleanupServiceImpl;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,25 +40,27 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.session.jdbc.JdbcIndexedSessionRepository;
 import org.springframework.session.FindByIndexNameSessionRepository;
 import org.springframework.session.Session;
+import org.springframework.session.jdbc.JdbcIndexedSessionRepository;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doThrow;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -70,14 +75,14 @@ class AuthIntegrationTests {
     @Autowired PasswordEncoder encoder;
     @Autowired JdbcIndexedSessionRepository sessions;
     @Autowired AccountCleanupMapper cleanupMapper;
-    @Autowired org.example.ai_media_workbench.properties.MediaToolProperties mediaToolProperties;
-    @Autowired org.example.ai_media_workbench.properties.TranscodeProperties transcodeProperties;
+    @Autowired MediaToolProperties mediaToolProperties;
+    @Autowired TranscodeProperties transcodeProperties;
     @Autowired JdbcTemplate jdbc;
     @TempDir Path storage;
     @Autowired RegistrationEmailService registrationEmails;
     @Autowired AuthService authService;
     @MockitoBean RegistrationMailSender mail;
-    @MockitoBean org.example.ai_media_workbench.service.MediaTranscoder transcoder;
+    @MockitoBean MediaTranscoder transcoder;
     private final Map<String, String> deliveredCodes = new ConcurrentHashMap<>();
 
     @BeforeEach
@@ -117,7 +122,7 @@ class AuthIntegrationTests {
         var proof = requestCode(email, browser);
         postRegistration(username(), "different_" + email, proof, browser).andExpect(status().isUnprocessableEntity());
         jdbc.update("UPDATE registration_email_challenge SET expires_at=? WHERE id=?",
-                LocalDateTime.ofInstant(Instant.now().minusSeconds(60), java.time.ZoneOffset.UTC), proof.id());
+                LocalDateTime.ofInstant(Instant.now().minusSeconds(60), ZoneOffset.UTC), proof.id());
         postRegistration(username(), email, proof, browser).andExpect(status().isUnprocessableEntity());
         assertThat(userCount(email)).isZero();
         var next = requestCode(email, browser);
@@ -241,7 +246,7 @@ class AuthIntegrationTests {
         return new Proof(data.get("challengeId").asText(), code);
     }
 
-    private org.springframework.test.web.servlet.ResultActions postRegistration(String username, String email, Proof proof, Browser browser) throws Exception {
+    private ResultActions postRegistration(String username, String email, Proof proof, Browser browser) throws Exception {
         return mvc.perform(post("/api/auth/register").cookie(browser.cookie()).header("X-CSRF-Token", browser.csrf())
                 .contentType(MediaType.APPLICATION_JSON).content(registrationBody(username, email, proof.id(), proof.code())));
     }

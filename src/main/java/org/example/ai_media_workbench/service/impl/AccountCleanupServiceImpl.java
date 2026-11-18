@@ -1,13 +1,5 @@
 package org.example.ai_media_workbench.service.impl;
 
-import org.example.ai_media_workbench.entity.AccountCleanupJobEntity;
-import org.example.ai_media_workbench.mapper.AccountCleanupMapper;
-import org.example.ai_media_workbench.service.AccountCleanupService;
-import org.example.ai_media_workbench.properties.StorageProperties;
-import org.example.ai_media_workbench.properties.AccountCleanupProperties;
-import org.example.ai_media_workbench.properties.MediaToolProperties;
-import org.example.ai_media_workbench.properties.TranscodeProperties;
-import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -15,7 +7,17 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
+import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
+import org.example.ai_media_workbench.entity.AccountCleanupJobEntity;
+import org.example.ai_media_workbench.mapper.AccountCleanupMapper;
+import org.example.ai_media_workbench.properties.AccountCleanupProperties;
+import org.example.ai_media_workbench.properties.MediaToolProperties;
+import org.example.ai_media_workbench.properties.StorageProperties;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.service.AccountCleanupService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -100,7 +102,7 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
             if (mapper.claim(job.getId(), now()) != 1) continue;
             try {
                 int deleted;
-                java.util.List<String> keys;
+                List<String> keys;
                 if (job.getOutputId() != null) {
                     deleted = mapper.isDeletedOutput(job.getUserId(), job.getOutputId());
                     keys = mapper.findOutputStorageKeys(job.getUserId(), job.getOutputId());
@@ -155,6 +157,6 @@ public class AccountCleanupServiceImpl implements AccountCleanupService {
     /** 获取清理任务使用的当前 UTC 时间。 */
     private LocalDateTime now() {
         // 与 DATETIME(6) 对齐，避免纳秒舍入把“立即执行”写成略晚于当前时间。
-        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
     }
 }

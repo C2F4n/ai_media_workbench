@@ -1,6 +1,7 @@
 package org.example.ai_media_workbench.common.ai;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,7 +37,7 @@ public final class MediaPlanTools {
                         object(Map.of("parameters", object(properties, List.of("operation", "outputFormat"))), List.of("parameters"))),
                 tool("request_clarification", "需求不明确、不支持或冲突时提出固定澄清问题，不猜测或执行。",
                         object(Map.of("questions", Map.of("type", "array", "minItems", 1, "maxItems", 3, "uniqueItems", true,
-                                "items", enumeration(java.util.Arrays.stream(OperationPlanner.Question.values()).map(Enum::name).toList()))), List.of("questions"))));
+                                "items", enumeration(Arrays.stream(OperationPlanner.Question.values()).map(Enum::name).toList()))), List.of("questions"))));
     }
 
     public static JsonNode readResponse(JsonNode response, ObjectMapper json) {

@@ -1,15 +1,23 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.time.*;
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
-import org.example.ai_media_workbench.common.security.*;
-import org.example.ai_media_workbench.dto.cloud.*;
-import org.example.ai_media_workbench.entity.*;
-import org.example.ai_media_workbench.mapper.*;
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Set;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.security.AuthRateLimiter;
+import org.example.ai_media_workbench.common.security.CloudCredentialCipher;
+import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest;
+import org.example.ai_media_workbench.entity.CloudCredentialEntity;
+import org.example.ai_media_workbench.entity.UserStatus;
+import org.example.ai_media_workbench.mapper.CloudCredentialMapper;
+import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.properties.AiProperties;
 import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.example.ai_media_workbench.vo.cloud.CloudCredentialVO;
+import org.example.ai_media_workbench.vo.system.TextAiStatusVO;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
@@ -97,10 +105,10 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
         return item==null ? SaveCloudCredentialRequest.Mode.SERVER : SaveCloudCredentialRequest.Mode.valueOf(item.getMode());
     }
     /** 汇总当前文字 AI 的来源、供应商、模型及不可用原因，供前端显示。 */
-    @Override public org.example.ai_media_workbench.vo.system.TextAiStatusVO textStatus(String userId) {
+    @Override public TextAiStatusVO textStatus(String userId) {
         if(userId!=null) active(userId,false);
         var item=view("deepseek",userId==null ? null : mapper.find(userId,"deepseek"));
-        return new org.example.ai_media_workbench.vo.system.TextAiStatusVO(item.mode(),item.model(),item.available(),item.unavailableReason(),
+        return new TextAiStatusVO(item.mode(),item.model(),item.available(),item.unavailableReason(),
                 "SERVER".equals(item.mode()) ? "local" : item.textProvider());
     }
     /** 将数据库配置转成可返回前端的 VO，只保留允许展示的字段和状态，不包含密钥或密文。 */

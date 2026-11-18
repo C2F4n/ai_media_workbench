@@ -1,8 +1,9 @@
 import { createApp, h, reactive, shallowReactive } from 'vue';
+
+import type { Media } from '../api/contracts';
 import MediaLibrary from '../components/MediaLibrary.vue';
 import PlanHistory from '../components/PlanHistory.vue';
 import TaskHistory from '../components/TaskHistory.vue';
-import type { Media } from '../api/contracts';
 import type { Plan as OperationPlan, Task } from '../runtime/types';
 
 export interface HistoryServices {

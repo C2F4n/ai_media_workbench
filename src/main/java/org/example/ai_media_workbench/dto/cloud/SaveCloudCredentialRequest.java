@@ -1,6 +1,8 @@
 package org.example.ai_media_workbench.dto.cloud;
 
-import jakarta.validation.constraints.*;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import org.example.ai_media_workbench.common.validation.CodePointLength;
 
 public record SaveCloudCredentialRequest(@NotNull @Min(0) Integer expectedVersion,@NotNull Mode mode,

@@ -4,18 +4,19 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import org.example.ai_media_workbench.common.web.MediaPreview;
 import org.example.ai_media_workbench.dto.processing.OperationParameters;
 import org.example.ai_media_workbench.entity.OperationPlanEntity;
 import org.example.ai_media_workbench.entity.OutputEntity;
 import org.example.ai_media_workbench.entity.TaskEntity;
+import org.example.ai_media_workbench.entity.enums.TaskKind;
 import org.example.ai_media_workbench.entity.enums.TaskStatus;
 import org.example.ai_media_workbench.mapper.ProcessingMapper;
 import org.example.ai_media_workbench.mapper.TranscriptMapper;
-import org.example.ai_media_workbench.entity.enums.TaskKind;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.example.ai_media_workbench.vo.processing.OutputVO;
-import org.example.ai_media_workbench.vo.processing.PlanVO;
 import org.example.ai_media_workbench.vo.processing.PlanNotice;
+import org.example.ai_media_workbench.vo.processing.PlanVO;
 import org.example.ai_media_workbench.vo.processing.TaskVO;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -48,7 +49,7 @@ public class ProcessingViews {
     public OutputVO output(OutputEntity o) {
         return new OutputVO(o.getId(), o.getTaskId(), o.getFilename(), o.getContentType(), o.getSizeBytes(),
                 o.getMetadataJson() == null ? null : json.readValue(o.getMetadataJson(), MediaMetadataVO.class),
-                o.getMetadataJson() != null && org.example.ai_media_workbench.common.web.MediaPreview.supported(json.readValue(o.getMetadataJson(), MediaMetadataVO.class))
+                o.getMetadataJson() != null && MediaPreview.supported(json.readValue(o.getMetadataJson(), MediaMetadataVO.class))
                         && !"video/x-matroska".equals(o.getContentType()) ? "/api/outputs/" + o.getId() + "/preview" : null,
                 "/api/outputs/" + o.getId() + "/download", instant(o.getCreatedAt()));
     }

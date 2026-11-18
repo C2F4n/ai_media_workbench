@@ -1,8 +1,8 @@
 package org.example.ai_media_workbench.dto.user;
 
-import org.example.ai_media_workbench.common.validation.CodePointLength;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import org.example.ai_media_workbench.common.validation.CodePointLength;
 
 public record DeleteUserRequest(
         @NotNull @CodePointLength(min = 1, max = 128) String currentPassword,

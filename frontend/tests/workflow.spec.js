@@ -37,6 +37,8 @@ async function fixture(page, ai = false) {
     }
     if (url.pathname === '/api/tasks') return ok({ items: task ? [task] : [], page: 1, pageSize: 10, total: task ? 1 : 0 });
     if (url.pathname === '/api/tasks/' + taskId) return ok(task);
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error(`Unexpected fixture request: ${method} ${url.pathname}`);
   });
   return { state: () => ({ plan, task, posts, patches, executes }) };
@@ -46,7 +48,7 @@ for (const width of [1365, 390]) test(`manual ordered workflow edits moves saves
   await page.setViewportSize({ width, height: 1000 });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const app = await fixture(page);
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await selectTool(page, 'ai');
   await expect(page.locator('#generate-ai-plan')).toBeDisabled();
   await page.locator('#workflow-step-mode').click(); await expect(page.locator('#workflow-save')).toBeEnabled();
   await expect(page.locator('#dependency-kind')).toHaveText('服务端处理');
@@ -90,7 +92,7 @@ for (const width of [1365, 390]) test(`manual ordered workflow edits moves saves
 test('invalid later ranges are rejected locally and AI workflows can be edited with the same step form', async ({ page }) => {
   const app = await fixture(page, true); let dialogs = 0;
   page.on('dialog', async dialog => { dialogs++; await dialog.accept(); });
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await selectTool(page, 'ai');
   await page.locator('#ai-instruction').fill('保留前5秒，360p导出'); await page.locator('#generate-ai-plan').click();
   await expect(page.locator('#ai-plan-parameters')).toContainText('步骤 3');
   await page.getByRole('button', { name: '编辑步骤', exact: true }).click();
@@ -111,7 +113,7 @@ for (const width of [1920, 1365, 390]) test(`input modes slide both ways, fit di
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   page.on('dialog', dialog => dialog.accept());
   const app = await fixture(page, true);
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await selectTool(page, 'ai');
   const draft = '保留讲解的前五秒，转成360p后导出';
   await page.locator('#ai-instruction').fill(draft);
   await page.evaluate(() => {

@@ -3,7 +3,8 @@ package org.example.ai_media_workbench.service.impl;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.file.Path;
-import java.time.Duration;
+import java.time.LocalTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -158,8 +159,8 @@ public class FfprobeMediaProbe implements MediaProbe {
     }
 
     private long taggedDuration(String value) {
-        try { return (java.time.LocalTime.parse(value).toNanoOfDay() + 999_999) / 1_000_000; }
-        catch (java.time.format.DateTimeParseException invalid) { return 0; }
+        try { return (LocalTime.parse(value).toNanoOfDay() + 999_999) / 1_000_000; }
+        catch (DateTimeParseException invalid) { return 0; }
     }
 
     private boolean checkAvailable() {

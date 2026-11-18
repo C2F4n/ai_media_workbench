@@ -1,13 +1,15 @@
 package org.example.ai_media_workbench.properties;
 
+import java.util.Set;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 /** 解密后的单次个人云端配置；不进入能力接口、任务快照或日志，不作为站点公共额度。 */
 @ConfigurationProperties("app.ai")
 public record AiProperties(String tencentAppId, String tencentSecretId, String tencentSecretKey,
                            String aliyunApiKey, String aliyunWorkspaceId, String deepseekApiKey, String deepseekModel,
                            String textProvider) {
-    @org.springframework.boot.context.properties.bind.ConstructorBinding
+    @ConstructorBinding
     public AiProperties {
         textProvider = textProvider == null ? "deepseek" : textProvider;
     }
@@ -25,7 +27,7 @@ public record AiProperties(String tencentAppId, String tencentSecretId, String t
     public boolean deepseekReady() { return token(deepseekApiKey) && safe(deepseekModel, "[A-Za-z0-9_.-]{1,80}"); }
     /** 兼容旧密文的字段名；文字调用必须按所选供应商验证和路由，不能把同一密钥跨厂商复用。 */
     public boolean textReady() {
-        return java.util.Set.of("deepseek", "openai", "bailian", "doubao").contains(textProvider)
+        return Set.of("deepseek", "openai", "bailian", "doubao").contains(textProvider)
                 && token(deepseekApiKey) && safe(deepseekModel, "[A-Za-z0-9_.:/-]{1,80}")
                 && (!"bailian".equals(textProvider) || aliyunWorkspaceId == null || aliyunWorkspaceId.isBlank()
                     || safe(aliyunWorkspaceId, "[A-Za-z0-9][A-Za-z0-9-]{0,79}"));

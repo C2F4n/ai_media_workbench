@@ -1,9 +1,9 @@
 package org.example.ai_media_workbench.mapper;
 
-import org.example.ai_media_workbench.entity.UserEntity;
 import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.example.ai_media_workbench.entity.UserEntity;
 
 /** 数据访问接口，由 MyBatis 生成实现；方法名对应 resources/mapper/UserMapper.xml 的 SQL id。 */
 @Mapper

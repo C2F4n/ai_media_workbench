@@ -1,12 +1,21 @@
 package org.example.ai_media_workbench.service.impl;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import org.example.ai_media_workbench.common.ai.AsrModel;
 import org.example.ai_media_workbench.properties.AuthProperties;
 import org.example.ai_media_workbench.properties.MediaProperties;
-import org.example.ai_media_workbench.service.SystemService;
-import org.example.ai_media_workbench.service.RegistrationMailSender;
+import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.example.ai_media_workbench.service.MediaProbe;
 import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.OperationPlanner;
+import org.example.ai_media_workbench.service.RegistrationMailSender;
+import org.example.ai_media_workbench.service.SpeechRecognizer;
+import org.example.ai_media_workbench.service.SubtitleCorrector;
+import org.example.ai_media_workbench.service.SystemService;
+import org.example.ai_media_workbench.service.TranscriptAnalyzer;
+import org.example.ai_media_workbench.vo.system.AsrModelVO;
 import org.example.ai_media_workbench.vo.system.CapabilitiesVO;
 import org.springframework.stereotype.Service;
 
@@ -17,18 +26,18 @@ public class SystemServiceImpl implements SystemService {
     private final RegistrationMailSender mail;
     private final MediaProbe probe;
     private final MediaTranscoder transcoder;
-    private final org.example.ai_media_workbench.service.SpeechRecognizer recognizer;
-    private final org.example.ai_media_workbench.service.SubtitleCorrector corrector;
-    private final org.example.ai_media_workbench.service.OperationPlanner planner;
-    private final org.example.ai_media_workbench.service.TranscriptAnalyzer analyzer;
-    private final org.example.ai_media_workbench.service.CloudCredentialService credentials;
+    private final SpeechRecognizer recognizer;
+    private final SubtitleCorrector corrector;
+    private final OperationPlanner planner;
+    private final TranscriptAnalyzer analyzer;
+    private final CloudCredentialService credentials;
 
     public SystemServiceImpl(AuthProperties auth, MediaProperties media, RegistrationMailSender mail, MediaProbe probe, MediaTranscoder transcoder,
-                             org.example.ai_media_workbench.service.SpeechRecognizer recognizer,
-                             org.example.ai_media_workbench.service.SubtitleCorrector corrector,
-                             org.example.ai_media_workbench.service.OperationPlanner planner,
-                             org.example.ai_media_workbench.service.TranscriptAnalyzer analyzer,
-                             org.example.ai_media_workbench.service.CloudCredentialService credentials) {
+                             SpeechRecognizer recognizer,
+                             SubtitleCorrector corrector,
+                             OperationPlanner planner,
+                             TranscriptAnalyzer analyzer,
+                             CloudCredentialService credentials) {
         this.auth = auth;
         this.media = media;
         this.mail = mail;
@@ -45,7 +54,7 @@ public class SystemServiceImpl implements SystemService {
     public CapabilitiesVO getCapabilities(String userId) {
         // 本地文字能力以健康检查为准；个人云端凭据只声明配置就绪，不假装已验证余额和权限。
         boolean registration = auth.registrationEnabled() && mail.isAvailable();
-        var operations = new java.util.ArrayList<String>();
+        var operations = new ArrayList<String>();
         if (probe.isAvailable() && transcoder.isAvailable()) operations.addAll(List.of("transcode", "compress", "trim", "mute", "join_clips"));
         if (probe.isAvailable() && transcoder.isAudioExtractionAvailable()) operations.add("extract_audio");
         if (probe.isAvailable() && transcoder.isSubtitleBurnAvailable()) operations.add("burn_subtitles");
@@ -56,7 +65,7 @@ public class SystemServiceImpl implements SystemService {
                 analyzer.isAvailable(userId), probe.isAvailable(), media.maxUploadSize().toBytes(), media.maxDuration().toMillis(),
                 List.copyOf(operations), providers, corrector.isAvailable(userId),
                 probe.isAvailable() ? transcoder.exportFormats() : List.of(), probe.isAvailable() ? transcoder.exportVideoCodecs() : List.of(), credentials.textStatus(userId),
-                credentials.available(userId,"deepseek"), java.util.Arrays.stream(org.example.ai_media_workbench.common.ai.AsrModel.values())
-                    .map(model -> new org.example.ai_media_workbench.vo.system.AsrModelVO(model.provider(),model.id(),model.displayName(),model.recommended())).toList());
+                credentials.available(userId,"deepseek"), Arrays.stream(AsrModel.values())
+                    .map(model -> new AsrModelVO(model.provider(),model.id(),model.displayName(),model.recommended())).toList());
     }
 }

@@ -1,14 +1,29 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.time.*;
-import java.util.concurrent.*;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.example.ai_media_workbench.properties.*;
+import org.example.ai_media_workbench.properties.TaskExecutionProperties;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.util.unit.DataSize;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.Mockito.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class TaskExecutionTests {
     private static final long GIB=1024L*1024*1024;
@@ -39,7 +54,7 @@ class TaskExecutionTests {
     @Test void unavailableMetricsFallBackToOneButKnownPressureStillStopsAdmission() {
         var policy=new TaskLoadPolicy(config(4,false),16);
         assertThat(policy.evaluate(new HostResourceMonitor.Snapshot(0.1,10*GIB)).parallelLimit()).isEqualTo(4);
-        for(var unknown:java.util.List.of(new HostResourceMonitor.Snapshot(-1,10*GIB),new HostResourceMonitor.Snapshot(Double.NaN,10*GIB),
+        for(var unknown:List.of(new HostResourceMonitor.Snapshot(-1,10*GIB),new HostResourceMonitor.Snapshot(Double.NaN,10*GIB),
                 new HostResourceMonitor.Snapshot(0.1,-1),new HostResourceMonitor.Snapshot(2,10*GIB))) {
             var decision=policy.evaluate(unknown); assertThat(decision.parallelLimit()).isEqualTo(1);
             assertThat(decision.reason()).isEqualTo("METRICS_UNAVAILABLE"); assertThat(decision.paused()).isFalse();

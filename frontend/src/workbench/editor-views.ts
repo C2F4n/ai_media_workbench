@@ -1,8 +1,9 @@
 import { createApp, h, reactive, shallowReactive } from 'vue';
-import JoinRanges from '../components/JoinRanges.vue';
-import WorkflowSteps from '../components/WorkflowSteps.vue';
+
 import type { JoinRow } from '../components/JoinRanges.vue';
+import JoinRanges from '../components/JoinRanges.vue';
 import type { EditStep } from '../components/WorkflowSteps.vue';
+import WorkflowSteps from '../components/WorkflowSteps.vue';
 
 export function mountSequenceEditors(services: { joinChanged(): void; previewJoin(index: number): void; workflowChanged(): void; defaultStep(operation: string): EditStep }) {
   const state = shallowReactive({ rows: [] as JoinRow[], steps: [] as EditStep[], joinDisabled: false, workflowDisabled: false, preview: false, duration: 0, revision: 0 });

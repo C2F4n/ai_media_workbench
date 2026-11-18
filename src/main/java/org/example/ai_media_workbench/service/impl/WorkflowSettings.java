@@ -8,7 +8,12 @@ import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.processing.ExportParameters;
 import org.example.ai_media_workbench.dto.processing.JoinClipsParameters.ClipRange;
 import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
-import org.example.ai_media_workbench.dto.processing.WorkflowParameters.*;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters.Export;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters.Join;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters.Mute;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters.Resize;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters.Step;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters.Trim;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import tools.jackson.databind.JsonNode;
 

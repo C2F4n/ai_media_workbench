@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { FileVideo, Trash2 } from '@lucide/vue';
+
 import type { Media } from '../api/contracts';
 defineProps<{ items: Media[]; busy: boolean; size: (bytes: number) => string; status: (value: string) => string }>();
 const emit = defineEmits<{ open: [media: Media]; remove: [media: Media] }>();

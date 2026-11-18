@@ -1,26 +1,35 @@
 package org.example.ai_media_workbench.service.impl;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
-import org.example.ai_media_workbench.dto.processing.VideoParameters;
-import org.example.ai_media_workbench.dto.processing.OperationParameters;
-import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
-import org.example.ai_media_workbench.dto.processing.CompressionParameters;
-import org.example.ai_media_workbench.dto.processing.TrimParameters;
-import org.example.ai_media_workbench.dto.processing.MuteParameters;
 import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
-import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
+import org.example.ai_media_workbench.dto.processing.CompressionParameters;
 import org.example.ai_media_workbench.dto.processing.ExportParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
+import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
+import org.example.ai_media_workbench.dto.processing.VideoParameters;
 import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.entity.OutputEntity;
 import org.example.ai_media_workbench.entity.TaskEntity;
 import org.example.ai_media_workbench.entity.UserStatus;
+import org.example.ai_media_workbench.entity.enums.TaskKind;
 import org.example.ai_media_workbench.entity.enums.TaskStage;
 import org.example.ai_media_workbench.entity.enums.TaskStatus;
 import org.example.ai_media_workbench.mapper.MediaMapper;
@@ -29,6 +38,7 @@ import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
 import org.example.ai_media_workbench.service.MediaProbe;
 import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.TranscriptService;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,13 +66,13 @@ public class TranscodeWorker {
     private final Clock clock;
     private final TransactionTemplate transactions;
     private final TranscriptionWorker transcription;
-    private final org.example.ai_media_workbench.service.TranscriptService transcripts;
-    private final java.util.Set<String> localRuns=new java.util.HashSet<>();
+    private final TranscriptService transcripts;
+    private final Set<String> localRuns=new HashSet<>();
 
     public TranscodeWorker(ProcessingMapper mapper, MediaMapper media, UserMapper users, LocalMediaStorage storage,
                            MediaTranscoder transcoder, MediaProbe probe, TranscodeProperties properties,
                            ObjectMapper json, Clock clock, PlatformTransactionManager manager, TranscriptionWorker transcription,
-                           org.example.ai_media_workbench.service.TranscriptService transcripts) {
+                           TranscriptService transcripts) {
         this.mapper = mapper; this.media = media; this.users = users; this.storage = storage;
         this.transcoder = transcoder; this.probe = probe; this.properties = properties;
         this.json = json; this.clock = clock; this.transactions = new TransactionTemplate(manager);
@@ -101,7 +111,7 @@ public class TranscodeWorker {
     }
 
     private void process(TaskEntity task) {
-        if (task.getKind() == org.example.ai_media_workbench.entity.enums.TaskKind.TRANSCRIPTION) {
+        if (task.getKind() == TaskKind.TRANSCRIPTION) {
             transcription.process(task); return;
         }
         LocalMediaStorage.OutputTarget target = null;
@@ -119,7 +129,7 @@ public class TranscodeWorker {
             var original = json.readValue(source.getMetadataJson(), MediaMetadataVO.class);
             var parameters = json.readValue(task.getParametersJson(), OperationParameters.class);
             extractingAudio = parameters instanceof ExtractAudioParameters || parameters instanceof ExportParameters e && e.audioOnly()
-                    || parameters instanceof WorkflowParameters && java.util.Set.of("mp3", "m4a", "wav", "flac").contains(parameters.outputFormat());
+                    || parameters instanceof WorkflowParameters && Set.of("mp3", "m4a", "wav", "flac").contains(parameters.outputFormat());
             exporting = parameters instanceof ExportParameters || parameters instanceof WorkflowParameters;
             trimming = parameters instanceof TrimParameters;
             muting = parameters instanceof MuteParameters;
@@ -151,9 +161,9 @@ public class TranscodeWorker {
                 var revision=transcripts.get(task.getUserId(),burn.transcriptId().toString(),burn.transcriptVersion());
                 if(!revision.mediaId().equals(task.getMediaId())) throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND);
                 var size=FfmpegMediaTranscoder.dimensions(original,burn);
-                var subtitleFile=java.nio.file.Path.of(target.path()+".ass");
+                var subtitleFile=Path.of(target.path()+".ass");
                 Files.writeString(subtitleFile,AssSubtitles.render(revision.segments(),size[0],size[1]),
-                        java.nio.charset.StandardCharsets.UTF_8,java.nio.file.StandardOpenOption.CREATE_NEW);
+                        StandardCharsets.UTF_8,StandardOpenOption.CREATE_NEW);
                 transcoder.burnSubtitles(input,target.path(),original,burn,subtitleFile,
                         () -> mapper.running(task.getId(),task.getRunToken())!=1);
                 // 在清空运行令牌前删除私有字幕，避免崩溃后失去辅助文件的清理线索。
@@ -190,7 +200,7 @@ public class TranscodeWorker {
                 output.setFilename(name + "-workflow." + workflow.outputFormat()); output.setContentType(ExportSettings.contentType(workflow.outputFormat()));
             }
             output.setCreatedAt(now());
-            var outputs = new java.util.ArrayList<OutputEntity>(); outputs.add(output);
+            var outputs = new ArrayList<OutputEntity>(); outputs.add(output);
             if (audioTarget != null) {
                 var audioMetadata = probe.inspectAudio(audioTarget.path());
                 verify(originalAudio, audioMetadata, new ExtractAudioParameters("extract_audio", "mp3"));
@@ -224,7 +234,7 @@ public class TranscodeWorker {
     }
 
     /** 发布前再次检查账号和 runToken，拒绝注销、取消或租约失效后才返回的旧执行结果。 */
-    private boolean finish(TaskEntity task, java.util.List<OutputEntity> outputs, ErrorCode error) {
+    private boolean finish(TaskEntity task, List<OutputEntity> outputs, ErrorCode error) {
         var user = users.findByIdForUpdate(task.getUserId());
         if (user == null || user.getStatus() != UserStatus.ACTIVE) return false;
         var current = mapper.lockTask(task.getUserId(), task.getId());
@@ -280,7 +290,7 @@ public class TranscodeWorker {
         if (p.audioOnly()) bad |= output.videoCodec() != null || !output.hasAudio() || !ExportSettings.audioCodec(p.outputFormat()).equals(output.audioCodec());
         else {
             int[] size = ExportSettings.dimensions(source, p);
-            bad |= !java.util.Objects.equals(output.width(), size[0]) || !java.util.Objects.equals(output.height(), size[1]) || !p.videoCodec().equals(output.videoCodec());
+            bad |= !Objects.equals(output.width(), size[0]) || !Objects.equals(output.height(), size[1]) || !p.videoCodec().equals(output.videoCodec());
             bad |= "mute".equals(p.audioMode()) ? output.hasAudio() : p.startMs() == null ? output.hasAudio() != source.hasAudio() : output.hasAudio() && !source.hasAudio();
             bad |= output.hasAudio() && !ExportSettings.audioCodec(p.outputFormat()).equals(output.audioCodec());
         }

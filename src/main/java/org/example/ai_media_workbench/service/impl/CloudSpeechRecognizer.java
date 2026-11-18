@@ -1,33 +1,46 @@
 package org.example.ai_media_workbench.service.impl;
 
 import java.net.URI;
-import java.net.http.*;
+import java.net.http.HttpRequest;
+import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import org.example.ai_media_workbench.common.ai.AsrModel;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
-import org.example.ai_media_workbench.common.ai.AsrModel;
 import org.example.ai_media_workbench.properties.AiProperties;
+import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.example.ai_media_workbench.service.SpeechRecognizer;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.*;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /** 腾讯极速版HTTP / 百炼千问、Fun-ASR、Paraformer WebSocket，直接传私有音频并使用真实时间戳。 */
 @Component
 public class CloudSpeechRecognizer implements SpeechRecognizer {
-    private final org.example.ai_media_workbench.service.CloudCredentialService credentials;
+    private final CloudCredentialService credentials;
     private final ObjectMapper json;
     private final Clock clock;
     private final CloudTransport transport;
 
-    public CloudSpeechRecognizer(org.example.ai_media_workbench.service.CloudCredentialService credentials, ObjectMapper json, Clock clock, CloudTransport transport) {
+    public CloudSpeechRecognizer(CloudCredentialService credentials, ObjectMapper json, Clock clock, CloudTransport transport) {
         this.credentials=credentials; this.json=json; this.clock=clock; this.transport=transport;
     }
     @Override public List<String> providers(String userId) {
@@ -55,7 +68,7 @@ public class CloudSpeechRecognizer implements SpeechRecognizer {
         parameters.put("engine_type","16k_zh"); parameters.put("first_channel_only","1");
         parameters.put("secretid",properties.tencentSecretId()); parameters.put("timestamp",Long.toString(clock.instant().getEpochSecond()));
         parameters.put("voice_format","mp3"); parameters.put("word_info","3"); parameters.put("sentence_max_length","32");
-        String query=parameters.entrySet().stream().map(entry->entry.getKey()+"="+entry.getValue()).collect(java.util.stream.Collectors.joining("&"));
+        String query=parameters.entrySet().stream().map(entry->entry.getKey()+"="+entry.getValue()).collect(Collectors.joining("&"));
         String address="asr.cloud.tencent.com/asr/flash/v1/"+properties.tencentAppId()+"?"+query;
         var request=HttpRequest.newBuilder(URI.create("https://"+address)).timeout(timeout)
                 .header("Authorization",signature("POST"+address,properties.tencentSecretKey()))

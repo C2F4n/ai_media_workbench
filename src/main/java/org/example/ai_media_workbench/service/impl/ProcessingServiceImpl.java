@@ -3,48 +3,55 @@ package org.example.ai_media_workbench.service.impl;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.Set;
-import java.util.List;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.security.AuthRateLimiter;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import org.example.ai_media_workbench.dto.common.PageQuery;
+import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
+import org.example.ai_media_workbench.dto.processing.CompressionParameters;
 import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
+import org.example.ai_media_workbench.dto.processing.ExportParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
+import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
 import org.example.ai_media_workbench.dto.processing.UpdatePlanRequest;
 import org.example.ai_media_workbench.dto.processing.VideoParameters;
-import org.example.ai_media_workbench.dto.processing.OperationParameters;
-import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
-import org.example.ai_media_workbench.dto.processing.CompressionParameters;
-import org.example.ai_media_workbench.dto.processing.TrimParameters;
-import org.example.ai_media_workbench.dto.processing.MuteParameters;
-import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
-import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
-import org.example.ai_media_workbench.dto.processing.ExportParameters;
 import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.entity.MediaEntity;
-import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.example.ai_media_workbench.entity.OperationPlanEntity;
 import org.example.ai_media_workbench.entity.TaskEntity;
 import org.example.ai_media_workbench.entity.UserStatus;
-import org.example.ai_media_workbench.entity.enums.*;
+import org.example.ai_media_workbench.entity.enums.MediaStatus;
+import org.example.ai_media_workbench.entity.enums.PlanStatus;
+import org.example.ai_media_workbench.entity.enums.TaskKind;
+import org.example.ai_media_workbench.entity.enums.TaskStage;
+import org.example.ai_media_workbench.entity.enums.TaskStatus;
 import org.example.ai_media_workbench.mapper.MediaMapper;
 import org.example.ai_media_workbench.mapper.ProcessingMapper;
 import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
 import org.example.ai_media_workbench.service.MediaProbe;
 import org.example.ai_media_workbench.service.MediaTranscoder;
-import org.example.ai_media_workbench.service.ProcessingService;
 import org.example.ai_media_workbench.service.OperationPlanner;
-import org.example.ai_media_workbench.common.security.AuthRateLimiter;
-import org.example.ai_media_workbench.vo.processing.PlanNotice;
+import org.example.ai_media_workbench.service.ProcessingService;
+import org.example.ai_media_workbench.service.TranscriptService;
 import org.example.ai_media_workbench.vo.common.PageVO;
+import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
+import org.example.ai_media_workbench.vo.processing.PlanNotice;
 import org.example.ai_media_workbench.vo.processing.PlanVO;
 import org.example.ai_media_workbench.vo.processing.TaskVO;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -69,13 +76,13 @@ public class ProcessingServiceImpl implements ProcessingService {
     private final OperationPlanner planner;
     private final AuthRateLimiter limiter;
     private final TransactionTemplate transactions;
-    private final org.example.ai_media_workbench.service.TranscriptService transcripts;
+    private final TranscriptService transcripts;
 
     public ProcessingServiceImpl(ProcessingMapper mapper, MediaMapper media, UserMapper users, LocalMediaStorage storage,
                                  MediaTranscoder transcoder, MediaProbe probe, TranscodeProperties properties,
                                  ProcessingViews views, ObjectMapper json, Clock clock, OperationPlanner planner,
                                  AuthRateLimiter limiter, PlatformTransactionManager manager,
-                                 org.example.ai_media_workbench.service.TranscriptService transcripts) {
+                                 TranscriptService transcripts) {
         this.mapper = mapper; this.media = media; this.users = users; this.storage = storage;
         this.transcoder = transcoder; this.probe = probe; this.properties = properties;
         this.views = views; this.json = json; this.clock = clock;
@@ -211,7 +218,7 @@ public class ProcessingServiceImpl implements ProcessingService {
                     + (parameters instanceof MuteParameters ? " / 移除音轨" : " / 保留音轨"));
         else plan.setSummary("MP3 / 提取第一条音轨 / 192 kbps");
         if (parameters instanceof ExportParameters export) {
-            plan.setSummary(export.outputFormat().toUpperCase(java.util.Locale.ROOT)
+            plan.setSummary(export.outputFormat().toUpperCase(Locale.ROOT)
                     + (export.audioOnly() ? " / 提取音轨" : " / " + export.videoCodec() + " / " + export.resolutionPreset())
                     + (export.startMs() == null ? "" : " / 裁切 " + export.startMs() + "-" + export.endMs() + " 毫秒")
                     + (export.targetSizeBytes() == null ? "" : " / 最多 " + export.targetSizeBytes() + " 字节")
@@ -219,7 +226,7 @@ public class ProcessingServiceImpl implements ProcessingService {
                     + (export.extractAudio() ? " / 另存原始音轨 MP3" : ""));
         }
         if (parameters instanceof WorkflowParameters workflow)
-            plan.setSummary("顺序处理 / " + workflow.steps().size() + " 步 / " + workflow.outputFormat().toUpperCase(java.util.Locale.ROOT));
+            plan.setSummary("顺序处理 / " + workflow.steps().size() + " 步 / " + workflow.outputFormat().toUpperCase(Locale.ROOT));
         if (parameters instanceof CompressionParameters compression)
             plan.setSummary(plan.getSummary() + " / 压缩至最多 " + compression.targetSizeBytes() + " 字节");
         if (parameters instanceof TrimParameters trim)
@@ -276,7 +283,7 @@ public class ProcessingServiceImpl implements ProcessingService {
                 if (parameters instanceof WorkflowParameters) requireTool(parameters);
                 return new Resolved(parameters,List.of());
             }
-            if(proposal.questions().isEmpty() || proposal.questions().size()>3 || new java.util.HashSet<>(proposal.questions()).size()!=proposal.questions().size())
+            if(proposal.questions().isEmpty() || proposal.questions().size()>3 || new HashSet<>(proposal.questions()).size()!=proposal.questions().size())
                 throw new IllegalArgumentException();
             return new Resolved(null,proposal.questions().stream().map(question->new PlanNotice(question.name(),question.message())).toList());
         // 模型 JSON 即使能解析，也不代表可执行；不能把内部解析异常或模型原文直接返回用户。

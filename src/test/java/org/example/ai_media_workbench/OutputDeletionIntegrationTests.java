@@ -1,6 +1,7 @@
 package org.example.ai_media_workbench;
 
 import jakarta.servlet.http.Cookie;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -12,7 +13,13 @@ import java.util.concurrent.Executors;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
 import org.example.ai_media_workbench.dto.processing.CreatePlanRequest;
 import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
-import org.example.ai_media_workbench.service.*;
+import org.example.ai_media_workbench.service.AccountCleanupService;
+import org.example.ai_media_workbench.service.MediaProbe;
+import org.example.ai_media_workbench.service.MediaService;
+import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.OutputService;
+import org.example.ai_media_workbench.service.ProcessingService;
+import org.example.ai_media_workbench.service.UserService;
 import org.example.ai_media_workbench.service.impl.TranscodeWorker;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,6 +28,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
@@ -33,11 +41,18 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.ObjectMapper;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties="spring.datasource.url=jdbc:h2:mem:output_deletion_tests;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE")
 @AutoConfigureMockMvc
@@ -59,7 +74,7 @@ class OutputDeletionIntegrationTests {
     @MockitoBean MediaProbe probe;
     @MockitoBean MediaTranscoder transcoder;
     private static final String PASSWORD="Testing-2026!";
-    private static final byte[] BYTES="verified-output".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] BYTES="verified-output".getBytes(StandardCharsets.US_ASCII);
     private final MediaMetadataVO metadata=new MediaMetadataVO("mov",1200,160,90,"h264",true,"aac");
 
     @BeforeEach void prepare() throws Exception {
@@ -128,7 +143,7 @@ class OutputDeletionIntegrationTests {
         Browser owner=login(); var result=completed(owner,source(owner),false);
         jdbc.update("INSERT INTO account_cleanup_job(id,user_id,output_id,scope_key,status,attempts,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',0,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                 UUID.randomUUID().toString(),owner.id(),result.id(),"OUTPUT:"+result.id(),LocalDateTime.now().minusDays(1));
-        assertThatThrownBy(()->outputs.delete(owner.id(),result.id())).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(()->outputs.delete(owner.id(),result.id())).isInstanceOf(DataIntegrityViolationException.class);
         assertThat(outputs.get(owner.id(),result.id())).isNotNull();
         cleanup.runPending(); assertThat(Files.exists(result.path())).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM account_cleanup_job WHERE output_id=?",String.class,result.id())).isEqualTo("FAILED");

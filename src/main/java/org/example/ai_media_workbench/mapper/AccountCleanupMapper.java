@@ -1,10 +1,10 @@
 package org.example.ai_media_workbench.mapper;
 
-import org.example.ai_media_workbench.entity.AccountCleanupJobEntity;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.example.ai_media_workbench.entity.AccountCleanupJobEntity;
 
 @Mapper
 public interface AccountCleanupMapper {

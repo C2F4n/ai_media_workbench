@@ -1,8 +1,8 @@
 package org.example.ai_media_workbench.vo.user;
 
-import org.example.ai_media_workbench.entity.UserEntity;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import org.example.ai_media_workbench.entity.UserEntity;
 
 /** Result.data 中的账号资料：不含敏感字段，日期转换为 UTC Instant，requestId 统一放在外层。 */
 public record UserVO(String id, String username, String displayName, String email,

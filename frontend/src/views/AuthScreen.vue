@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { ChevronsLeftRight, MousePointer2 } from '@lucide/vue';
 import { onMounted, onUnmounted, ref } from 'vue';
-import AuthWelcome from '../components/AuthWelcome.vue';
+
+import { authPhoneOnlyQuery } from '../auth/theme';
+import type { AuthEntryServices } from '../auth/types';
 import AuthCornerWelcome from '../components/AuthCornerWelcome.vue';
-import AuthTypewriter from '../components/AuthTypewriter.vue';
-import AuthPhone from '../components/AuthPhone.vue';
-import AuthGallery from '../components/AuthGallery.vue';
 import AuthCubesGrid from '../components/AuthCubesGrid.vue';
 import AuthDarkCubes from '../components/AuthDarkCubes.vue';
-import type { AuthEntryServices } from '../auth/types';
-import { authPhoneOnlyQuery } from '../auth/theme';
+import AuthGallery from '../components/AuthGallery.vue';
+import AuthPhone from '../components/AuthPhone.vue';
+import AuthTypewriter from '../components/AuthTypewriter.vue';
+import AuthWelcome from '../components/AuthWelcome.vue';
 
 defineProps<{ auth: AuthEntryServices }>();
 const phoneViewport = matchMedia(authPhoneOnlyQuery);

@@ -1,10 +1,11 @@
 package org.example.ai_media_workbench;
 
+import com.zaxxer.hikari.HikariDataSource;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import com.zaxxer.hikari.HikariDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,27 +36,27 @@ class LightweightMigrationTests {
             }
             assertThat(jdbc.queryForObject("SELECT name FROM legacy_project WHERE id=?",String.class,project)).isEqualTo("Preserved history");
             assertThatThrownBy(()->jdbc.update("UPDATE operation_plan SET user_id=? WHERE id=?",other,plan))
-                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                    .isInstanceOf(DataIntegrityViolationException.class);
             assertThat(jdbc.queryForObject("SELECT scope_key FROM account_cleanup_job WHERE user_id=?",String.class,user)).isEqualTo("ACCOUNT");
             assertThatThrownBy(()->jdbc.update("INSERT INTO account_cleanup_job(id,user_id,status,next_attempt_at,created_at,updated_at) VALUES(?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),user))
-                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                    .isInstanceOf(DataIntegrityViolationException.class);
             jdbc.update("INSERT INTO account_cleanup_job(id,user_id,media_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),user,media,media);
             assertThatThrownBy(()->jdbc.update("INSERT INTO account_cleanup_job(id,user_id,media_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),other,media,media))
-                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                    .isInstanceOf(DataIntegrityViolationException.class);
             Flyway.configure().dataSource(source).load().migrate();
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_cleanup_job WHERE output_id IS NULL",Integer.class)).isEqualTo(2);
             jdbc.update("INSERT INTO account_cleanup_job(id,user_id,output_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),user,output,"OUTPUT:"+output);
             assertThatThrownBy(()->jdbc.update("INSERT INTO account_cleanup_job(id,user_id,output_id,scope_key,status,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),other,output,"OUTPUT:"+output))
-                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                    .isInstanceOf(DataIntegrityViolationException.class);
             assertThatThrownBy(()->jdbc.update("UPDATE account_cleanup_job SET media_id=? WHERE output_id=?",media,output))
-                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                    .isInstanceOf(DataIntegrityViolationException.class);
             String transcript=UUID.randomUUID().toString();
             jdbc.update("INSERT INTO transcript(id,user_id,media_id,source_task_id,version,language,original_segments_json,created_at,updated_at) VALUES(?,?,?,?,1,'zh-CN','[]',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",transcript,user,media,task);
             jdbc.update("INSERT INTO transcript_revision(user_id,transcript_id,version,segments_json,created_at) VALUES(?,?,1,'[]',CURRENT_TIMESTAMP)",user,transcript);
             assertThatThrownBy(()->jdbc.update("UPDATE transcript SET user_id=? WHERE id=?",other,transcript))
-                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                    .isInstanceOf(DataIntegrityViolationException.class);
             assertThatThrownBy(()->jdbc.update("INSERT INTO transcript_revision(user_id,transcript_id,version,segments_json,created_at) VALUES(?,?,2,'[]',CURRENT_TIMESTAMP)",other,transcript))
-                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                    .isInstanceOf(DataIntegrityViolationException.class);
         } finally { source.close(); }
     }
 }

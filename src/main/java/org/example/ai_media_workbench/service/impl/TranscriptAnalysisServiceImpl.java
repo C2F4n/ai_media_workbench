@@ -1,11 +1,26 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.security.AuthRateLimiter;
-import org.example.ai_media_workbench.dto.transcript.*;
-import org.example.ai_media_workbench.service.*;
-import org.example.ai_media_workbench.vo.transcript.*;
+import org.example.ai_media_workbench.dto.transcript.RecommendClipsRequest;
+import org.example.ai_media_workbench.dto.transcript.SearchTranscriptRequest;
+import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
+import org.example.ai_media_workbench.service.TranscriptAnalysisService;
+import org.example.ai_media_workbench.service.TranscriptAnalyzer;
+import org.example.ai_media_workbench.service.TranscriptRetriever;
+import org.example.ai_media_workbench.service.TranscriptService;
+import org.example.ai_media_workbench.vo.transcript.ClipRecommendationsVO;
+import org.example.ai_media_workbench.vo.transcript.TranscriptEvidence;
+import org.example.ai_media_workbench.vo.transcript.TranscriptSearchVO;
+import org.example.ai_media_workbench.vo.transcript.TranscriptVO;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 
@@ -57,7 +72,7 @@ public class TranscriptAnalysisServiceImpl implements TranscriptAnalysisService 
     private List<BoundSelection> bind(TranscriptVO snapshot,Analysis analysis,TranscriptAnalyzer.Mode mode,int limit,long budget) {
         var selections=analysis.selections();
         if(selections==null || selections.size()>limit) invalid();
-        var allowed=analysis.candidates().segments().stream().map(TranscriptSegment::id).collect(java.util.stream.Collectors.toSet());
+        var allowed=analysis.candidates().segments().stream().map(TranscriptSegment::id).collect(Collectors.toSet());
         var positions=new HashMap<UUID,Integer>();
         for(int index=0;index<snapshot.segments().size();index++) positions.put(snapshot.segments().get(index).id(),index);
         var used=new HashSet<UUID>(); var result=new ArrayList<BoundSelection>(); long total=0;

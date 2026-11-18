@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'checkstyle'
     id 'org.springframework.boot' version '4.0.8'
     id 'io.spring.dependency-management' version '1.1.7'
 }
@@ -16,6 +17,12 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+checkstyle {
+    toolVersion = '14.4.0'
+    configFile = file('config/checkstyle/checkstyle.xml')
+    maxWarnings = 0
 }
 
 dependencies {
@@ -56,8 +63,10 @@ tasks.register('frontendBuild', Exec) {
     workingDir 'frontend'
     commandLine(System.getProperty('os.name').toLowerCase().contains('windows')
             ? ['cmd', '/c', 'npm', 'run', 'build'] : ['npm', 'run', 'build'])
-    inputs.files(fileTree('frontend/src'), 'frontend/package.json', 'frontend/package-lock.json',
-            'frontend/tsconfig.json', 'frontend/vite.config.mts', 'frontend/scripts/contracts.mjs', 'docs/api/openapi.json')
+    inputs.files(fileTree('frontend/src'), fileTree('frontend/scripts'), fileTree('frontend/tests'),
+            'frontend/package.json', 'frontend/package-lock.json', 'frontend/playwright.config.js',
+            'frontend/tsconfig.json', 'frontend/eslint.config.mjs', 'frontend/vite.config.mts',
+            'docs/api/openapi.json')
     outputs.dir('src/main/resources/static/assets/ui')
 }
 

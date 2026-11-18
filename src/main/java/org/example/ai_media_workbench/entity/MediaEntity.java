@@ -1,8 +1,8 @@
 package org.example.ai_media_workbench.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDateTime;
 import lombok.Data;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.example.ai_media_workbench.entity.enums.MediaKind;
 import org.example.ai_media_workbench.entity.enums.MediaStatus;
 

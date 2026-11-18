@@ -1,8 +1,4 @@
 export interface Elements {
-  "app-header": HTMLElement;
-  "header-workbench": HTMLButtonElement;
-  "header-account": HTMLButtonElement;
-  "header-logout": HTMLButtonElement;
   "loading-view": HTMLElement;
   "unavailable-view": HTMLElement;
   "unavailable-message": HTMLElement;
@@ -13,12 +9,7 @@ export interface Elements {
   "account-notice": HTMLElement;
   "workbench-panel": HTMLElement;
   "workbench-layout": HTMLElement;
-  "tool-sidebar": HTMLElement;
-  "sidebar-backdrop": HTMLButtonElement;
   "tool-content": HTMLElement;
-  "toggle-sidebar": HTMLButtonElement;
-  "workspace-tool-title": HTMLElement;
-  "workspace-user": HTMLElement;
   "workspace-toolbar": HTMLElement;
   "workspace-phases": HTMLElement;
   "workspace-file-state": HTMLElement;
@@ -32,26 +23,10 @@ export interface Elements {
   "tool-stage": HTMLElement;
   "phase-import": HTMLElement;
   "continue-editing": HTMLButtonElement;
-  "upload-title": HTMLElement;
-  "upload-form": HTMLFormElement;
-  "media-file": HTMLInputElement;
-  "selected-filename": HTMLElement;
-  "selected-size": HTMLElement;
-  "selected-preview": HTMLVideoElement;
-  "upload-error": HTMLElement;
-  "upload-submit": HTMLButtonElement;
-  "upload-state": HTMLElement;
-  "media-result-title": HTMLElement;
-  "media-status": HTMLElement;
-  "media-result-empty": HTMLElement;
-  "media-result": HTMLElement;
-  "media-result-name": HTMLElement;
-  "media-metadata": HTMLElement;
   "source-preview": HTMLVideoElement;
   "source-preview-status": HTMLElement;
   "retry-source-preview": HTMLButtonElement;
   "media-error": HTMLElement;
-  "retry-probe": HTMLButtonElement;
   "import-library-slot": HTMLElement;
   "detect-library-slot": HTMLElement;
   "phase-edit": HTMLElement;
@@ -63,8 +38,6 @@ export interface Elements {
   "editor-preview-messages": HTMLElement;
   "editor-info-details": HTMLDetailsElement;
   "editor-metadata": HTMLElement;
-  "detect-editor": HTMLElement;
-  "detect-editor-title": HTMLElement;
   "join-section": HTMLElement;
   "join-title": HTMLElement;
   "refresh-join": HTMLButtonElement;

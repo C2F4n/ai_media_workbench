@@ -1,9 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const { login } = require('./helpers/auth-api.cjs');
 const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
-const { useLegacyWorkbench } = require('./helpers/static.cjs');
 test.beforeEach(async ({ page }) => {
-  await useLegacyWorkbench(page);
   await acceptCloudCalls(page);
   await handleActionConfirmations(page);
 });
@@ -13,12 +11,14 @@ async function selectTool(page, tool) {
   if (tool !== 'history') await page.locator('#phase-edit-tab').click();
 }
 async function uploadMedia(page, file) {
-  await page.locator('#phase-import-tab').click();
-  await page.locator('#media-file').setInputFiles(file);
-  await page.locator('#upload-submit').click();
-  await expect(page.locator('#media-status')).toHaveText(/^(已就绪|检测失败)$/, { timeout: 15000 });
-  if (await page.locator('#media-status').textContent() === '已就绪') await page.locator('#phase-edit-tab').click();
+  const previous = await page.locator('.workspace-tool-tab[aria-selected=true]:visible').first().getAttribute('id');
+  await navigateTool(page, 'detect');
+  await page.locator('.media-detect input[type=file]').setInputFiles(file);
+  await page.getByRole('button', { name: '上传并检测', exact: true }).click();
+  await expect(page.locator('.media-detect-status')).toHaveText(/^(已完成|检测失败)$/, { timeout: 15000 });
+  if (await page.locator('.media-detect-status').textContent() === '已完成') await selectTool(page, previous?.replace('workspace-tool-tab-', '') === 'detect' ? 'convert' : previous?.replace('workspace-tool-tab-', '') || 'convert');
 }
+
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -71,7 +71,7 @@ async function registerAndLogin(page, context) {
   });
   expect(registration.status()).toBe(201);
   await login(page, account, password);
-  await expect(page.locator('#workbench-panel')).toBeVisible();
+  await expect(page.getByRole('region', { name: '工作台主界面' })).toBeVisible();
   await expect(page.locator('#account-panel')).toBeHidden();
   return account;
 }
@@ -90,7 +90,7 @@ test('composite export saves and restores settings, compresses trimmed silent We
   page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
   try {
     await uploadMedia(page, exportVideo);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 12000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 12000 });
     await selectTool(page, 'convert'); await page.locator('#export-format').selectOption('webm');
     await expect(page.locator('#export-codec')).toHaveValue('vp9');
     await page.locator('#export-combine').check();
@@ -99,7 +99,7 @@ test('composite export saves and restores settings, compresses trimmed silent We
     await page.locator('#conversion-resolution').selectOption('custom'); await page.locator('#export-width').fill('320'); await page.locator('#export-height').fill('200');
     await page.locator('#save-export-plan').click(); await expect(page.locator('#export-plan-state')).toContainText('已保存');
     const tasks = await (await context.request.get('/api/tasks')).json(); expect(tasks.data.total).toBe(0);
-    await page.reload(); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'convert');
+    await page.reload(); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await selectTool(page, 'convert');
     await page.locator('#restore-export-plan').click(); await expect(page.locator('#export-plan-state')).toContainText('已恢复');
     await expect(page.locator('#export-format')).toHaveValue('webm'); await expect(page.locator('#export-extract')).toBeChecked();
     await expect(page.locator('#trim-start')).toHaveValue('0.5'); await expect(page.locator('#export-width')).toHaveValue('320');
@@ -130,7 +130,7 @@ test('audio format exports use audio players while HEVC remains download-only', 
   page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
   try {
     await uploadMedia(page, joinVideo);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 12000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 12000 });
     await selectTool(page, 'audio');
     for (const [format, mime] of [['m4a', 'audio/mp4'], ['wav', 'audio/wav'], ['flac', 'audio/flac']]) {
       await page.locator('#phase-edit-tab').click();
@@ -161,7 +161,7 @@ test('ordered repeated clip export runs real FFmpeg, retries one task and restor
   page.on('request', (request) => { if (request.method() === 'POST' && request.url().includes('/api/operation-plans')) writes.push(new URL(request.url()).pathname); });
   try {
     await uploadMedia(page, joinVideo);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 12000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 12000 });
     await selectTool(page, 'join'); await expect(page.locator('#join-clips > li')).toHaveCount(1);
     await expect(page.locator('#join-clips input').first()).toBeEnabled();
     const row = (n) => page.locator('#join-clips > li').nth(n);
@@ -206,7 +206,7 @@ test('ordered repeated clip export runs real FFmpeg, retries one task and restor
       expect(frame[seconds === 1.5 ? 0 : 2]).toBeGreaterThan(150);
     }
     const preview = await context.request.get(await page.locator('#source-preview').getAttribute('src')); expect(await preview.body()).toEqual(fs.readFileSync(joinVideo));
-    await page.reload(); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'join');
+    await page.reload(); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await selectTool(page, 'join');
     await expect(page.locator('#join-clips > li')).toHaveCount(3); await expect(row(0).locator('input').first()).toHaveValue('2');
     await page.locator('#phase-export-tab').click(); await expect(page.locator('#phase-export #conversion-result')).toBeVisible(); expect(errors).toEqual([]);
   } finally { await removeAccount(context, account); }
@@ -221,9 +221,9 @@ test('login opens a project-free workspace and a real video is detected on deskt
   try {
     await expect(page.getByRole('button', { name: '视频转换', exact: true })).toBeEnabled();
     await uploadMedia(page, video);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
-    await expect(page.locator('#media-metadata')).toContainText('160 × 90');
-    await expect(page.locator('#media-metadata')).toContainText('h264');
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
+    await expect(page.locator('#editor-metadata')).toContainText('160 × 90');
+    await expect(page.locator('#editor-metadata')).toContainText('h264');
     await expect(page.locator('#media-total')).toHaveText('1 个素材');
     await selectTool(page, 'audio');
     await expect(page.locator('#audio-missing')).toBeVisible();
@@ -239,12 +239,12 @@ test('login opens a project-free workspace and a real video is detected on deskt
     await page.screenshot({ path: testInfo.outputPath('workbench-' + viewport.width + '.png'), fullPage: true });
     }
     await page.reload();
-    await expect(page.locator('#workbench-panel')).toBeVisible();
-    await expect(page.locator('#media-status')).toHaveText('已就绪');
+    await expect(page.getByRole('region', { name: '工作台主界面' })).toBeVisible();
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成');
     await page.getByRole('button', { name: '账户设置', exact: true }).click();
     await expect(page.locator('#profile-username')).toHaveText(account);
     await page.getByRole('button', { name: '返回工作台', exact: true }).click();
-    await expect(page.locator('#workbench-panel')).toBeVisible();
+    await expect(page.getByRole('region', { name: '工作台主界面' })).toBeVisible();
     expect(requests.some((url) => url.includes('/api/projects'))).toBe(false);
     expect(errors).toEqual([]);
   } finally { await removeAccount(context, account); }
@@ -261,7 +261,7 @@ test('original video previews survive reload, preserve seeking, retry errors and
   const account = await registerAndLogin(page, context);
   try {
     await uploadMedia(page, source);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     const item = (await (await context.request.get('/api/media')).json()).data.items[0];
     expect(item.previewUrl).toBe('/api/media/' + item.id + '/preview');
     const full = await context.request.get(item.previewUrl);
@@ -282,7 +282,7 @@ test('original video previews survive reload, preserve seeking, retry errors and
     await page.getByRole('button', { name: '重新加载原视频', exact: true }).click();
     await page.waitForFunction(() => document.getElementById('source-preview').readyState >= 2);
     await expect(page.locator('#source-preview-status')).toBeHidden();
-    await expect(page.locator('#selected-preview')).toBeHidden();
+    await expect(page.locator('#selected-preview')).toHaveCount(0);
     await expect(page.locator('#source-preview')).toHaveAttribute('src', item.previewUrl);
     await page.locator('#source-preview').evaluate(video => video.play());
     await page.waitForFunction(() => document.getElementById('source-preview').currentTime > 0);
@@ -302,7 +302,7 @@ test('original video previews survive reload, preserve seeking, retry errors and
     await page.screenshot({ path: testInfo.outputPath('source-preview-' + viewport.width + '.png'), fullPage: true });
     }
     await uploadMedia(page, unsupported);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await expect(page.locator('#source-preview')).toBeHidden();
     await expect(page.locator('#source-preview')).not.toHaveAttribute('src');
     await expect(page.locator('#source-preview-status')).toHaveText('当前格式不支持直接预览。');
@@ -323,10 +323,10 @@ test('damaged files fail honestly and can be retried', async ({ page, context })
   const account = await registerAndLogin(page, context);
   try {
     await uploadMedia(page, { name: 'broken.mp4', mimeType: 'video/mp4', buffer: Buffer.from('not a real video') });
-    await expect(page.locator('#media-status')).toHaveText('检测失败', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('检测失败', { timeout: 15000 });
     await expect(page.locator('#media-error')).toBeVisible();
     await page.getByRole('button', { name: '重新检测', exact: true }).click();
-    await expect(page.locator('#media-status')).toHaveText('检测失败', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('检测失败', { timeout: 15000 });
     await expect(page.locator('#media-total')).toHaveText('1 个素材');
   } finally { await removeAccount(context, account); }
 });
@@ -339,7 +339,7 @@ test('native conversion survives reload and provides a playable authenticated do
     await selectTool(page, 'convert');
     await expect(page.locator('#start-conversion')).toBeDisabled();
     await uploadMedia(page, video);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await page.locator('#conversion-resolution').selectOption('720p');
     await page.getByRole('button', { name: '开始转换', exact: true }).click();
     await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 20000 });
@@ -365,7 +365,7 @@ test('native conversion survives reload and provides a playable authenticated do
     const metadata = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height', '-of', 'json', downloaded], { timeout: 10000 }).toString());
     expect(metadata.streams[0]).toMatchObject({ codec_name: 'h264', width: 160, height: 90 });
     await page.reload();
-    await expect(page.locator('#workbench-panel')).toBeVisible();
+    await expect(page.getByRole('region', { name: '工作台主界面' })).toBeVisible();
     await selectTool(page, 'convert');
     await expect(page.locator('#task-status')).toHaveText('已完成');
     await expect(page.locator('#download-output')).toHaveAttribute('href', href);
@@ -390,7 +390,7 @@ test('target-size compression produces a complete smaller video and persists its
   try {
     await selectTool(page, 'compress');
     await uploadMedia(page, compressionVideo);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await page.locator('#compression-target').fill('0');
     await expect(page.getByRole('button', { name: '开始压缩', exact: true })).toBeDisabled();
     const target = 200000;
@@ -441,7 +441,7 @@ test('audio extraction provides playable private MP3 and restores after reload',
     await expect(page.locator('#resolution-field')).toBeHidden();
     await expect(page.locator('#compression-target-field')).toBeHidden();
     await uploadMedia(page, source);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await expect(page.locator('#audio-missing')).toBeHidden();
     await page.getByRole('button', { name: '开始提取', exact: true }).click();
     await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 15000 });
@@ -492,14 +492,14 @@ test('deleting media confirms, retries safely and revokes results without restor
   try {
     await selectTool(page, 'convert');
     await uploadMedia(page, video);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await page.getByRole('button', { name: '开始转换', exact: true }).click();
     await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 20000 });
     const task = (await (await context.request.get('/api/tasks')).json()).data.items[0];
     const output = task.outputs[0];
     await uploadMedia(page, { name: 'preserved.mp4', mimeType: 'video/mp4', buffer: fs.readFileSync(video) });
-    await expect(page.locator('#media-result-name')).toHaveText('preserved.mp4');
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-file-text strong')).toHaveText('preserved.mp4');
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await expect(page.locator('#media-total')).toHaveText('2 个素材');
     await page.waitForFunction(() => document.getElementById('selected-preview').readyState >= 2 && document.getElementById('output-preview').readyState >= 2);
     await page.locator('#phase-import-tab').click();
@@ -553,18 +553,18 @@ test('deleting media confirms, retries safely and revokes results without restor
     await expect(page.locator('#task-total')).toHaveText('0 个任务');
     await expect(page.locator('#conversion-result')).toBeHidden();
     await expect(page.locator('#download-output')).toBeHidden();
-    await expect(page.locator('#media-result-name')).toHaveText('preserved.mp4');
+    await expect(page.locator('.media-detect-file-text strong')).toHaveText('preserved.mp4');
     for (const url of ['/api/media/' + task.mediaId, '/api/tasks/' + task.id, output.previewUrl, output.downloadUrl])
       expect((await context.request.get(url)).status()).toBe(404);
     expect((await context.request.delete('/api/media/' + task.mediaId, { headers: { 'X-CSRF-Token': await csrf(context) } })).status()).toBe(200);
     await page.reload();
     await expect(page.locator('#media-total')).toHaveText('1 个素材');
-    await expect(page.locator('#media-result-name')).toHaveText('preserved.mp4');
+    await expect(page.locator('.media-detect-file-text strong')).toHaveText('preserved.mp4');
     await page.locator('#phase-import-tab').click();
     await page.getByRole('button', { name: '删除素材 preserved.mp4', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.locator('#media-total')).toHaveText('0 个素材');
-    await expect(page.locator('#media-result')).toBeHidden();
+    await expect(page.locator('.media-detect-status')).toHaveText('等待导入');
     await selectTool(page, 'convert');
     await expect(page.getByRole('button', { name: '开始转换', exact: true })).toBeDisabled();
     expect(errors).toEqual([]);
@@ -584,7 +584,7 @@ test('individual MP3 and MP4 deletion preserves originals, history and the abili
   try {
     await selectTool(page, 'convert');
     await uploadMedia(page, source);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await page.getByRole('button', { name: '开始转换', exact: true }).click();
     await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 20000 });
     await selectTool(page, 'audio');
@@ -695,8 +695,8 @@ test('video mute removes all audio and preserves the source with private playbac
     await expect(page.locator('#compression-target-field')).toBeHidden();
     await page.locator('#conversion-resolution').selectOption('720p');
     await uploadMedia(page, source);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
-    await expect(page.locator('#media-metadata')).toContainText('aac');
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
+    await expect(page.locator('#editor-metadata')).toContainText('aac');
     await page.getByRole('button', { name: '开始静音', exact: true }).click();
     await expect(page.locator('#task-status')).toHaveText('已完成', { timeout: 20000 });
     const tasks = (await (await context.request.get('/api/tasks')).json()).data;
@@ -751,7 +751,7 @@ test('video trim validates its range, retries one task and downloads the selecte
     await expect(page.locator('#resolution-field')).toBeHidden();
     await expect(page.locator('#compression-target-field')).toBeHidden();
     await uploadMedia(page, source);
-    await expect(page.locator('#media-status')).toHaveText('已就绪', { timeout: 15000 });
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成', { timeout: 15000 });
     await page.locator('#trim-start').fill('1.25'); await page.locator('#trim-end').fill('1.5');
     await expect(page.getByRole('button', { name: '开始裁切', exact: true })).toBeDisabled();
     await expect(page.locator('#trim-range-error')).toBeVisible();

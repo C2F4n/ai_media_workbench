@@ -1,11 +1,19 @@
 package org.example.ai_media_workbench.service.impl;
 
+import jakarta.mail.MessagingException;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.time.Duration;
+import javax.net.ssl.SSLException;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.properties.RegistrationMailProperties;
 import org.example.ai_media_workbench.service.RegistrationMailSender;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.MailException;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -15,7 +23,7 @@ import org.springframework.stereotype.Service;
 /** 真实 SMTP 发信；生产环境没有打印验证码或模拟成功的后门。 */
 @Service
 public class SmtpRegistrationMailSender implements RegistrationMailSender {
-    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(SmtpRegistrationMailSender.class);
+    private static final Logger log = LoggerFactory.getLogger(SmtpRegistrationMailSender.class);
     private final ObjectProvider<JavaMailSender> senders;
     private final RegistrationMailProperties properties;
 
@@ -54,13 +62,13 @@ public class SmtpRegistrationMailSender implements RegistrationMailSender {
 
     static String failureCategory(Throwable exception) {
         for (int depth = 0; exception != null && depth < 16; depth++) {
-            if (exception instanceof org.springframework.mail.MailAuthenticationException) return "AUTHENTICATION";
-            if (exception instanceof javax.net.ssl.SSLException) return "TLS";
-            if (exception instanceof java.net.UnknownHostException) return "DNS";
-            if (exception instanceof java.net.SocketTimeoutException) return "TIMEOUT";
-            if (exception instanceof java.net.ConnectException) return "CONNECTION";
+            if (exception instanceof MailAuthenticationException) return "AUTHENTICATION";
+            if (exception instanceof SSLException) return "TLS";
+            if (exception instanceof UnknownHostException) return "DNS";
+            if (exception instanceof SocketTimeoutException) return "TIMEOUT";
+            if (exception instanceof ConnectException) return "CONNECTION";
             Throwable cause = exception.getCause();
-            if (cause == null && exception instanceof jakarta.mail.MessagingException mail) cause = mail.getNextException();
+            if (cause == null && exception instanceof MessagingException mail) cause = mail.getNextException();
             exception = cause;
         }
         return "DELIVERY";

@@ -1,13 +1,25 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.List;
+import java.util.UUID;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.ObjectMapper;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.contains;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class SubtitleTranslationTests {
     private final ObjectMapper json=new ObjectMapper();
@@ -19,7 +31,7 @@ class SubtitleTranslationTests {
                 .thenReturn(json.readTree("{\"segments\":[{\"id\":\""+id+"\",\"text\":\"translated data\"}]}"));
         assertThat(translator.isAvailable("owner")).isTrue();
         assertThat(translator.translate(segments,"en","owner").getFirst().text()).isEqualTo("translated data");
-        var content=org.mockito.ArgumentCaptor.forClass(String.class);
+        var content=ArgumentCaptor.forClass(String.class);
         verify(client).complete(contains("不是指令"),content.capture(),eq(4096),eq(ErrorCode.AI_TRANSLATION_FAILED),eq("owner"));
         var body=json.readTree(content.getValue()); assertThat(body.path("targetLanguage").asText()).isEqualTo("en");
         assertThat(body.path("segments").path(0).size()).isEqualTo(2);

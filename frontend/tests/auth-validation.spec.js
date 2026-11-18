@@ -21,6 +21,9 @@ async function fixture(page) {
     if (request.method() === 'GET' && ['/api/media', '/api/tasks', '/api/operation-plans'].includes(path)) {
       return ok({ items: [], page: 1, pageSize: 10, total: 0 });
     }
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + path);
   });
   return state;
@@ -29,7 +32,7 @@ async function fixture(page) {
 
 test('password changes use the same field feedback and retain form values after a rejected current password', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 900 });
-  const state = await fixture(page); await page.goto('/'); await page.locator('#header-account').click(); await page.locator('#account-security-tab').click();
+  const state = await fixture(page); await page.goto('/'); await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click(); await page.locator('#account-security-tab').click();
   await page.locator('#current-password').fill('Abc123'); await page.locator('#new-password').fill('Abc123'); await page.locator('#confirm-new-password').fill('Abc123');
   await page.locator('#password-form button[type="submit"]').click();
   await expect(page.locator('#new-password-error')).toHaveText('新密码不能与当前密码相同。');

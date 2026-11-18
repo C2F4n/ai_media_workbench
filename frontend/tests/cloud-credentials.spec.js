@@ -67,7 +67,7 @@ test('personal credentials are private, never echoed, versioned and explicitly d
     await deepseek.locator('input[name=apiKey]').fill('not-saved');
     await page.locator('#back-workbench').click();
     await expect(deepseek.locator('input[name=apiKey]')).toHaveValue('');
-    await page.locator('#header-account').click();
+    await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click();
     const changed = await context.request.put('/api/users/me/cloud-credentials/deepseek', {
       headers: { 'X-CSRF-Token': await csrf(context) }, data: { expectedVersion: 2, mode: 'PERSONAL', model: 'deepseek-flash' }
     });

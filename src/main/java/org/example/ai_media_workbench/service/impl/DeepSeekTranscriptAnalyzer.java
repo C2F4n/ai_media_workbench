@@ -1,11 +1,17 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
 import org.example.ai_media_workbench.service.TranscriptAnalyzer;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.*;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /** 复用既有有界文字API，只收受控字幕，不允许模型指定时间、引文、URL或命令。 */
 @Component

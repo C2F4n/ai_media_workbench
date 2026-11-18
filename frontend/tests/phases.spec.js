@@ -54,9 +54,12 @@ async function fixture(page) {
     }
     if (url.pathname === '/api/tasks') return ok(pageOf(state.task ? [state.task] : []));
     if (url.pathname === `/api/tasks/${taskId}`) return ok(state.task);
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected phase fixture request: ' + method + ' ' + url.pathname);
   });
-  await page.goto('/'); await expect(page.locator('#workbench-panel')).toBeVisible();
+  await page.goto('/'); await expect(page.getByRole('region', { name: '工作台主界面' })).toBeVisible();
   return state;
 }
 
@@ -64,18 +67,18 @@ for (const bytes of [2147483648 + 1, 3221225472, 3221225472 + 1]) {
   test(`upload validation uses the advertised 3 GiB limit for ${bytes} bytes`, async ({ page }) => {
     const state = await fixture(page);
     // Simulate the reported size without allocating or transferring gigabytes in a UI test.
-    await page.locator('#media-file').evaluate((input, bytes) => {
+    await page.locator('.media-detect input[type=file]').evaluate((input, bytes) => {
       const file = new File([new Uint8Array([1])], 'large-video.mp4', { type: 'video/mp4' });
       Object.defineProperty(file, 'size', { value: bytes });
       const transfer = new DataTransfer(); transfer.items.add(file); input.files = transfer.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
     }, bytes);
-    await page.locator('#upload-submit').click();
     if (bytes <= 3221225472) {
-      await expect(page.locator('#upload-state')).toHaveText('上传完成');
+      await page.getByRole('button', { name: '上传并检测', exact: true }).click();
+      await expect(page.locator('.media-detect-status')).toHaveText('已完成');
       expect(state.uploaded).toBe(true);
     } else {
-      await expect(page.locator('#upload-error')).toContainText('3.0 GB');
+      await expect(page.locator('.media-detect-message')).toContainText('3.0 GB');
       expect(state.uploaded).toBe(false);
     }
   });
@@ -86,13 +89,13 @@ for (const viewport of [{ width: 1920, height: 1080 }, { width: 1365, height: 90
     await page.setViewportSize(viewport);
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     const state = await fixture(page);
-    await expect(page.locator('#phase-import')).toBeVisible();
+    await expect(page.locator('.media-detect')).toBeVisible();
     await expect(page.locator('#phase-edit')).toBeHidden(); await expect(page.locator('#phase-export')).toBeHidden();
-    await expect(page.locator('#continue-editing')).toBeDisabled();
-    await page.locator('#media-file').setInputFiles(videoPath); await page.locator('#upload-submit').click();
-    await expect(page.locator('#media-status')).toHaveText('已就绪');
+    await expect(page.getByRole('button', { name: '选择视频', exact: true })).toBeVisible();
+    await page.locator('.media-detect input[type=file]').setInputFiles(videoPath); await page.getByRole('button', { name: '上传并检测', exact: true }).click();
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成');
     await page.screenshot({ path: testInfo.outputPath(`import-${viewport.width}.png`), fullPage: true, animations: 'disabled' });
-    await page.locator('#continue-editing').click();
+    await selectTool(page, 'convert');
     await expect(page.locator('#phase-edit')).toBeVisible();
     await expect(page.locator('#editor-filename')).toHaveText('studio-preview.mp4');
     await page.locator('#source-preview').evaluate(video => video.play());
@@ -134,7 +137,7 @@ for (const viewport of [{ width: 1920, height: 1080 }, { width: 1365, height: 90
       // Special tools fetch saved plans/transcripts; the separate contract suites cover those calls.
       if (['join', 'ai', 'subtitle', 'find'].includes(tool)) continue;
       await selectTool(page, tool);
-      expect(await page.locator('#workspace-tool-title').textContent()).toBe(await page.locator(`#${tool}-tool .tool-name`).textContent());
+      await expect(page.locator('#workspace-tool-tab-' + tool)).toHaveAttribute('aria-selected', 'true');
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(await page.locator('[role=tabpanel]').evaluateAll(panels => panels.filter(panel => panel.id.startsWith('phase-') && !panel.hidden).length)).toBe(1);
@@ -143,7 +146,7 @@ for (const viewport of [{ width: 1920, height: 1080 }, { width: 1365, height: 90
 }
 
 test('reduced motion disables phase animations without disabling keyboard navigation', async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' }); await fixture(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' }); await fixture(page); await selectTool(page, 'convert'); await page.locator('#phase-import-tab').click();
   await page.locator('#phase-import-tab').focus(); await page.keyboard.press('ArrowRight');
   await expect(page.locator('#phase-edit')).toBeVisible();
   expect(await page.locator('#phase-edit').evaluate(panel => panel.getAnimations().length)).toBe(0);

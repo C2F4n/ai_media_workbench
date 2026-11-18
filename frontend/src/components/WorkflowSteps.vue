@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from '@lucide/vue';
-import NumberField from './NumberField.vue';
+
 import type { WorkflowStep } from '../types';
+import NumberField from './NumberField.vue';
 export type EditStep = Exclude<WorkflowStep, { operation: 'export' }>;
 const props = defineProps<{ steps: EditStep[]; disabled: boolean; duration: number; revision: number; defaultStep: (operation: string) => EditStep }>();
 const emit = defineEmits<{ change: [] }>();

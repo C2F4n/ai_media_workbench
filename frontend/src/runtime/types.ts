@@ -1,5 +1,5 @@
-import type { MediaParameters, WorkflowStep } from '../types';
 import type * as API from '../api/contracts';
+import type { MediaParameters, WorkflowStep } from '../types';
 
 export type Parameters = MediaParameters & { transcriptId?: string; transcriptVersion?: number; useOriginal?: boolean };
 export type EditStep = Exclude<WorkflowStep, { operation: 'export' }>;

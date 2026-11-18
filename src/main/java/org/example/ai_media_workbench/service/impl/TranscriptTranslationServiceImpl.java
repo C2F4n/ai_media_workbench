@@ -1,11 +1,20 @@
 package org.example.ai_media_workbench.service.impl;
 
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.security.AuthRateLimiter;
-import org.example.ai_media_workbench.dto.transcript.*;
-import org.example.ai_media_workbench.service.*;
-import org.example.ai_media_workbench.vo.transcript.*;
+import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
+import org.example.ai_media_workbench.dto.transcript.TranslateTranscriptRequest;
+import org.example.ai_media_workbench.service.SubtitleTranslator;
+import org.example.ai_media_workbench.service.TranscriptService;
+import org.example.ai_media_workbench.service.TranscriptTranslationService;
+import org.example.ai_media_workbench.vo.transcript.TranscriptTranslationVO;
+import org.example.ai_media_workbench.vo.transcript.TranscriptVO;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 

@@ -1,28 +1,63 @@
 package org.example.ai_media_workbench.service.impl;
 
 import com.sun.net.httpserver.HttpServer;
-import java.net.*;
-import java.net.http.*;
-import java.nio.file.*;
+import java.io.ByteArrayOutputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.WebSocket;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.*;
-import org.example.ai_media_workbench.common.exception.*;
-import org.example.ai_media_workbench.properties.AiProperties;
-import org.example.ai_media_workbench.service.SpeechRecognizer;
-import org.example.ai_media_workbench.service.OperationPlanner;
-import org.example.ai_media_workbench.service.TranscriptAnalyzer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Flow.Subscriber;
+import java.util.concurrent.Flow.Subscription;
+import java.util.concurrent.TimeUnit;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest.Mode;
+import org.example.ai_media_workbench.dto.processing.ExportParameters;
 import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
-import org.junit.jupiter.api.*;
+import org.example.ai_media_workbench.properties.AiProperties;
+import org.example.ai_media_workbench.service.CloudCredentialService;
+import org.example.ai_media_workbench.service.OperationPlanner;
+import org.example.ai_media_workbench.service.SpeechRecognizer;
+import org.example.ai_media_workbench.service.TranscriptAnalyzer;
+import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
-import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class CloudAiTests {
     private static final String USER="11111111-1111-4111-8111-111111111111";
@@ -104,14 +139,14 @@ class CloudAiTests {
         var call=Map.of("id","plan-1","type","function","function",Map.of("name","submit_media_plan","arguments",content));
         var response=Map.of("choices",List.of(Map.of("finish_reason","tool_calls","message",Map.of("tool_calls",List.of(call)))));
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(response));
-        var context=new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mp4",5000,160,90,"h264",true,"aac"),12345,List.of("mute"),null,null,List.of(),List.of(),1073741824L);
+        var context=new OperationPlanner.Context(new MediaMetadataVO("mp4",5000,160,90,"h264",true,"aac"),12345,List.of("mute"),null,null,List.of(),List.of(),1073741824L);
         var proposal=planner.propose("静音",context,USER);
         assertThat(proposal.parameters().path("operation").asText()).isEqualTo("mute"); assertThat(proposal.questions()).isEmpty();
         var request=ArgumentCaptor.forClass(HttpRequest.class); verify(transport).post(request.capture(),anyLong(),any(),eq(ErrorCode.AI_PLAN_FAILED));
-        var bytes=new java.io.ByteArrayOutputStream(); var finished=new CompletableFuture<Void>();
-        request.getValue().bodyPublisher().orElseThrow().subscribe(new java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer>() {
-            @Override public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
-            @Override public void onNext(java.nio.ByteBuffer buffer) { byte[] chunk=new byte[buffer.remaining()]; buffer.get(chunk); bytes.writeBytes(chunk); }
+        var bytes=new ByteArrayOutputStream(); var finished=new CompletableFuture<Void>();
+        request.getValue().bodyPublisher().orElseThrow().subscribe(new Subscriber<ByteBuffer>() {
+            @Override public void onSubscribe(Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            @Override public void onNext(ByteBuffer buffer) { byte[] chunk=new byte[buffer.remaining()]; buffer.get(chunk); bytes.writeBytes(chunk); }
             @Override public void onComplete() { finished.complete(null); }
             @Override public void onError(Throwable error) { finished.completeExceptionally(error); }
         }); finished.get(1,TimeUnit.SECONDS);
@@ -136,10 +171,10 @@ class CloudAiTests {
 
     @Test void plannerPromptSupportsBoundedCompositeExportsOrderedJoinsAndClarificationContext() {
         var client=mock(TextAiJsonClient.class); var planner=new DeepSeekOperationPlanner(client,json);
-        var parameters=new org.example.ai_media_workbench.dto.processing.ExportParameters("export","mp4","h264","360p",null,null,"keep",0L,5000L,null,false);
+        var parameters=new ExportParameters("export","mp4","h264","360p",null,null,"keep",0L,5000L,null,false);
         when(client.plan(anyString(),anyString(),any(),eq(USER)))
                 .thenReturn(json.valueToTree(Map.of("parameters",parameters)));
-        var context=new OperationPlanner.Context(new org.example.ai_media_workbench.vo.media.MediaMetadataVO("mov",20000,1920,1080,"h264",true,"aac"),1000000,
+        var context=new OperationPlanner.Context(new MediaMetadataVO("mov",20000,1920,1080,"h264",true,"aac"),1000000,
                 List.of("export","join_clips"),parameters,"保留前5秒转成360p",List.of("mp4","webm"),List.of("h264","vp9"),1073741824L);
         assertThat(planner.propose("再静音，其他不变",context,USER).parameters().path("resolutionPreset").asText()).isEqualTo("360p");
         var prompt=ArgumentCaptor.forClass(String.class); var content=ArgumentCaptor.forClass(String.class);
@@ -167,10 +202,10 @@ class CloudAiTests {
         assertThat(request.getValue().uri()).isEqualTo(URI.create("https://api.deepseek.com/chat/completions"));
         assertThat(request.getValue().timeout()).contains(Duration.ofSeconds(35));
         assertThat(request.getValue().headers().firstValue("Authorization")).contains("Bearer sk-deepseek-tests");
-        var bytes=new java.io.ByteArrayOutputStream(); var done=new CompletableFuture<Void>();
-        request.getValue().bodyPublisher().orElseThrow().subscribe(new java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer>() {
-            @Override public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
-            @Override public void onNext(java.nio.ByteBuffer buffer) { byte[] chunk=new byte[buffer.remaining()]; buffer.get(chunk); bytes.writeBytes(chunk); }
+        var bytes=new ByteArrayOutputStream(); var done=new CompletableFuture<Void>();
+        request.getValue().bodyPublisher().orElseThrow().subscribe(new Subscriber<ByteBuffer>() {
+            @Override public void onSubscribe(Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            @Override public void onNext(ByteBuffer buffer) { byte[] chunk=new byte[buffer.remaining()]; buffer.get(chunk); bytes.writeBytes(chunk); }
             @Override public void onComplete() { done.complete(null); }
             @Override public void onError(Throwable error) { done.completeExceptionally(error); }
         }); done.get(1,TimeUnit.SECONDS);
@@ -195,7 +230,7 @@ class CloudAiTests {
                     .isInstanceOfSatisfying(BusinessException.class,error->assertThat(error.code()).isEqualTo(ErrorCode.AI_ANALYSIS_FAILED));
         var clip=json.readTree("{\"clips\":[{\"startSegmentId\":\""+id+"\",\"endSegmentId\":\""+id+"\",\"title\":\"标题\",\"reason\":\"理由\"}]}");
         assertThat(DeepSeekTranscriptAnalyzer.parse(clip,TranscriptAnalyzer.Mode.RECOMMEND,1)).hasSize(1);
-        ((tools.jackson.databind.node.ObjectNode)clip.path("clips").get(0)).put("evidence","fabricated");
+        ((ObjectNode)clip.path("clips").get(0)).put("evidence","fabricated");
         assertThatThrownBy(()->DeepSeekTranscriptAnalyzer.parse(clip,TranscriptAnalyzer.Mode.RECOMMEND,1)).isInstanceOf(BusinessException.class);
     }
 
@@ -273,10 +308,10 @@ class CloudAiTests {
     }
 
     private JsonNode requestBody(HttpRequest request) throws Exception {
-        var bytes=new java.io.ByteArrayOutputStream(); var done=new CompletableFuture<Void>();
-        request.bodyPublisher().orElseThrow().subscribe(new java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer>() {
-            public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
-            public void onNext(java.nio.ByteBuffer buffer) { byte[] data=new byte[buffer.remaining()]; buffer.get(data); bytes.writeBytes(data); }
+        var bytes=new ByteArrayOutputStream(); var done=new CompletableFuture<Void>();
+        request.bodyPublisher().orElseThrow().subscribe(new Subscriber<ByteBuffer>() {
+            public void onSubscribe(Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            public void onNext(ByteBuffer buffer) { byte[] data=new byte[buffer.remaining()]; buffer.get(data); bytes.writeBytes(data); }
             public void onComplete() { done.complete(null); }
             public void onError(Throwable error) { done.completeExceptionally(error); }
         });
@@ -326,10 +361,10 @@ class CloudAiTests {
             } finally { transport.destroy(); server.stop(0); }
         }
     }
-    private org.example.ai_media_workbench.service.CloudCredentialService credentials(AiProperties settings) {
-        var service=mock(org.example.ai_media_workbench.service.CloudCredentialService.class);
+    private CloudCredentialService credentials(AiProperties settings) {
+        var service=mock(CloudCredentialService.class);
         when(service.effective(any(),anyString())).thenReturn(settings);
-        when(service.source(any(),anyString())).thenReturn(org.example.ai_media_workbench.dto.cloud.SaveCloudCredentialRequest.Mode.PERSONAL);
+        when(service.source(any(),anyString())).thenReturn(Mode.PERSONAL);
         when(service.available(any(),anyString())).thenAnswer(call->switch(call.getArgument(1,String.class)) {
             case "tencent" -> settings.tencentReady(); case "aliyun" -> settings.aliyunReady(); default -> settings.textReady();
         });

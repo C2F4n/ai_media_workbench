@@ -1,24 +1,25 @@
 package org.example.ai_media_workbench.controller;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
+import java.time.Duration;
+import java.util.Locale;
+import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.common.security.AccountPrincipal;
 import org.example.ai_media_workbench.common.security.AuthRateLimiter;
 import org.example.ai_media_workbench.common.security.LoginSessionManager;
-import org.example.ai_media_workbench.common.result.Result;
-import org.example.ai_media_workbench.properties.AuthProperties;
 import org.example.ai_media_workbench.dto.auth.LoginRequest;
 import org.example.ai_media_workbench.dto.auth.RegisterRequest;
 import org.example.ai_media_workbench.dto.auth.RegistrationEmailRequest;
+import org.example.ai_media_workbench.properties.AuthProperties;
 import org.example.ai_media_workbench.service.AuthService;
-import org.example.ai_media_workbench.service.SessionService;
 import org.example.ai_media_workbench.service.RegistrationEmailService;
+import org.example.ai_media_workbench.service.SessionService;
 import org.example.ai_media_workbench.vo.auth.CsrfVO;
 import org.example.ai_media_workbench.vo.auth.LoginVO;
 import org.example.ai_media_workbench.vo.auth.RegistrationEmailVO;
 import org.example.ai_media_workbench.vo.user.UserVO;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import jakarta.validation.Valid;
-import java.util.Locale;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.web.csrf.CsrfToken;
@@ -80,7 +81,7 @@ public class AuthController {
     public ResponseEntity<Result<RegistrationEmailVO>> sendRegistrationCode(
             @Valid @RequestBody RegistrationEmailRequest input, HttpServletRequest request) {
         try (var permit = rateLimiter.reserve("registration-mail:ip:" + request.getRemoteAddr(),
-                properties.registrationAttempts(), java.time.Duration.ofMinutes(1))) {
+                properties.registrationAttempts(), Duration.ofMinutes(1))) {
             var result = registrationEmails.send(input.email());
             permit.commit();
             return ResponseEntity.ok().header("Cache-Control", "no-store").body(Result.success(result));

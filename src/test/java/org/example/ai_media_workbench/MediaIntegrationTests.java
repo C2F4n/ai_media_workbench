@@ -1,14 +1,21 @@
 package org.example.ai_media_workbench;
 
+import jakarta.servlet.MultipartConfigElement;
 import jakarta.servlet.http.Cookie;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.assertj.core.api.Assertions;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.mapper.MediaMapper;
+import org.example.ai_media_workbench.service.AccountCleanupService;
 import org.example.ai_media_workbench.service.MediaProbe;
+import org.example.ai_media_workbench.service.MediaService;
 import org.example.ai_media_workbench.service.impl.MediaProbeWorker;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +24,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
@@ -31,21 +40,21 @@ import tools.jackson.databind.ObjectMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties={"spring.datasource.url=jdbc:h2:mem:media_tests;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
         "app.media.max-upload-size=2048B"})
@@ -61,9 +70,9 @@ class MediaIntegrationTests {
     @Autowired PasswordEncoder passwords;
     @Autowired MediaProbeWorker worker;
     @Autowired MediaMapper media;
-    @Autowired org.example.ai_media_workbench.service.MediaService mediaService;
-    @Autowired org.example.ai_media_workbench.service.AccountCleanupService cleanup;
-    @Autowired jakarta.servlet.MultipartConfigElement multipartLimits;
+    @Autowired MediaService mediaService;
+    @Autowired AccountCleanupService cleanup;
+    @Autowired MultipartConfigElement multipartLimits;
     @MockitoBean MediaProbe probe;
     private final MediaMetadataVO metadata=new MediaMetadataVO("mov,mp4",1200,160,90,"h264",false,null);
 
@@ -231,9 +240,9 @@ class MediaIntegrationTests {
         mvc.perform(get("/api/media").cookie(owner.cookie())).andExpect(jsonPath("data.total").value(1));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_cleanup_job WHERE user_id=?",Integer.class,owner.id())).isEqualTo(1);
         cleanup.runPending();
-        assertThat(java.nio.file.Files.exists(deletedFile)).isFalse();
-        assertThat(java.nio.file.Files.exists(root.resolve(media.findOwned(owner.id(),keep).getStorageKey()))).isTrue();
-        assertThat(java.nio.file.Files.exists(root.resolve(media.findOwned(other.id(),otherId).getStorageKey()))).isTrue();
+        assertThat(Files.exists(deletedFile)).isFalse();
+        assertThat(Files.exists(root.resolve(media.findOwned(owner.id(),keep).getStorageKey()))).isTrue();
+        assertThat(Files.exists(root.resolve(media.findOwned(other.id(),otherId).getStorageKey()))).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM app_user WHERE id=?",String.class,owner.id())).isEqualTo("ACTIVE");
     }
 
@@ -246,10 +255,10 @@ class MediaIntegrationTests {
         assertThat(media.findOwned(owner.id(),id)).isNull();
         assertThat(jdbc.queryForObject("SELECT status FROM media WHERE id=?",String.class,id)).isEqualTo("PROBING");
         var ready=jdbc.queryForObject("SELECT next_attempt_at FROM account_cleanup_job WHERE user_id=? AND media_id=?",LocalDateTime.class,owner.id(),id);
-        assertThat(ready).isAfter(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).plusSeconds(60));
-        cleanup.runPending(); assertThat(java.nio.file.Files.exists(file)).isTrue();
+        assertThat(ready).isAfter(LocalDateTime.now(ZoneOffset.UTC).plusSeconds(60));
+        cleanup.runPending(); assertThat(Files.exists(file)).isTrue();
         jdbc.update("UPDATE account_cleanup_job SET next_attempt_at=? WHERE user_id=?",LocalDateTime.now().minusDays(1),owner.id());
-        cleanup.runPending(); assertThat(java.nio.file.Files.exists(file)).isFalse();
+        cleanup.runPending(); assertThat(Files.exists(file)).isFalse();
     }
 
     @Test
@@ -259,11 +268,11 @@ class MediaIntegrationTests {
         jdbc.update("INSERT INTO account_cleanup_job(id,user_id,media_id,scope_key,status,attempts,next_attempt_at,created_at,updated_at) VALUES(?,?,?,?,'QUEUED',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
                 UUID.randomUUID().toString(),owner.id(),id,id);
         jdbc.update("UPDATE account_cleanup_job SET next_attempt_at=? WHERE user_id=?",LocalDateTime.now().minusDays(1),owner.id());
-        org.assertj.core.api.Assertions.assertThatThrownBy(()->mediaService.delete(owner.id(),id))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        Assertions.assertThatThrownBy(()->mediaService.delete(owner.id(),id))
+                .isInstanceOf(DataIntegrityViolationException.class);
         assertThat(media.findOwned(owner.id(),id)).isNotNull();
         cleanup.runPending();
-        assertThat(java.nio.file.Files.exists(root.resolve(key))).isTrue();
+        assertThat(Files.exists(root.resolve(key))).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM account_cleanup_job WHERE user_id=?",String.class,owner.id())).isEqualTo("FAILED");
     }
 
@@ -271,13 +280,13 @@ class MediaIntegrationTests {
         Browser owner = login(); byte[] bytes = new byte[]{0,1,2,3,4,5,6,7,8,9};
         String id = ready(owner, "../原片.mp4", bytes);
         var full = assertPreview(owner, id, null, 200, bytes);
-        assertThat(org.springframework.http.ContentDisposition.parse(full.getResponse().getHeader("Content-Disposition")).getFilename()).isEqualTo("原片.mp4");
+        assertThat(ContentDisposition.parse(full.getResponse().getHeader("Content-Disposition")).getFilename()).isEqualTo("原片.mp4");
         assertPreview(owner, id, "bytes=2-4", 206, new byte[]{2,3,4});
         assertPreview(owner, id, "bytes=7-", 206, new byte[]{7,8,9});
         assertPreview(owner, id, "bytes=-3", 206, new byte[]{7,8,9});
         assertPreview(owner, id, "bytes=7-100", 206, new byte[]{7,8,9});
         assertPreview(owner, id, "bytes=-100", 206, bytes);
-        for (String range : java.util.List.of("broken", "bytes=invalid", "bytes=0-1,4-5", "bytes=999999999999999999999999-"))
+        for (String range : List.of("broken", "bytes=invalid", "bytes=0-1,4-5", "bytes=999999999999999999999999-"))
             assertPreview(owner, id, range, 200, bytes);
         mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie()).header("Range", "bytes=10-"))
                 .andExpect(status().isRequestedRangeNotSatisfiable()).andExpect(header().string("Content-Range", "bytes */10"))
@@ -288,7 +297,7 @@ class MediaIntegrationTests {
         Browser owner = login(), other = login(); String id = ready(owner, "private.mp4", new byte[]{1,2});
         String url = "/api/media/"+id+"/preview";
         mvc.perform(get(url)).andExpect(status().isUnauthorized()).andExpect(jsonPath("code").value("UNAUTHENTICATED"));
-        for (String target : java.util.List.of(url, "/api/media/"+UUID.randomUUID()+"/preview"))
+        for (String target : List.of(url, "/api/media/"+UUID.randomUUID()+"/preview"))
             mvc.perform(get(target).cookie(other.cookie()).header("Range", "bytes=999-"))
                     .andExpect(status().isNotFound()).andExpect(jsonPath("code").value("RESOURCE_NOT_FOUND"));
         mvc.perform(get("/api/media/not-a-uuid/preview").cookie(owner.cookie())).andExpect(status().isBadRequest());
@@ -299,13 +308,13 @@ class MediaIntegrationTests {
 
     @Test void sourcePreviewUsesDetectedContainerAndCodecsNotFilenameOrUploadMime() throws Exception {
         Browser owner = login(); String id = id(upload(owner, "misleading.mp4", new byte[]{1}));
-        for (String state : java.util.List.of("PROBING", "FAILED")) {
+        for (String state : List.of("PROBING", "FAILED")) {
             jdbc.update("UPDATE media SET status=? WHERE id=?", state, id);
             mvc.perform(get("/api/media/"+id).cookie(owner.cookie())).andExpect(jsonPath("data.previewUrl").isEmpty());
             mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict())
                     .andExpect(jsonPath("code").value("MEDIA_PREVIEW_UNAVAILABLE"));
         }
-        for (var info : java.util.List.of(new MediaMetadataVO("matroska,webm",1200,160,90,"h264",false,null),
+        for (var info : List.of(new MediaMetadataVO("matroska,webm",1200,160,90,"h264",false,null),
                 new MediaMetadataVO("mov,mp4",1200,160,90,"hevc",true,"aac"),
                 new MediaMetadataVO("mov,mp4",1200,160,90,"h264",true,"ac3"))) {
             jdbc.update("UPDATE media SET kind='VIDEO',status='READY',metadata_json=? WHERE id=?", json.writeValueAsString(info), id);
@@ -320,10 +329,10 @@ class MediaIntegrationTests {
     @Test void missingChangedOrEscapedSourceFilesReturnResultBeforeStartingAStream() throws Exception {
         Browser owner = login(); String id = ready(owner, "source.mp4", new byte[]{1,2,3});
         var item = media.findOwned(owner.id(), id); Path file = root.resolve(item.getStorageKey());
-        java.nio.file.Files.write(file, new byte[]{1});
+        Files.write(file, new byte[]{1});
         mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict())
                 .andExpect(jsonPath("code").value("MEDIA_PREVIEW_UNAVAILABLE")).andExpect(jsonPath("data").isEmpty());
-        java.nio.file.Files.delete(file);
+        Files.delete(file);
         mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict());
         jdbc.update("UPDATE media SET storage_key='../outside.mp4' WHERE id=?", id);
         var response = mvc.perform(get("/api/media/"+id+"/preview").cookie(owner.cookie())).andExpect(status().isConflict()).andReturn();

@@ -48,6 +48,9 @@ async function fixture(page, enabled = true, failure = null) {
     }
     if (url.pathname === '/api/tasks') return ok({ items: task ? [task] : [], page: 1, pageSize: 10, total: task ? 1 : 0 });
     if (url.pathname === '/api/tasks/' + taskId) return ok(task);
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + method + ' ' + url.pathname);
   });
   return { state: () => ({ posts, patches, executes, task, plan }) };
@@ -56,7 +59,7 @@ async function fixture(page, enabled = true, failure = null) {
 test('AI plans clarify, preserve version context, require confirmation and retry the same task', async ({ page }, testInfo) => {
   const errors = []; page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.accept());
   const app = await fixture(page);
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'ai');
   await expect(page.locator('#ai-state')).toHaveText('');
   await page.locator('#ai-instruction').fill('压小一点'); await page.locator('#generate-ai-plan').click();
@@ -102,7 +105,7 @@ for (const [code, status, hint] of [
 ]) test(`AI plans explain ${code} without logout or automatic retries`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: code === 'CLOUD_QUOTA_EXCEEDED' ? 390 : 1365, height: 900 });
   const app = await fixture(page, true, { code, status });
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'ai'); await page.locator('#ai-instruction').fill('压小一点'); await page.locator('#generate-ai-plan').click();
   await expect(page.locator('#ai-error')).toContainText(hint);
   await expect(page.locator('#ai-error')).not.toContainText('secret-key');
@@ -116,7 +119,7 @@ for (const [code, status, hint] of [
 
 test('missing DeepSeek credentials keep AI generation closed without disabling explicit tools', async ({ page }) => {
   const app = await fixture(page, false);
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'ai'); await page.locator('#ai-instruction').fill('截取前1秒');
   await expect(page.locator('#ai-state')).toHaveText('AI 服务尚未配置。'); await expect(page.locator('#generate-ai-plan')).toBeDisabled();
   await selectTool(page, 'convert'); await expect(page.locator('#start-conversion')).toBeEnabled();
@@ -164,6 +167,8 @@ async function compoundFixture(page, join = false) {
     }
     if (path === '/api/tasks') return ok({ items: task ? [task] : [], total: task ? 1 : 0, page: 1, pageSize: 10 });
     if (path === '/api/tasks/' + taskId) return ok(task);
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected compound fixture request: ' + method + ' ' + path);
   });
   return { state: () => ({ plan, task, posts, patches, executes }) };
@@ -171,7 +176,7 @@ async function compoundFixture(page, join = false) {
 
 test('AI composite confirmation displays exact trim resolution and mute, preserves edits and executes once', async ({ page }, testInfo) => {
   const app = await compoundFixture(page); page.on('dialog', (d) => d.accept());
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await selectTool(page, 'ai');
   await page.locator('#ai-instruction').fill('保留前5秒，压缩至360p，静音，发回来'); await page.locator('#generate-ai-plan').click();
   await expect(page.locator('#ai-plan-status')).toHaveText('待确认');
   const parameters = page.locator('#ai-plan-parameters'); await expect(parameters).toContainText('360p'); await expect(parameters).toContainText('0.000 至 5.000 秒'); await expect(parameters).toContainText('全部移除');
@@ -188,7 +193,7 @@ test('AI composite confirmation displays exact trim resolution and mute, preserv
 
 test('ambiguous AI head and tail join uses a rewritten instruction and shows both ordered intervals', async ({ page }) => {
   const app = await compoundFixture(page, true); page.on('dialog', (d) => d.accept());
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪'); await selectTool(page, 'ai');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成'); await selectTool(page, 'ai');
   await page.locator('#ai-instruction').fill('剪切视频5秒和后五秒，拼接后发回来'); await page.locator('#generate-ai-plan').click();
   await expect(page.locator('#ai-plan-questions')).toContainText('拼接顺序'); await expect(page.locator('#execute-ai-plan')).toBeDisabled();
   await page.locator('#ai-instruction').fill('第一段保留前5秒，最后5秒放后面'); await page.locator('#generate-ai-plan').click();

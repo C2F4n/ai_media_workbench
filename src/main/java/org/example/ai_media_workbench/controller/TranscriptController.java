@@ -10,15 +10,24 @@ import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.result.Result;
 import org.example.ai_media_workbench.common.security.AccountPrincipal;
-import org.example.ai_media_workbench.dto.transcript.*;
+import org.example.ai_media_workbench.dto.transcript.CorrectTranscriptRequest;
+import org.example.ai_media_workbench.dto.transcript.TranscriptionRequest;
+import org.example.ai_media_workbench.dto.transcript.UpdateTranscriptRequest;
 import org.example.ai_media_workbench.service.TranscriptService;
 import org.example.ai_media_workbench.vo.processing.TaskVO;
+import org.example.ai_media_workbench.vo.transcript.TranscriptCorrectionVO;
 import org.example.ai_media_workbench.vo.transcript.TranscriptVO;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 字幕基础接口入口：提交素材的语音识别任务、读取最新或历史字幕、保存编辑、下载 SRT 和单句校对。
@@ -60,7 +69,7 @@ public class TranscriptController {
                 .body(file.content());
     }
     @PostMapping("/api/transcripts/{id}/corrections")
-    public Result<org.example.ai_media_workbench.vo.transcript.TranscriptCorrectionVO> correct(
+    public Result<TranscriptCorrectionVO> correct(
             @AuthenticationPrincipal AccountPrincipal user,@PathVariable UUID id,@Valid @RequestBody CorrectTranscriptRequest input) {
         return Result.success(service.correct(user.userId(),id.toString(),input));
     }

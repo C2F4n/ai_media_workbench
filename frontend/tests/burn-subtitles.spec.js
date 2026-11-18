@@ -69,13 +69,16 @@ async function fixture(page, { enabled = true, running = false, loseResponse = t
     if (url.pathname === '/api/tasks/' + taskId) return ok(task);
     if (url.pathname.endsWith('/preview') || url.pathname.endsWith('/download')) return route.fulfill({ status: 200, contentType: 'video/mp4',
       headers: url.pathname.endsWith('/download') ? { 'Content-Disposition': 'attachment; filename="subtitled.mp4"' } : {}, body: video });
+    // 分类默认页可能读取字幕；本用例没有字幕资源时按真实接口返回 404。
+    if (route.request().method() === 'GET' && /\/api\/media\/[^/]+\/transcript$/.test(new URL(route.request().url()).pathname))
+      return route.fulfill({ status: 404, json: { code: 'TRANSCRIPT_NOT_FOUND', data: null } });
     throw new Error('Unexpected fixture request: ' + method + ' ' + url.pathname);
   });
   page.on('dialog', (dialog) => dialog.accept());
   return { state: () => ({ posts, executes, task }), change: () => { version++; } };
 }
 async function open(page) {
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   await selectTool(page, 'subtitle'); await expect(page.locator('#subtitle-editor')).toBeVisible();
 }
 
@@ -106,7 +109,7 @@ test('saved subtitle burn requires confirmation, retries one task and restores a
   // Native forced downloads bypass browser routing; the real endpoint is covered by server/media tests.
   await expect(page.locator('#download-output')).toHaveAttribute('href', /\/api\/outputs\/[^/]+\/download$/);
   await expect(page.locator('#download-output')).toHaveAttribute('download', '字幕测试-subtitled.mp4');
-  await page.reload(); await selectTool(page, 'subtitle'); await page.locator('#phase-export-tab').click(); await expect(page.locator('#export-result-slot #conversion-result')).toBeVisible();
+  await page.reload(); await selectTool(page, 'history'); await page.locator('#task-list').getByRole('button', { name: '打开处理结果', exact: true }).first().click(); await expect(page.locator('#export-result-slot #conversion-result')).toBeVisible();
   await expect(page.locator('#task-stage')).toContainText('字幕 v3'); expect(errors).toEqual([]);
 });
 

@@ -1,29 +1,37 @@
 package org.example.ai_media_workbench.service.impl;
 
+import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.List;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Map.Entry;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
-import org.example.ai_media_workbench.dto.processing.VideoParameters;
-import org.example.ai_media_workbench.dto.processing.OperationParameters;
-import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
-import org.example.ai_media_workbench.dto.processing.CompressionParameters;
-import org.example.ai_media_workbench.dto.processing.TrimParameters;
-import org.example.ai_media_workbench.dto.processing.MuteParameters;
-import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
-import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
-import org.example.ai_media_workbench.dto.processing.ExportParameters;
-import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
+import org.example.ai_media_workbench.dto.processing.BurnSubtitleParameters;
+import org.example.ai_media_workbench.dto.processing.CompressionParameters;
+import org.example.ai_media_workbench.dto.processing.ExportParameters;
+import org.example.ai_media_workbench.dto.processing.ExtractAudioParameters;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters;
+import org.example.ai_media_workbench.dto.processing.MuteParameters;
+import org.example.ai_media_workbench.dto.processing.OperationParameters;
+import org.example.ai_media_workbench.dto.processing.TrimParameters;
+import org.example.ai_media_workbench.dto.processing.VideoParameters;
+import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
 import org.example.ai_media_workbench.service.MediaTranscoder;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -33,7 +41,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class FfmpegMediaTranscoder implements MediaTranscoder {
-    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(FfmpegMediaTranscoder.class);
+    private static final Logger log = LoggerFactory.getLogger(FfmpegMediaTranscoder.class);
     private final TranscodeProperties properties;
     private final boolean available;
     private final boolean audioAvailable;
@@ -50,7 +58,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
         this.workflowAvailable = available && encoders.contains(" ffv1 ") && encoders.contains(" pcm_s16le ");
         this.subtitleAvailable = available && listing("-filters").contains(" ass ");
         this.exportVideoCodecs = ExportSettings.ENCODERS.entrySet().stream().filter(e -> encoders.contains(" " + e.getValue() + " "))
-                .map(java.util.Map.Entry::getKey).sorted().toList();
+                .map(Entry::getKey).sorted().toList();
         var formats = new ArrayList<String>();
         if (encoders.contains(" aac ") && !exportVideoCodecs.isEmpty()) formats.addAll(List.of("mp4", "mkv", "mov"));
         if (encoders.contains(" libopus ") && (exportVideoCodecs.contains("vp9") || exportVideoCodecs.contains("av1"))) formats.add("webm");
@@ -109,7 +117,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
         } finally {
             for (String suffix : LocalMediaStorage.ENCODING_LOG_SUFFIXES) {
                 try { Files.deleteIfExists(Path.of(target.toAbsolutePath() + suffix)); }
-                catch (java.io.IOException exception) { log.warn("Export cache cleanup deferred"); }
+                catch (IOException exception) { log.warn("Export cache cleanup deferred"); }
             }
         }
     }
@@ -134,7 +142,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
             base.addAll(List.of("-map", "0:a:0", "-vn"));
             String codec = switch (p.outputFormat()) { case "mp3" -> "libmp3lame"; case "m4a" -> "aac"; case "wav" -> "pcm_s16le"; default -> "flac"; };
             base.addAll(List.of("-c:a", codec, "-ar", "44100", "-ac", "2"));
-            if (java.util.Set.of("mp3", "m4a").contains(p.outputFormat())) base.addAll(List.of("-b:a", "192k"));
+            if (Set.of("mp3", "m4a").contains(p.outputFormat())) base.addAll(List.of("-b:a", "192k"));
             outputArguments(base, target, p.outputFormat()); run(base, target, cancelled, deadline, null, budgetRoot); return;
         }
         int[] size = ExportSettings.dimensions(metadata, p);
@@ -157,7 +165,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
             command.addAll(List.of("-b:v", Long.toString(budget.videoBitsPerSecond()), "-pass", "2", "-passlogfile", target.toAbsolutePath() + ".pass"));
         } else {
             command.addAll(List.of("-crf", "h264".equals(p.videoCodec()) ? "23" : "28"));
-            if (java.util.Set.of("vp9", "av1").contains(p.videoCodec())) command.addAll(List.of("-b:v", "0"));
+            if (Set.of("vp9", "av1").contains(p.videoCodec())) command.addAll(List.of("-b:v", "0"));
         }
         if ("mute".equals(p.audioMode())) command.add("-an");
         else command.addAll(List.of("-map", "0:a:0?", "-c:a", "webm".equals(p.outputFormat()) ? "libopus" : "aac", "-b:a", Long.toString(audioBitrate), "-ac", "2"));
@@ -193,7 +201,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
         } finally {
             for (String suffix : LocalMediaStorage.OUTPUT_AUXILIARY_SUFFIXES) {
                 try { Files.deleteIfExists(Path.of(target.toAbsolutePath() + suffix)); }
-                catch (java.io.IOException exception) { log.warn("Workflow cache cleanup deferred"); }
+                catch (IOException exception) { log.warn("Workflow cache cleanup deferred"); }
             }
         }
     }
@@ -223,15 +231,15 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
                 manifest.append("file '").append(part.getFileName()).append("'\nduration ").append(length).append('\n');
             }
             Path list = Path.of(target.toAbsolutePath() + ".workflow.ffconcat");
-            Files.writeString(list, manifest, StandardCharsets.US_ASCII, java.nio.file.StandardOpenOption.CREATE_NEW);
+            Files.writeString(list, manifest, StandardCharsets.US_ASCII, StandardOpenOption.CREATE_NEW);
             return list;
         } catch (BusinessException exception) { throw exception; }
-        catch (java.io.IOException exception) { throw new BusinessException(ErrorCode.TRANSCODE_FAILED); }
+        catch (IOException exception) { throw new BusinessException(ErrorCode.TRANSCODE_FAILED); }
     }
 
     private static long fileSize(Path source) {
         try { return Files.size(source); }
-        catch (java.io.IOException exception) { throw new BusinessException(ErrorCode.STORAGE_ERROR); }
+        catch (IOException exception) { throw new BusinessException(ErrorCode.STORAGE_ERROR); }
     }
 
     private ArrayList<String> inputCommand(Path source) {
@@ -240,7 +248,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
     }
 
     private void outputArguments(List<String> command, Path target, String format) {
-        if (java.util.Set.of("mp4", "mov", "m4a").contains(format)) command.addAll(List.of("-movflags", "+faststart"));
+        if (Set.of("mp4", "mov", "m4a").contains(format)) command.addAll(List.of("-movflags", "+faststart"));
         command.addAll(List.of("-fs", Long.toString(Math.addExact(properties.maxOutputSize().toBytes(), 1)), "-f", ExportSettings.muxer(format), target.toAbsolutePath().toString()));
     }
 
@@ -289,7 +297,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
         finally {
             for (String suffix : LocalMediaStorage.ENCODING_LOG_SUFFIXES) {
                 try { Files.deleteIfExists(Path.of(target.toAbsolutePath() + suffix)); }
-                catch (java.io.IOException exception) { log.warn("Encoding cache cleanup failed"); }
+                catch (IOException exception) { log.warn("Encoding cache cleanup failed"); }
             }
         }
     }
@@ -322,7 +330,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
                 manifest.append("file '").append(part.getFileName()).append("'\nduration ").append(duration).append('\n');
             }
             Path list=Path.of(target.toAbsolutePath()+".join.ffconcat");
-            Files.writeString(list,manifest,StandardCharsets.US_ASCII,java.nio.file.StandardOpenOption.CREATE_NEW);
+            Files.writeString(list,manifest,StandardCharsets.US_ASCII,StandardOpenOption.CREATE_NEW);
             var command=new ArrayList<>(List.of(properties.ffmpeg(),"-hide_banner","-loglevel","error","-nostdin","-y",
                     "-protocol_whitelist","file","-format_whitelist","concat,mov","-f","concat","-safe","1","-threads","2","-i",list.getFileName().toString(),
                     "-map","0:v:0","-vf","fps=30,setsar=1","-c:v","libx264","-preset","veryfast","-crf","23","-pix_fmt","yuv420p","-threads","2","-filter_threads","1"));
@@ -398,20 +406,20 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
     }
 
     private static String seconds(long milliseconds) {
-        return java.math.BigDecimal.valueOf(milliseconds, 3).toPlainString();
+        return BigDecimal.valueOf(milliseconds, 3).toPlainString();
     }
 
-    private void checkSize(Path target) throws java.io.IOException {
+    private void checkSize(Path target) throws IOException {
         if (Files.exists(target) && Files.size(target) > properties.maxOutputSize().toBytes()) throw new BusinessException(ErrorCode.OUTPUT_TOO_LARGE);
         long logBytes = 0;
         for (String suffix : LocalMediaStorage.ENCODING_LOG_SUFFIXES) {
             try { logBytes += Files.size(Path.of(target.toAbsolutePath() + suffix)); }
-            catch (java.nio.file.NoSuchFileException absent) { /* 编码器会在临时日志与最终日志间重命名。 */ }
+            catch (NoSuchFileException absent) { /* 编码器会在临时日志与最终日志间重命名。 */ }
         }
         if (logBytes > 32L * 1024 * 1024) throw new BusinessException(ErrorCode.OUTPUT_TOO_LARGE);
     }
 
-    private void checkJoinBudget(Path target) throws java.io.IOException {
+    private void checkJoinBudget(Path target) throws IOException {
         long total=0;
         for(String suffix:LocalMediaStorage.JOIN_SUFFIXES) {
             Path file=Path.of(target.toAbsolutePath()+suffix);

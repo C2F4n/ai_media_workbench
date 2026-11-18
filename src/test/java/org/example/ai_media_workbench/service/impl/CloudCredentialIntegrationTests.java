@@ -2,31 +2,63 @@ package org.example.ai_media_workbench.service.impl;
 
 import jakarta.servlet.http.Cookie;
 import java.net.http.HttpRequest;
-import java.nio.file.*;
-import java.util.*;
-import org.example.ai_media_workbench.common.exception.*;
-import org.example.ai_media_workbench.dto.cloud.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.security.CloudCredentialCipher;
 import org.example.ai_media_workbench.dto.user.DeleteUserRequest;
 import org.example.ai_media_workbench.mapper.CloudCredentialMapper;
-import org.example.ai_media_workbench.service.*;
-import org.example.ai_media_workbench.service.impl.CloudTransport;
-import org.junit.jupiter.api.*;
+import org.example.ai_media_workbench.service.CloudCredentialService;
+import org.example.ai_media_workbench.service.SpeechRecognizer;
+import org.example.ai_media_workbench.service.SubtitleCorrector;
+import org.example.ai_media_workbench.service.UserService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.test.context.*;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.web.servlet.*;
-import tools.jackson.databind.*;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties={"spring.datasource.url=jdbc:h2:mem:cloud_credential_tests;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE",
         "app.ai.deepseek-api-key=sk-site-tests"})
@@ -37,7 +69,7 @@ class CloudCredentialIntegrationTests {
     @Autowired MockMvc mvc; @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc; @Autowired PasswordEncoder passwords;
     @Autowired CloudCredentialService credentials; @Autowired CloudCredentialMapper mapper; @Autowired SubtitleCorrector corrector; @Autowired UserService users;
     @Autowired SpeechRecognizer recognizer;
-    @Autowired org.example.ai_media_workbench.common.security.CloudCredentialCipher cipher;
+    @Autowired CloudCredentialCipher cipher;
     @MockitoBean CloudTransport transport;
     @MockitoBean LocalAiClient local;
     private static final String PASSWORD="Testing-2026!";
@@ -52,7 +84,7 @@ class CloudCredentialIntegrationTests {
         assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
         save(owner,"deepseek",Map.of("expectedVersion",1,"mode","PERSONAL","textProvider","bailian","apiKey","sk-bailian-personal","model","qwen-plus","workspaceId","workspace-tests"));
         assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
-        var requests=org.mockito.ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
+        var requests=ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
         assertThat(requests.getAllValues().get(0).uri().getHost()).isEqualTo("api.openai.com");
         assertThat(requests.getAllValues().get(0).headers().firstValue("Authorization")).contains("Bearer sk-openai-personal");
         assertThat(requests.getAllValues().get(1).uri().getHost()).isEqualTo("workspace-tests.cn-beijing.maas.aliyuncs.com");
@@ -83,7 +115,7 @@ class CloudCredentialIntegrationTests {
         save(owner,"deepseek",Map.of("expectedVersion",2,"mode","PERSONAL","model","doubao-model-tests"));
         assertThat(credentials.effective(owner.id,"deepseek").deepseekApiKey()).isEqualTo("ark-personal-tests");
         assertThat(corrector.correct("原文",owner.id)).isEqualTo("原文");
-        var requests=org.mockito.ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
+        var requests=ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
         for(var request:requests.getAllValues()) {
             assertThat(request.uri().toString()).isEqualTo("https://ark.cn-beijing.volces.com/api/v3/chat/completions");
             assertThat(request.headers().firstValue("Authorization")).contains("Bearer ark-personal-tests");
@@ -158,7 +190,7 @@ class CloudCredentialIntegrationTests {
         save(first,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-first-personal","model","deepseek-flash"));
         save(second,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-second-personal","model","deepseek-flash"));
         assertThat(corrector.correct("原文",first.id)).isEqualTo("原文"); assertThat(corrector.correct("原文",second.id)).isEqualTo("原文");
-        var requests=org.mockito.ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
+        var requests=ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
         assertThat(requests.getAllValues().get(0).headers().firstValue("Authorization")).contains("Bearer sk-first-personal");
         assertThat(requests.getAllValues().get(1).headers().firstValue("Authorization")).contains("Bearer sk-second-personal");
         assertThat(credentials.effective(null,"deepseek").deepseekReady()).isFalse();
@@ -171,10 +203,10 @@ class CloudCredentialIntegrationTests {
         when(transport.post(any(),anyLong(),any(),any())).thenReturn(json.writeValueAsBytes(Map.of("code",0,"flash_result",List.of())));
         var audio=Files.createTempFile(root,"private-speech-",".mp3"); Files.write(audio,new byte[]{1,2,3});
         try {
-            recognizer.recognize("tencent",audio,java.time.Duration.ofSeconds(5),()->false,first.id);
-            recognizer.recognize("tencent",audio,java.time.Duration.ofSeconds(5),()->false,second.id);
+            recognizer.recognize("tencent",audio,Duration.ofSeconds(5),()->false,first.id);
+            recognizer.recognize("tencent",audio,Duration.ofSeconds(5),()->false,second.id);
         } finally { Files.delete(audio); }
-        var requests=org.mockito.ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
+        var requests=ArgumentCaptor.forClass(HttpRequest.class); verify(transport,times(2)).post(requests.capture(),anyLong(),any(),any());
         for(int index=0;index<2;index++) {
             var request=requests.getAllValues().get(index); String secret=index==0 ? "FirstKey" : "SecondKey";
             assertThat(request.uri().getPath()).endsWith(index==0 ? "/123456" : "/654321");
@@ -186,15 +218,15 @@ class CloudCredentialIntegrationTests {
         var first=login(); var second=login();
         save(first,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-parallel-first","model","deepseek-flash"));
         save(second,"deepseek",Map.of("expectedVersion",0,"mode","PERSONAL","apiKey","sk-parallel-second","model","deepseek-flash"));
-        var entered=new java.util.concurrent.CountDownLatch(2); var seen=java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var entered=new CountDownLatch(2); var seen=ConcurrentHashMap.<String>newKeySet();
         when(transport.post(any(),anyLong(),any(),any())).thenAnswer(call->{
             seen.add(call.getArgument(0,HttpRequest.class).headers().firstValue("Authorization").orElseThrow()); entered.countDown();
-            if(!entered.await(5,java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("test timeout");
+            if(!entered.await(5,TimeUnit.SECONDS)) throw new IllegalStateException("test timeout");
             return json.writeValueAsBytes(Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{\"text\":\"原文\"}")))));
         });
-        try(var pool=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+        try(var pool=Executors.newFixedThreadPool(2)) {
             var a=pool.submit(()->corrector.correct("原文",first.id)); var b=pool.submit(()->corrector.correct("原文",second.id));
-            assertThat(a.get(6,java.util.concurrent.TimeUnit.SECONDS)).isEqualTo("原文"); assertThat(b.get(6,java.util.concurrent.TimeUnit.SECONDS)).isEqualTo("原文");
+            assertThat(a.get(6,TimeUnit.SECONDS)).isEqualTo("原文"); assertThat(b.get(6,TimeUnit.SECONDS)).isEqualTo("原文");
         }
         assertThat(seen).containsExactlyInAnyOrder("Bearer sk-parallel-first","Bearer sk-parallel-second");
     }

@@ -1,17 +1,37 @@
 package org.example.ai_media_workbench.service.impl;
 
 import java.nio.file.Files;
-import java.time.*;
-import java.util.*;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 import java.util.function.BooleanSupplier;
-import org.example.ai_media_workbench.common.exception.*;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
-import org.example.ai_media_workbench.dto.transcript.*;
-import org.example.ai_media_workbench.entity.*;
-import org.example.ai_media_workbench.entity.enums.*;
-import org.example.ai_media_workbench.mapper.*;
+import org.example.ai_media_workbench.dto.transcript.TranscriptSegment;
+import org.example.ai_media_workbench.dto.transcript.TranscriptionRequest;
+import org.example.ai_media_workbench.entity.TaskEntity;
+import org.example.ai_media_workbench.entity.TranscriptEntity;
+import org.example.ai_media_workbench.entity.TranscriptRevisionEntity;
+import org.example.ai_media_workbench.entity.UserStatus;
+import org.example.ai_media_workbench.entity.enums.TaskStage;
+import org.example.ai_media_workbench.entity.enums.TaskStatus;
+import org.example.ai_media_workbench.mapper.MediaMapper;
+import org.example.ai_media_workbench.mapper.ProcessingMapper;
+import org.example.ai_media_workbench.mapper.TranscriptMapper;
+import org.example.ai_media_workbench.mapper.UserMapper;
 import org.example.ai_media_workbench.properties.TranscodeProperties;
-import org.example.ai_media_workbench.service.*;
+import org.example.ai_media_workbench.service.MediaProbe;
+import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.SpeechRecognizer;
+import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -20,7 +40,7 @@ import tools.jackson.databind.ObjectMapper;
 /** 由同一个数据库队列有界并发调度；云端I/O不持有数据库锁，字幕与成功状态原子发布。 */
 @Component
 public class TranscriptionWorker {
-    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(TranscriptionWorker.class);
+    private static final Logger log=LoggerFactory.getLogger(TranscriptionWorker.class);
     private final ProcessingMapper tasks;
     private final TranscriptMapper transcripts;
     private final MediaMapper media;
@@ -50,8 +70,8 @@ public class TranscriptionWorker {
             if (source==null) throw new BusinessException(ErrorCode.TASK_CANCELLED);
             var input=storage.resolve(source.getStorageKey());
             var metadata=probe.inspectAudio(input);
-            long duration=Math.min(metadata.durationMs(),json.readValue(source.getMetadataJson(),org.example.ai_media_workbench.vo.media.MediaMetadataVO.class).durationMs());
-            metadata=new org.example.ai_media_workbench.vo.media.MediaMetadataVO(metadata.container(),duration,null,null,null,metadata.hasAudio(),metadata.audioCodec());
+            long duration=Math.min(metadata.durationMs(),json.readValue(source.getMetadataJson(),MediaMetadataVO.class).durationMs());
+            metadata=new MediaMetadataVO(metadata.container(),duration,null,null,null,metadata.hasAudio(),metadata.audioCodec());
             var request=json.readValue(task.getParametersJson(),TranscriptionRequest.class);
             audio=storage.createOutput(task.getUserId(),task.getId(),task.getRunToken(),"mp3");
             transcoder.prepareSpeechAudio(input,audio.path(),metadata,cancelled);
@@ -109,5 +129,5 @@ public class TranscriptionWorker {
         var revision=new TranscriptRevisionEntity(); revision.setUserId(item.getUserId()); revision.setTranscriptId(item.getId());
         revision.setVersion(1); revision.setSegmentsJson(item.getOriginalSegmentsJson()); revision.setCreatedAt(item.getCreatedAt()); transcripts.insertRevision(revision);
     }
-    private LocalDateTime now() { return LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC).truncatedTo(java.time.temporal.ChronoUnit.MICROS); }
+    private LocalDateTime now() { return LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS); }
 }

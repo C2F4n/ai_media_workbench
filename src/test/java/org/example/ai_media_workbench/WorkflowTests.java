@@ -3,11 +3,16 @@ package org.example.ai_media_workbench;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.common.storage.LocalMediaStorage;
+import org.example.ai_media_workbench.dto.processing.JoinClipsParameters.ClipRange;
 import org.example.ai_media_workbench.dto.processing.OperationParameters;
 import org.example.ai_media_workbench.dto.processing.WorkflowParameters;
 import org.example.ai_media_workbench.properties.MediaToolProperties;
@@ -20,7 +25,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.util.unit.DataSize;
 import tools.jackson.databind.ObjectMapper;
-import static org.assertj.core.api.Assertions.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class WorkflowTests {
@@ -38,7 +45,7 @@ class WorkflowTests {
         var p = plan("{\"operation\":\"trim\",\"startMs\":5000,\"endMs\":15000},{\"operation\":\"trim\",\"startMs\":2000,\"endMs\":6000}", "mp4");
         assertThat(json.readValue(json.writeValueAsString(p), OperationParameters.class)).isEqualTo(p);
         var result = WorkflowSettings.compile(p, metadata, 10_000_000, 100_000_000);
-        assertThat(result.clips()).containsExactly(new org.example.ai_media_workbench.dto.processing.JoinClipsParameters.ClipRange(7000, 11000));
+        assertThat(result.clips()).containsExactly(new ClipRange(7000, 11000));
         assertThat(result.metadata().durationMs()).isEqualTo(4000);
     }
 
@@ -70,10 +77,10 @@ class WorkflowTests {
     }
 
     @Test void repeatedSelectionExpansionIsBoundedBeforeAnyMediaExecution() {
-        String clips = java.util.stream.IntStream.range(0, 20).mapToObj(i -> "{\"startMs\":0,\"endMs\":1000}").collect(java.util.stream.Collectors.joining(","));
+        String clips = IntStream.range(0, 20).mapToObj(i -> "{\"startMs\":0,\"endMs\":1000}").collect(Collectors.joining(","));
         assertThatThrownBy(() -> compile("{\"operation\":\"join_clips\",\"clips\":[" + clips + "]},{\"operation\":\"join_clips\",\"clips\":[{\"startMs\":0,\"endMs\":20000},{\"startMs\":0,\"endMs\":20000}]}"))
                 .isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> plan(String.join(",", java.util.Collections.nCopies(12, "{\"operation\":\"mute\"}")), "mp4"))
+        assertThatThrownBy(() -> plan(String.join(",", Collections.nCopies(12, "{\"operation\":\"mute\"}")), "mp4"))
                 .isInstanceOf(BusinessException.class);
     }
 
@@ -84,7 +91,7 @@ class WorkflowTests {
         String steps = "{\"operation\":\"join_clips\",\"clips\":[{\"startMs\":2000,\"endMs\":3000},{\"startMs\":0,\"endMs\":1000}]},"
                 + "{\"operation\":\"trim\",\"startMs\":500,\"endMs\":1500},{\"operation\":\"resize\",\"resolutionPreset\":\"custom\",\"width\":160,\"height\":90},{\"operation\":\"mute\"}";
         var p = plan(steps, "mp4");
-        var list = new java.util.ArrayList<>(p.steps()); list.set(list.size()-1, new WorkflowParameters.Export("export", "mp4", "h264", 65536L, true));
+        var list = new ArrayList<>(p.steps()); list.set(list.size()-1, new WorkflowParameters.Export("export", "mp4", "h264", 65536L, true));
         encoder.workflow(source, target, sidecar, probe.inspect(source), new WorkflowParameters("workflow", "mp4", list), () -> false);
         var output = probe.inspect(target);
         assertThat(output.durationMs()).isBetween(900L, 1150L); assertThat(output.width()).isEqualTo(160); assertThat(output.height()).isEqualTo(90);

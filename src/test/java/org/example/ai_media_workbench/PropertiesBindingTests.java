@@ -1,26 +1,35 @@
 package org.example.ai_media_workbench;
 
-import java.time.Duration;
+import jakarta.servlet.MultipartConfigElement;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import org.example.ai_media_workbench.config.MediaUploadConfig;
 import org.example.ai_media_workbench.properties.AccountCleanupProperties;
 import org.example.ai_media_workbench.properties.AuthProperties;
 import org.example.ai_media_workbench.properties.MediaProperties;
-import org.example.ai_media_workbench.properties.TranscodeProperties;
-import org.example.ai_media_workbench.properties.TaskExecutionProperties;
-import org.example.ai_media_workbench.properties.TransportProperties;
-import org.example.ai_media_workbench.config.MediaUploadConfig;
-import org.example.ai_media_workbench.properties.StorageProperties;
 import org.example.ai_media_workbench.properties.RegistrationMailProperties;
-import org.example.ai_media_workbench.service.impl.SystemServiceImpl;
+import org.example.ai_media_workbench.properties.StorageProperties;
+import org.example.ai_media_workbench.properties.TaskExecutionProperties;
+import org.example.ai_media_workbench.properties.TranscodeProperties;
+import org.example.ai_media_workbench.properties.TransportProperties;
+import org.example.ai_media_workbench.service.CloudCredentialService;
+import org.example.ai_media_workbench.service.MediaProbe;
+import org.example.ai_media_workbench.service.MediaTranscoder;
+import org.example.ai_media_workbench.service.OperationPlanner;
 import org.example.ai_media_workbench.service.RegistrationMailSender;
+import org.example.ai_media_workbench.service.SpeechRecognizer;
+import org.example.ai_media_workbench.service.SubtitleCorrector;
+import org.example.ai_media_workbench.service.TranscriptAnalyzer;
+import org.example.ai_media_workbench.service.impl.SystemServiceImpl;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
+import org.mockito.ArgumentMatchers;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.PropertySource;
 import org.springframework.util.unit.DataSize;
 
@@ -50,7 +59,7 @@ class PropertiesBindingTests {
             assertThat(execution.memoryReserve()).isEqualTo(DataSize.ofGigabytes(2));
             assertThat(execution.memoryPerTask()).isEqualTo(DataSize.ofGigabytes(1));
             assertThat(execution.cpuHighWatermark()).isEqualTo(0.85); assertThat(execution.startInterval()).isEqualTo(Duration.ofSeconds(3));
-            var multipart = context.getBean(jakarta.servlet.MultipartConfigElement.class);
+            var multipart = context.getBean(MultipartConfigElement.class);
             assertThat(multipart.getMaxFileSize()).isEqualTo(3221225472L).isGreaterThan(Integer.MAX_VALUE);
             assertThat(multipart.getMaxRequestSize()).isEqualTo(3221225472L + 1024 * 1024);
             assertThat(context.getBean(MediaProperties.class).maxDuration()).isEqualTo(Duration.ofMinutes(15));
@@ -67,35 +76,35 @@ class PropertiesBindingTests {
             assertThat(context).hasNotFailed();
             var media = context.getBean(MediaProperties.class);
             var capabilities = new SystemServiceImpl(context.getBean(AuthProperties.class), media,
-                    mock(RegistrationMailSender.class), mock(org.example.ai_media_workbench.service.MediaProbe.class),
-                    mock(org.example.ai_media_workbench.service.MediaTranscoder.class), mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),
-                    mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),mock(org.example.ai_media_workbench.service.OperationPlanner.class),
-                    mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class),mock(org.example.ai_media_workbench.service.CloudCredentialService.class)).getCapabilities();
+                    mock(RegistrationMailSender.class), mock(MediaProbe.class),
+                    mock(MediaTranscoder.class), mock(SpeechRecognizer.class),
+                    mock(SubtitleCorrector.class),mock(OperationPlanner.class),
+                    mock(TranscriptAnalyzer.class),mock(CloudCredentialService.class)).getCapabilities();
             assertThat(capabilities.registration()).isFalse();
             assertThat(capabilities.maxUploadBytes()).isEqualTo(DataSize.ofMegabytes(16).toBytes());
-            assertThat(context.getBean(jakarta.servlet.MultipartConfigElement.class).getMaxFileSize()).isEqualTo(DataSize.ofMegabytes(16).toBytes());
+            assertThat(context.getBean(MultipartConfigElement.class).getMaxFileSize()).isEqualTo(DataSize.ofMegabytes(16).toBytes());
             assertThat(capabilities.maxDurationMs()).isEqualTo(Duration.ofMinutes(3).toMillis());
             assertThat(context.getEnvironment().getProperty("spring.servlet.multipart.max-file-size")).isEqualTo("16MB");
             assertThat(context.getBean(AccountCleanupProperties.class).enabled()).isFalse();
             assertThat(capabilities.aiPlans()).isFalse();
             assertThat(capabilities.mediaTool()).isFalse();
-            var analyzer=mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class);
-            when(analyzer.isAvailable(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+            var analyzer=mock(TranscriptAnalyzer.class);
+            when(analyzer.isAvailable(ArgumentMatchers.any())).thenReturn(true);
             var textOnly=new SystemServiceImpl(context.getBean(AuthProperties.class),media,
-                    mock(RegistrationMailSender.class),mock(org.example.ai_media_workbench.service.MediaProbe.class),
-                    mock(org.example.ai_media_workbench.service.MediaTranscoder.class),mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),
-                    mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),mock(org.example.ai_media_workbench.service.OperationPlanner.class),analyzer,
-                    mock(org.example.ai_media_workbench.service.CloudCredentialService.class)).getCapabilities();
+                    mock(RegistrationMailSender.class),mock(MediaProbe.class),
+                    mock(MediaTranscoder.class),mock(SpeechRecognizer.class),
+                    mock(SubtitleCorrector.class),mock(OperationPlanner.class),analyzer,
+                    mock(CloudCredentialService.class)).getCapabilities();
             assertThat(textOnly.semanticSearch()).isTrue();
             assertThat(textOnly.clipRecommendations()).isTrue();
             assertThat(textOnly.mediaTool()).isFalse();
-            var videoProbe=mock(org.example.ai_media_workbench.service.MediaProbe.class);
-            var burnTool=mock(org.example.ai_media_workbench.service.MediaTranscoder.class);
+            var videoProbe=mock(MediaProbe.class);
+            var burnTool=mock(MediaTranscoder.class);
             when(videoProbe.isAvailable()).thenReturn(true); when(burnTool.isSubtitleBurnAvailable()).thenReturn(true);
             var burnOnly=new SystemServiceImpl(context.getBean(AuthProperties.class),media,mock(RegistrationMailSender.class),videoProbe,burnTool,
-                    mock(org.example.ai_media_workbench.service.SpeechRecognizer.class),mock(org.example.ai_media_workbench.service.SubtitleCorrector.class),
-                    mock(org.example.ai_media_workbench.service.OperationPlanner.class),mock(org.example.ai_media_workbench.service.TranscriptAnalyzer.class),
-                    mock(org.example.ai_media_workbench.service.CloudCredentialService.class)).getCapabilities();
+                    mock(SpeechRecognizer.class),mock(SubtitleCorrector.class),
+                    mock(OperationPlanner.class),mock(TranscriptAnalyzer.class),
+                    mock(CloudCredentialService.class)).getCapabilities();
             assertThat(burnOnly.supportedOperations()).containsExactly("burn_subtitles");
             assertThat(burnOnly.asr()).isFalse();
         });

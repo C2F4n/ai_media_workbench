@@ -59,7 +59,7 @@ for (const scenario of [
     await page.goto(scenario.origin + '/');
     expect(await page.evaluate(() => window.isSecureContext)).toBe(scenario.secure);
     if (!scenario.secure) expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe('undefined');
-    await expect(page.locator('#media-status')).toHaveText('已就绪');
+    await expect(page.locator('.media-detect-status')).toHaveText('已完成');
     await selectTool(page, 'join');
     await expect(page.locator('#join-clips > li')).toHaveCount(2);
     await page.getByRole('button', { name: '复制片段 1', exact: true }).click();
@@ -79,7 +79,7 @@ for (const scenario of [
     expect(state.writes[1]).toEqual({ expectedVersion: 2 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(errors).toEqual([]);
-    await page.locator('#header-account').click();
+    await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click();
     await page.locator('#account-cloud-tab').click();
     const credentialWarning = page.locator('#cloud-section [data-transport-warning]');
     if (scenario.secure) await expect(credentialWarning).toBeHidden();

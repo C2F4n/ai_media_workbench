@@ -1,8 +1,8 @@
 package org.example.ai_media_workbench.dto.auth;
 
-import org.example.ai_media_workbench.common.validation.CodePointLength;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import org.example.ai_media_workbench.common.validation.CodePointLength;
 
 /** 登录入参；rememberMe 未传时按 false 处理，密码不会出现在 toString 中。 */
 public record LoginRequest(

@@ -5,8 +5,10 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.UUID;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.example.ai_media_workbench.common.exception.BusinessException;
 import org.example.ai_media_workbench.common.exception.ErrorCode;
 import org.example.ai_media_workbench.properties.MediaProperties;
@@ -20,11 +22,11 @@ public class LocalMediaStorage {
     public static final List<String> OUTPUT_FORMATS = List.of("mp4", "mp3", "mkv", "mov", "webm", "m4a", "wav", "flac");
     public static final List<String> ENCODING_LOG_SUFFIXES = List.of(".pass-0.log", ".pass-0.log.mbtree",
             ".pass-0.log.temp", ".pass-0.log.mbtree.temp");
-    public static final List<String> JOIN_SUFFIXES = java.util.stream.Stream.concat(
-            java.util.stream.IntStream.range(0,20).boxed().flatMap(index -> java.util.stream.Stream.of(".join-"+index+".mp4", ".workflow-"+index+".mkv")),
-            java.util.stream.Stream.of(".join.ffconcat", ".workflow.ffconcat")).toList();
-    public static final List<String> OUTPUT_AUXILIARY_SUFFIXES = java.util.stream.Stream.concat(
-            java.util.stream.Stream.concat(ENCODING_LOG_SUFFIXES.stream(),java.util.stream.Stream.of(".ass")),JOIN_SUFFIXES.stream()).toList();
+    public static final List<String> JOIN_SUFFIXES = Stream.concat(
+            IntStream.range(0,20).boxed().flatMap(index -> Stream.of(".join-"+index+".mp4", ".workflow-"+index+".mkv")),
+            Stream.of(".join.ffconcat", ".workflow.ffconcat")).toList();
+    public static final List<String> OUTPUT_AUXILIARY_SUFFIXES = Stream.concat(
+            Stream.concat(ENCODING_LOG_SUFFIXES.stream(),Stream.of(".ass")),JOIN_SUFFIXES.stream()).toList();
     private final Path root;
     private final long maxBytes;
 
@@ -66,7 +68,10 @@ public class LocalMediaStorage {
         } finally {
             // 文件系统不参加数据库事务，写失败只清理由本次生成的路径，不递归删除目录。
             if (!saved && target != null) {
-                try { Files.deleteIfExists(target); } catch (IOException ignored) { }
+                try { Files.deleteIfExists(target); }
+                catch (IOException ignored) {
+                    // 保留原始上传异常，避免清理阶段的 IOException 覆盖对客户端的错误信息。
+                }
             }
         }
     }

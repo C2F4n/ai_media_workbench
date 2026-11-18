@@ -1,9 +1,9 @@
 package org.example.ai_media_workbench.service.impl;
 
-import org.example.ai_media_workbench.common.exception.BusinessException;
-import org.example.ai_media_workbench.common.exception.ErrorCode;
 import java.util.Locale;
 import java.util.Set;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
 
 /** 注册和改密共用的新密码策略；登录只验证原密码，不重新施加新密码规则。 */
 final class PasswordPolicy {

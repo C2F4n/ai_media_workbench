@@ -15,9 +15,23 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import tools.jackson.databind.node.ArrayNode;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class FunctionCallingTests {
     private final ObjectMapper json = new ObjectMapper();
@@ -54,7 +68,7 @@ class FunctionCallingTests {
                     exception->assertThat(exception.code()).isEqualTo(ErrorCode.AI_PLAN_FAILED));
         }
         var parallel=response("submit_media_plan",arguments);
-        var calls=(tools.jackson.databind.node.ArrayNode)parallel.path("choices").path(0).path("message").path("tool_calls");
+        var calls=(ArrayNode)parallel.path("choices").path(0).path("message").path("tool_calls");
         calls.add(calls.get(0).deepCopy());
         assertThatThrownBy(()->MediaPlanTools.readResponse(parallel,json)).isInstanceOf(BusinessException.class);
         assertThatThrownBy(()->DeepSeekOperationPlanner.parse(MediaPlanTools.readResponse(response("request_clarification","{\"questions\":[\"SECRET_KEY_REQUIRED\"]}"),json)))

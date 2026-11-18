@@ -3,15 +3,20 @@ package org.example.ai_media_workbench.service.impl;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Semaphore;
-import org.example.ai_media_workbench.common.exception.*;
-import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.example.ai_media_workbench.common.ai.MediaPlanTools;
+import org.example.ai_media_workbench.common.exception.BusinessException;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.properties.AiProperties;
+import org.example.ai_media_workbench.service.CloudCredentialService;
 import org.example.ai_media_workbench.service.OperationPlanner;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.*;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /** 个人文字模型适配：固定官方接口；JSON与原生工具调用共享双并发，不回退或重试。 */
 @Component
@@ -39,7 +44,7 @@ public class CloudTextJsonClient {
         if (!properties.textReady()) throw new BusinessException(ErrorCode.AI_UNAVAILABLE);
         if (!requests.tryAcquire()) throw new BusinessException(ErrorCode.AI_BUSY);
         try {
-            var body=new java.util.LinkedHashMap<String,Object>();
+            var body=new LinkedHashMap<String,Object>();
             body.put("model",properties.deepseekModel()); body.put("stream",false);
             if (tools == null) body.put("response_format",Map.of("type","json_object"));
             else {
@@ -49,7 +54,7 @@ public class CloudTextJsonClient {
             if ("openai".equals(properties.textProvider())) {
                 body.put("max_completion_tokens",maxTokens); body.put("store",false);
                 // 已核对的GPT预设限制思考开销；未知自定义型号不强加可能不兼容的参数。
-                if (java.util.Set.of("gpt-6-sol","gpt-5.6-sol","gpt-5.6-luna","gpt-5.6").contains(properties.deepseekModel()))
+                if (Set.of("gpt-6-sol","gpt-5.6-sol","gpt-5.6-luna","gpt-5.6").contains(properties.deepseekModel()))
                     body.put("reasoning_effort","none");
                 else if ("gpt-6-astra".equals(properties.deepseekModel())) body.put("reasoning_effort","low");
             } else {
@@ -76,7 +81,7 @@ public class CloudTextJsonClient {
         catch (Exception exception) { throw new BusinessException(failure); }
         finally { requests.release(); }
     }
-    private static URI endpoint(org.example.ai_media_workbench.properties.AiProperties settings) {
+    private static URI endpoint(AiProperties settings) {
         return switch (settings.textProvider()) {
             case "deepseek" -> URI.create("https://api.deepseek.com/chat/completions");
             case "openai" -> URI.create("https://api.openai.com/v1/chat/completions");

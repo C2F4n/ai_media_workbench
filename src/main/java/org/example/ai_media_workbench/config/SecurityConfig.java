@@ -1,18 +1,19 @@
 package org.example.ai_media_workbench.config;
 
-import org.example.ai_media_workbench.common.exception.ErrorCode;
-import org.example.ai_media_workbench.common.security.SessionExpirationFilter;
-import org.example.ai_media_workbench.common.security.SessionPolicy;
-import org.example.ai_media_workbench.common.security.HttpsRequiredFilter;
-import org.example.ai_media_workbench.common.exception.ApiErrorWriter;
-import org.example.ai_media_workbench.entity.UserStatus;
-import org.example.ai_media_workbench.mapper.UserMapper;
-import org.example.ai_media_workbench.service.UserService;
-import org.example.ai_media_workbench.properties.AuthProperties;
-import org.example.ai_media_workbench.properties.TransportProperties;
 import java.time.Clock;
 import java.util.List;
 import java.util.Locale;
+import org.example.ai_media_workbench.common.exception.ApiErrorWriter;
+import org.example.ai_media_workbench.common.exception.ErrorCode;
+import org.example.ai_media_workbench.common.security.AccountPrincipal;
+import org.example.ai_media_workbench.common.security.HttpsRequiredFilter;
+import org.example.ai_media_workbench.common.security.SessionExpirationFilter;
+import org.example.ai_media_workbench.common.security.SessionPolicy;
+import org.example.ai_media_workbench.entity.UserStatus;
+import org.example.ai_media_workbench.mapper.UserMapper;
+import org.example.ai_media_workbench.properties.AuthProperties;
+import org.example.ai_media_workbench.properties.TransportProperties;
+import org.example.ai_media_workbench.service.UserService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -20,18 +21,19 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
+import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
-import org.springframework.security.web.authentication.session.ChangeSessionIdAuthenticationStrategy;
-import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.session.web.http.CookieSerializer;
 import org.springframework.session.web.http.DefaultCookieSerializer;
 
@@ -141,12 +143,12 @@ public class SecurityConfig {
                     .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler())
                     .ignoringRequestMatchers(request -> {
                         // 未登录时允许幂等退出；已登录的退出请求仍要校验 CSRF，防止被跨站强制退出。
-                        var authentication = org.springframework.security.core.context.SecurityContextHolder
+                        var authentication = SecurityContextHolder
                                 .getContext().getAuthentication();
                         return "POST".equals(request.getMethod())
                                 && "/api/auth/logout".equals(request.getRequestURI())
                                 && (authentication == null || !(authentication.getPrincipal()
-                                    instanceof org.example.ai_media_workbench.common.security.AccountPrincipal));
+                                    instanceof AccountPrincipal));
                     }))
                 // 使用 JSON 接口登录，不启用框架默认登录页、Basic 认证或默认退出地址。
                 .requestCache(cache -> cache.disable())
@@ -160,10 +162,10 @@ public class SecurityConfig {
                     .authenticationEntryPoint((request, response, exception) ->
                         writer.write(request, response, ErrorCode.UNAUTHENTICATED))
                     .accessDeniedHandler((request, response, exception) -> {
-                        var auth = org.springframework.security.core.context.SecurityContextHolder
+                        var auth = SecurityContextHolder
                                 .getContext().getAuthentication();
                         boolean signedIn = auth != null
-                                && auth.getPrincipal() instanceof org.example.ai_media_workbench.common.security.AccountPrincipal;
+                                && auth.getPrincipal() instanceof AccountPrincipal;
                         boolean publicAuth = request.getRequestURI().startsWith("/api/auth/");
                         writer.write(request, response,
                                 signedIn || publicAuth ? ErrorCode.CSRF_INVALID : ErrorCode.UNAUTHENTICATED);

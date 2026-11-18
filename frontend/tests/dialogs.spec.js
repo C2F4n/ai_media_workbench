@@ -55,7 +55,7 @@ async function fixture(page) {
     throw new Error('Unexpected dialog fixture request: ' + method + ' ' + name);
   });
   page.on('dialog', dialog => { throw new Error('Unexpected browser dialog: ' + dialog.message()); });
-  await page.goto('/'); await expect(page.locator('#media-status')).toHaveText('已就绪');
+  await page.goto('/'); await expect(page.locator('.media-detect-status')).toHaveText('已完成');
   return state;
 }
 
@@ -89,7 +89,7 @@ for (const width of [1365, 390, 320]) test(`restore confirmation preserves draft
 });
 
 test('credentials are not submitted until approved and deletion is always confirmed', async ({ page }) => {
-  const state = await fixture(page); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  const state = await fixture(page); await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click(); await page.locator('#account-cloud-tab').click();
   await page.locator('#skip-cloud-confirmation').check();
   const card = page.locator('#cloud-deepseek'); await card.locator('select[name=mode]').selectOption('PERSONAL');
   await card.locator('input[name=apiKey]').fill('fake-secret-not-for-modal');
@@ -140,7 +140,7 @@ test('step editing and join reset remain unchanged on cancel and export waits fo
 });
 
 test('history deletion uses a destructive dialog even with cloud prompts disabled', async ({ page }, testInfo) => {
-  const state = await fixture(page); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click(); await page.locator('#skip-cloud-confirmation').check();
+  const state = await fixture(page); await page.locator('#workspace-home-sidebar').getByRole('button', { name: '个人资料', exact: true }).click(); await page.locator('#account-cloud-tab').click(); await page.locator('#skip-cloud-confirmation').check();
   await page.locator('#back-workbench').click(); await selectTool(page, 'history');
   const remove = page.getByRole('button', { name: '删除处理记录', exact: true }); await remove.click();
   await expect(page.locator('#action-confirm-dialog')).toHaveAttribute('data-kind', 'danger');
