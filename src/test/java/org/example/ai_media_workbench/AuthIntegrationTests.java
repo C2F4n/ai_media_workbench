@@ -95,6 +95,15 @@ class AuthIntegrationTests {
     }
 
     @Test
+    void defaultAccountCanLoginWithoutSmtp() throws Exception {
+        when(mail.isAvailable()).thenReturn(false);
+        Browser browser = csrf(null);
+        Browser authenticated = login("admin", "Aa018779", false, browser);
+        mvc.perform(get("/api/users/me").cookie(authenticated.cookie()))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.username").value("admin"));
+    }
+
+    @Test
     void registrationRequiresAnEmailCodeAndDoesNotReserveUnverifiedEmail() throws Exception {
         String username = username();
         String email = username + "@example.com";

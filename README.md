@@ -1,6 +1,8 @@
 # FrameFlow
 Java 21 / Spring Boot 4.0.8 / Gradle Wrapper 9.7.1 / MyBatis / MySQL 8。
 
+默认体验账号：`admin`，初始密码：`Aa018779`。首次数据库迁移自动创建，可在未配置 SMTP 时直接登录；已有同名账号保留原密码和状态，重启不会重置改密或恢复已注销账号。普通用户注册仍需邮箱验证码。
+
 全站页面已迁入Vue 3单文件组件，业务协调与请求代码使用严格TypeScript，Vite编写本地静态包素材/历史列表、顺序步骤、字幕/翻译编辑和云端设置由Vue管理；
 原生视频、对话框和焦点操作保留类型化DOM协调。
 云端方案生成使用标准Function Calling，本地千问保留受约束JSON协议；字幕检索采用Lucene BM25召回后模型筛选。实现边界、构建和演示验收见[比赛增强说明](docs/competition/ai-enhancements.md)。

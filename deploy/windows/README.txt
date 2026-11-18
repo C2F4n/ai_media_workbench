@@ -1,10 +1,15 @@
 FrameFlow Windows 运行包
 ======================
 
+默认登录账号：admin
+默认登录密码：Aa018779
+首次启动完成数据库迁移后自动创建，无需先注册或配置 SMTP。
+已有同名账号保留原密码和状态；修改密码或注销后，重启不会恢复初始密码或账号状态。
+
 一、首次使用
 1. 解压/复制整个文件夹到本机可读写的位置。不要只拿出 JAR，也不要放进 Program Files。
 2. 自行安装并启动 MySQL 8.x。在 config/database.properties 填写数据库地址、端口、库名、用户名、密码。
-   默认库名 frameflow。程序会自动创建该库，然后用 Flyway 创建表，不需要导入开发数据库。
+   默认库名 frameflow。程序会自动创建该库，然后用 Flyway 创建表及默认账号，不需要导入开发数据库。
    首次使用的数据库账号必须有创建该库及表的权限；Access denied 代表用户名、密码或授权不正确。
 3. 双击 Start.cmd（或“启动.cmd”），等待提示 ready 后浏览器会自动打开。
    默认网址：http://127.0.0.1:8088；后台端口 18081，仅监听本机，不占用 IDEA 的 8081。
@@ -14,9 +19,9 @@ FrameFlow Windows 运行包
 二、配置文件
 config/database.properties：数据库配置。密码不要加引号；字面反斜杠写成两个反斜杠。
 config/mail.properties：SMTP 配置。默认关闭发信，未包含任何人的邮箱授权码。
-  当前注册流程需要邮件验证码：填好 SMTP 后设 REGISTRATION_MAIL_ENABLED=true，再重启。
+  默认账号可直接登录；开放新账号注册时需要邮件验证码，填好 SMTP 后设 REGISTRATION_MAIL_ENABLED=true，再重启。
   例如 QQ 邮箱使用 smtp.qq.com、465、SSL=true；密码填邮箱提供的 SMTP 授权码。
-  SMTP_USERNAME 与 SMTP_FROM 填发信邮箱。此包没有测试账号及任何原数据库账号。
+  SMTP_USERNAME 与 SMTP_FROM 填发信邮箱。默认账号由迁移脚本创建，不包含原开发数据库的用户和素材。
 config/launcher.json：网页监听 IP、网页端口、后端端口、浏览器开关及 Java 内存上限。
   端口/IP 在这里改，启动时会生成匹配的 Nginx 配置，不必到 JAR 里改。
   每个字段的中文说明位于 _comments 对象，只修改它下面的实际配置值；JSON 不支持 //、# 注释。
