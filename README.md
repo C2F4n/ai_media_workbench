@@ -1,3 +1,8 @@
+在夸克网盘同步上传
+我用夸克网盘给你分享了「ai_media_workbench」，点击链接或复制整段内容，打开「夸克APP」即可获取。
+/~a8093cNRXN~:/
+链接：https://pan.quark.cn/s/7aab8f6b0e52?pwd=Lk2x
+提取码：Lk2x
 # FrameFlow
 Java 21 / Spring Boot 4.0.8 / Gradle Wrapper 9.7.1 / MyBatis / MySQL 8。
 
