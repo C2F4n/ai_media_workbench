@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [vue()],
   build: {
     outDir: fileURLToPath(new URL('../src/main/resources/static/assets/ui', import.meta.url)),
-    emptyOutDir: true,
+    emptyOutDir: false,
     license: { fileName: 'THIRD_PARTY_NOTICES.md' },
     lib: {
       entry: fileURLToPath(new URL('./src/main.ts', import.meta.url)),

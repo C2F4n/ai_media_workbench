@@ -15,7 +15,7 @@ function save(key: string, value: unknown) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Navigation still works without browser storage. */ }
 }
 
-// One source of truth for tool/phase selection and navigation preferences. No media or credentials are persisted here.
+// 功能/阶段选择只维护这一份状态；浏览器仅保存外观偏好，不保存素材、账号或凭据。
 export function createNavigation() {
   const narrow = matchMedia('(max-width: 900px)'), motion = matchMedia('(prefers-reduced-motion: reduce)');
   const saved = stored('amw-navigation'), savedGroups = stored('amw-tool-groups');
@@ -30,10 +30,12 @@ export function createNavigation() {
     const expanded = savedGroups[group.id];
     if (typeof expanded === 'boolean') state.groups[group.id] = expanded;
   }
+  // 各功能分别记住导入/编辑/导出位置，只在本次页面会话内保留，退出账号时清空。
   const rememberedPhases = new Map<ToolId, PhaseId>();
   let toolAnimation: Animation | null = null, phaseAnimation: Animation | null = null;
   let disposed = false, focusRevision = 0, frame = 0;
   const sidebar = element('tool-sidebar'), layout = element('workbench-layout'), content = element('tool-content');
+  const header = element('app-header');
   const toggle = element<HTMLButtonElement>('toggle-sidebar'), backdrop = element<HTMLButtonElement>('sidebar-backdrop');
 
   function drawer() { return !state.pinned || state.narrow; }
@@ -57,7 +59,7 @@ export function createNavigation() {
   function syncLayout() {
     const visible = shown(), modal = visible && drawer();
     layout.dataset.navOpen = String(visible); layout.dataset.navPinned = String(state.pinned);
-    sidebar.inert = !visible; content.inert = modal;
+    sidebar.inert = !visible; content.inert = modal; header.inert = modal;
     sidebar.setAttribute('role', modal ? 'dialog' : 'complementary');
     if (modal) sidebar.setAttribute('aria-modal', 'true'); else sidebar.removeAttribute('aria-modal');
     backdrop.hidden = !modal; backdrop.disabled = state.busy;
@@ -101,6 +103,7 @@ export function createNavigation() {
       if (kind === 'tool' ? toolAnimation === current : phaseAnimation === current) cancelAnimation(kind);
     }).catch(() => {});
   }
+  // 隐藏而不销毁面板，保留输入和视频节点；inert 同时阻止键盘进入不可见区域。
   function applyPhase() {
     for (const phase of phases) {
       const panel = element(`phase-${phase}`);
@@ -136,7 +139,7 @@ export function createNavigation() {
       const direction = tools.findIndex(tool => tool.id === value) > tools.findIndex(tool => tool.id === previous) ? 1 : -1;
       animate('tool', element('tool-stage'), [{ opacity: .45, transform: `translateY(${direction * 18}px)` }, { opacity: 1, transform: 'translateY(0)' }], 220);
     }
-    if (state.open && drawer()) setOpen(false);
+    if (shown() && drawer()) setOpen(false);
     return true;
   }
   function reset() {
@@ -184,7 +187,7 @@ export function createNavigation() {
     toggle.removeEventListener('click', openClicked); backdrop.removeEventListener('click', closeClicked);
     narrow.removeEventListener('change', resized); motion.removeEventListener('change', motionChanged);
     document.removeEventListener('keydown', keydown); window.removeEventListener('resize', updateIndicator);
-    content.inert = false; document.body.classList.remove('nav-drawer-open');
+    content.inert = false; header.inert = false; document.body.classList.remove('nav-drawer-open');
   }
   return { state, get tool() { return state.tool; }, get phase() { return state.phase; },
     selectTool, selectPhase, reset, update, setOpen, setGroup, togglePin, connect, dispose };

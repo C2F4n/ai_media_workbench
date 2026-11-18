@@ -3,6 +3,10 @@ import AccountArea from './views/AccountArea.vue';
 import AuthScreen from './views/AuthScreen.vue';
 import AppHeader from './views/AppHeader.vue';
 import ConfirmationDialogs from './views/ConfirmationDialogs.vue';
+import type { AuthEntryServices } from './auth/types';
+import type { WorkbenchHome } from './types';
+
+defineProps<{ auth: AuthEntryServices; home: WorkbenchHome | null }>();
 </script>
 <template>
 <AppHeader />
@@ -20,9 +24,9 @@ import ConfirmationDialogs from './views/ConfirmationDialogs.vue';
       </button>
     </section>
 
-    <AuthScreen />
+    <AuthScreen :auth="auth" />
 
-    <AccountArea />
+    <AccountArea :home="home" />
   </main>
 
   <ConfirmationDialogs />

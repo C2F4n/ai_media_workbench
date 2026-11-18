@@ -66,6 +66,7 @@
         WHERE id=#{id} AND status='QUEUED' AND deleted_at IS NULL
             AND EXISTS(SELECT 1 FROM app_user u WHERE u.id=media_task.user_id AND u.status='ACTIVE')
     </update>
+    <!-- FFmpeg 的取消回调查询本次 runToken 是否仍有效；取消、删除或注销后均不再算运行中。 -->
     <select id="running" resultType="int">
         SELECT COUNT(*) FROM media_task t JOIN app_user u ON u.id=t.user_id
         WHERE t.id=#{id} AND t.run_token=#{token} AND t.status='RUNNING' AND t.deleted_at IS NULL AND u.status='ACTIVE'
@@ -84,6 +85,7 @@
             status=CASE WHEN status='CANCELLING' THEN 'CANCELLED' ELSE 'FAILED' END
         WHERE id=#{id} AND status IN ('RUNNING','CANCELLING') AND lease_started_at &lt; #{cutoff} AND deleted_at IS NULL
     </update>
+    <!-- 发布结果是条件更新：旧执行者、已删除任务或过期租约都不能把任务改成成功。 -->
     <update id="finish">
         UPDATE media_task SET status=#{task.status},stage=#{task.stage},progress_percent=#{task.progressPercent},
             error_code=#{task.errorCode},error_message=#{task.errorMessage},finished_at=#{task.finishedAt},run_token=NULL,lease_started_at=NULL

@@ -36,7 +36,11 @@ import org.example.ai_media_workbench.vo.transcript.RetrievalVO;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 
-/** 版本快照内建立短生命周期全文索引，BM25召回后才交给模型；不缓存用户原稿。 */
+/**
+ * RAG 的检索阶段：在当前账号提供的字幕快照内建内存索引，用 BM25 词汇相关性筛选候选。
+ * 不是向量数据库，也不直接生成答案；候选再交给 TranscriptAnalyzer，证据由业务层校验。
+ * 索引随请求关闭，不缓存或混用不同用户的原稿。
+ */
 @Service
 public class LuceneTranscriptRetriever implements TranscriptRetriever {
     public static final int MAX_CONTEXT_BYTES = 32 * 1024;
@@ -77,11 +81,13 @@ public class LuceneTranscriptRetriever implements TranscriptRetriever {
                     ranked.add(searcher.storedFields().document(hit.doc).getField("chunk").numericValue().intValue());
                 }
             }
+            // 推荐无词汇命中时抽样覆盖原稿；普通搜索则保持空结果，不冒充完整语义检索。
             boolean coverage = recommend && ranked.isEmpty();
             if (coverage && !chunks.isEmpty()) {
                 int count = Math.min(MAX_CHUNKS, chunks.size());
                 for (int index = 0; index < count; index++) ranked.add(count == 1 ? 0 : index * (chunks.size() - 1) / (count - 1));
             }
+            // 先按命中排名选块，去除重叠字幕后恢复原顺序；限制发给模型的段数及 JSON 字节数。
             var positions = new TreeSet<Integer>(); int bytes = 2;
             for (int chunkIndex : ranked) {
                 var chunk = chunks.get(chunkIndex); var extra = new ArrayList<Integer>(); int extraBytes = 0;
@@ -99,6 +105,7 @@ public class LuceneTranscriptRetriever implements TranscriptRetriever {
         } finally { indexes.release(); }
     }
 
+    /** 相邻块保留少量重叠，减少一句话刚好被分块边界切断而漏检的情况。 */
     private static List<Chunk> chunks(List<TranscriptSegment> segments) {
         var result = new ArrayList<Chunk>();
         for (int start = 0; start < segments.size();) {

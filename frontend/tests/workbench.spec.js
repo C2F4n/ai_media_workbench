@@ -1,6 +1,12 @@
 const { test, expect } = require('@playwright/test');
+const { login } = require('./helpers/auth-api.cjs');
 const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
-test.beforeEach(async ({ page }) => { await acceptCloudCalls(page); await handleActionConfirmations(page); });
+const { useLegacyWorkbench } = require('./helpers/static.cjs');
+test.beforeEach(async ({ page }) => {
+  await useLegacyWorkbench(page);
+  await acceptCloudCalls(page);
+  await handleActionConfirmations(page);
+});
 const { selectTool: navigateTool } = require('./helpers/navigation.cjs');
 async function selectTool(page, tool) {
   await navigateTool(page, tool);
@@ -64,10 +70,7 @@ async function registerAndLogin(page, context) {
     headers: { 'X-CSRF-Token': token }, data: { username: account, email, password, emailChallengeId: proof.challengeId, emailCode: code }
   });
   expect(registration.status()).toBe(201);
-  await page.goto('/');
-  await page.locator('#login-username').fill(account);
-  await page.locator('#login-password').fill(password);
-  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await login(page, account, password);
   await expect(page.locator('#workbench-panel')).toBeVisible();
   await expect(page.locator('#account-panel')).toBeHidden();
   return account;

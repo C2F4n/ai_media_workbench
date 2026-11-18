@@ -1,22 +1,49 @@
+<script setup lang="ts">
+import { ChevronsLeftRight, MousePointer2 } from '@lucide/vue';
+import { onMounted, onUnmounted, ref } from 'vue';
+import AuthWelcome from '../components/AuthWelcome.vue';
+import AuthCornerWelcome from '../components/AuthCornerWelcome.vue';
+import AuthTypewriter from '../components/AuthTypewriter.vue';
+import AuthPhone from '../components/AuthPhone.vue';
+import AuthGallery from '../components/AuthGallery.vue';
+import AuthCubesGrid from '../components/AuthCubesGrid.vue';
+import AuthDarkCubes from '../components/AuthDarkCubes.vue';
+import type { AuthEntryServices } from '../auth/types';
+import { authPhoneOnlyQuery } from '../auth/theme';
+
+defineProps<{ auth: AuthEntryServices }>();
+const phoneViewport = matchMedia(authPhoneOnlyQuery);
+const phoneOnly = ref(phoneViewport.matches);
+function syncViewport() { phoneOnly.value = phoneViewport.matches; }
+onMounted(() => phoneViewport.addEventListener('change', syncViewport));
+onUnmounted(() => phoneViewport.removeEventListener('change', syncViewport));
+</script>
+
 <template>
-<section id="auth-view" class="auth-shell" data-theme="light" data-mode="login" hidden>
-      <button id="auth-theme-toggle" class="icon-button" type="button" title="切换到暗色模式" aria-label="切换到暗色模式" aria-pressed="false"><i data-lucide="moon" aria-hidden="true"></i></button>
-      <aside id="auth-gallery" class="auth-gallery" aria-hidden="true" data-slide="0">
-        <div id="auth-gallery-stage" class="auth-gallery-stage">
-          <figure class="auth-slide">
-            <img data-src="/assets/auth/studio-desk.webp" width="1600" height="2399" alt="现代影视工作室中的数字摄影机、监视器与剪辑设备" fetchpriority="high" decoding="async">
-            <div class="auth-image-fallback"><i data-lucide="film" aria-hidden="true"></i></div>
-          </figure>
-          <figure class="auth-slide" hidden>
-            <img data-src="/assets/auth/studio-lighting.webp" width="1600" height="1067" alt="拍摄现场的彩色灯光与现代布光设备" decoding="async">
-            <div class="auth-image-fallback"><i data-lucide="film" aria-hidden="true"></i></div>
-          </figure>
-          <figure class="auth-slide" hidden>
-            <img data-src="/assets/auth/studio-editing.webp" width="1600" height="2395" alt="显示音频波形与视频时间线的双屏剪辑工作台" decoding="async">
-            <div class="auth-image-fallback"><i data-lucide="film" aria-hidden="true"></i></div>
-          </figure>
-        </div>
-      </aside>
-      <div class="auth-form-pane"><div id="auth-form-content" class="auth-form-content"></div></div>
-    </section>
+  <section id="auth-view" class="auth-phone-page" :class="{ 'auth-phone-only': phoneOnly }" data-theme="light" hidden>
+    <AuthCubesGrid v-if="!phoneOnly" />
+    <AuthDarkCubes v-if="!phoneOnly" />
+    <div class="auth-phone-layout">
+      <div v-if="!phoneOnly" class="auth-intro">
+        <AuthWelcome />
+        <AuthTypewriter />
+      </div>
+      <AuthPhone :auth="auth" />
+      <AuthGallery v-if="!phoneOnly" />
+    </div>
+    <AuthCornerWelcome v-if="!phoneOnly" />
+    <div v-if="!phoneOnly" class="auth-theme-dark" aria-hidden="true"></div>
+    <div v-if="!phoneOnly" class="auth-theme-divider" aria-hidden="true"></div>
+    <div class="auth-theme-gravity" aria-hidden="true"></div>
+    <div id="auth-theme-toggle" class="auth-theme-slider" role="slider" tabindex="0" aria-label="登录页主题"
+      aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"
+      aria-valuetext="全亮色"
+      aria-describedby="auth-theme-hint">
+      <span class="auth-dock-tile" aria-hidden="true"><ChevronsLeftRight /></span>
+      <span class="auth-dock-follower auth-theme-follower">
+        <MousePointer2 aria-hidden="true" />
+        <span id="auth-theme-hint" role="tooltip">滑动以切换风格</span>
+      </span>
+    </div>
+  </section>
 </template>

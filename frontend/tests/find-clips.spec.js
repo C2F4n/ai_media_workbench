@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 const { acceptCloudCalls, handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
 test.beforeEach(async ({ page }) => handleActionConfirmations(page));
 test.beforeEach(async ({ page }) => acceptCloudCalls(page));
-const { serveStatic } = require('./helpers/static.cjs');
+const { readIndex, serveStatic } = require('./helpers/static.cjs');
 test.beforeEach(async ({ page }) => { await serveStatic(page); });
 const { selectTool } = require('./helpers/navigation.cjs');
 const fs = require('node:fs');
@@ -146,7 +146,7 @@ for (const width of [1365, 390]) test(`Vue RAG evidence shows retrieval scope an
   await page.setViewportSize({ width, height: 1000 });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const app = await fixture(page);
-  await page.route('**/', route => route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.resolve(__dirname, '../../src/main/resources/static/index.html')),
+  await page.route('**/', route => route.fulfill({ contentType: 'text/html', body: readIndex(),
     headers: { 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'" } }));
   await open(page);
   await expect(page.locator('#find-results-view')).toHaveAttribute('data-v-app', '');

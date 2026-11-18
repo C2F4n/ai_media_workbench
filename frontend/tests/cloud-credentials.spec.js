@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { login } = require('./helpers/auth-api.cjs');
 const { handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
 test.beforeEach(async ({ page }) => handleActionConfirmations(page));
 const crypto = require('node:crypto');
@@ -14,10 +15,8 @@ async function account(page, context) {
   const challenge = (await sent.json()).data.challengeId;
   const code = (await (await context.request.get(process.env.TEST_MAILBOX_URL + '/messages?email=' + encodeURIComponent(email))).json()).code;
   expect((await context.request.post('/api/auth/register', { headers, data: { username, email, password, emailChallengeId: challenge, emailCode: code } })).status()).toBe(201);
-  await page.goto('/');
-  await page.locator('#login-username').fill(username); await page.locator('#login-password').fill(password);
-  await page.getByRole('button', { name: '登录', exact: true }).click();
-  await expect(page.locator('#workbench-panel')).toBeVisible();
+  await login(page, username, password);
+  await expect(page.locator('#workspace-home-overview')).toBeVisible();
   return username;
 }
 async function remove(context, username) {
@@ -25,7 +24,7 @@ async function remove(context, username) {
   expect(response.status()).toBe(200);
 }
 async function settings(page) {
-  await page.locator('#header-account').click();
+  await page.locator('#workspace-home-sidebar').getByRole('button', { name: '设置', exact: true }).click();
   await page.locator('#account-cloud-tab').click();
   await expect(page.locator('.cloud-provider')).toHaveCount(3);
 }
@@ -94,9 +93,8 @@ test('personal credentials are private, never echoed, versioned and explicitly d
     await page.getByRole('button', { name: '退出登录', exact: true }).click();
     await expect(page.locator('#auth-view')).toBeVisible();
     await expect(page.locator('.cloud-provider')).toHaveCount(0);
-    await page.locator('#login-username').fill(username); await page.locator('#login-password').fill(password);
-    await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.locator('#workbench-panel')).toBeVisible(); await settings(page);
+    await login(page, username, password);
+    await expect(page.locator('#workspace-home-overview')).toBeVisible(); await settings(page);
     await expect(page.locator('#cloud-tencent input[name=secretKey]')).toHaveValue('');
     expect(await page.evaluate(() => localStorage.length)).toBe(0);
     expect(errors).toEqual([]);

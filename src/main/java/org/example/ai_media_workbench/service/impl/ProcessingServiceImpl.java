@@ -49,6 +49,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+/**
+ * 方案/任务的业务协调层：解析要求、校验权限与参数、保存方案、确认后入队，不在 HTTP 请求中转码。
+ * Plan 是可核对的处理配方，Task 是一次已确认的执行记录；FFmpeg 实际由 TranscodeWorker 调用。
+ * 普通业务异常向上交给统一处理器；模型输出解析异常仅在信任边界转成安全的业务错误。
+ */
 @Service
 public class ProcessingServiceImpl implements ProcessingService {
     private final ProcessingMapper mapper;
@@ -78,6 +83,7 @@ public class ProcessingServiceImpl implements ProcessingService {
         this.transcripts=transcripts;
     }
 
+    /** 手动填写 parameters 与自然语言 instruction 二选一，最终收敛为同一套受控参数。 */
     @Override
     public PlanVO create(String userId, CreatePlanRequest input) {
         choice(input.parameters(),input.instruction());
@@ -104,6 +110,7 @@ public class ProcessingServiceImpl implements ProcessingService {
         // 重新生成是完整替换要求，不拼接旧输入，也不让旧参数暗中影响新方案。
         var resolved=resolve(userId,input.parameters(),instruction,requireReady(userId,current.getMediaId()),null,null);
         return transactions.execute(status->{
+            // AI 调用期间可能已有另一请求改过方案；入库前再次锁定并核对 expectedVersion。
             lockUser(userId); var plan=lockedPlan(userId,id); editable(plan,input.expectedVersion());
             verify(resolved,requireReady(userId,plan.getMediaId())); apply(plan,resolved,instruction);
             plan.setVersion(Math.addExact(plan.getVersion(),1)); mapper.updatePlan(plan); return views.plan(plan);
@@ -151,15 +158,18 @@ public class ProcessingServiceImpl implements ProcessingService {
         var plan = lockedPlan(userId, id);
         if (plan.getVersion() != expectedVersion) throw new BusinessException(ErrorCode.PLAN_VERSION_CONFLICT);
         var existing = mapper.taskForPlan(userId, id);
+        // 相同方案重复确认返回同一个任务，避免用户因网络超时再次点击时重复转码。
         if (existing != null) return views.task(existing);
         if (plan.getStatus() != PlanStatus.READY) throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
         var parameters = json.readValue(plan.getParametersJson(), OperationParameters.class);
         validateOperation(parameters, requireReady(userId, plan.getMediaId())); requireTool(parameters);
+        // “检查容量 + 插入任务”放在队列锁内，避免多个并发请求同时通过容量检查。
         mapper.lockQueue();
         if (mapper.activeCount() >= properties.queueLimit()) throw new BusinessException(ErrorCode.QUEUE_FULL);
         var task = new TaskEntity();
         task.setId(UUID.randomUUID().toString()); task.setUserId(userId); task.setMediaId(plan.getMediaId());
         task.setPlanId(id); task.setPlanVersion(expectedVersion); task.setKind(TaskKind.MEDIA_PROCESSING);
+        // 任务复制已确认版本的参数快照，后台执行不再读取表单或重新询问模型。
         task.setSourceId(id); task.setSourceVersion(expectedVersion); task.setParametersJson(plan.getParametersJson());
         task.setStatus(TaskStatus.QUEUED); task.setStage(TaskStage.WAITING); task.setCreatedAt(now());
         mapper.insertTask(task);
@@ -236,6 +246,7 @@ public class ProcessingServiceImpl implements ProcessingService {
         return value;
     }
 
+    /** 模型只提交候选参数或澄清问题；这里再按服务器能力、素材时长和格式白名单进行验收。 */
     private Resolved resolve(String userId,JsonNode node,String instruction,MediaEntity source,OperationParameters previous,String previousInstruction) {
         if(instruction==null) return new Resolved(parameters(node),List.of());
         if(instruction.isBlank()) throw new BusinessException(ErrorCode.INVALID_PARAMETERS);
@@ -268,6 +279,7 @@ public class ProcessingServiceImpl implements ProcessingService {
             if(proposal.questions().isEmpty() || proposal.questions().size()>3 || new java.util.HashSet<>(proposal.questions()).size()!=proposal.questions().size())
                 throw new IllegalArgumentException();
             return new Resolved(null,proposal.questions().stream().map(question->new PlanNotice(question.name(),question.message())).toList());
+        // 模型 JSON 即使能解析，也不代表可执行；不能把内部解析异常或模型原文直接返回用户。
         } catch(RuntimeException invalidModelOutput) { throw new BusinessException(ErrorCode.AI_PLAN_FAILED); }
     }
     private void verify(Resolved resolved,MediaEntity source) {
@@ -282,6 +294,7 @@ public class ProcessingServiceImpl implements ProcessingService {
     }
     private record Resolved(OperationParameters parameters,List<PlanNotice> questions) {}
 
+    /** 按 operation 转成对应 DTO，并拒绝多余字段；这些字段不是任意 FFmpeg 命令行选项。 */
     private OperationParameters parameters(JsonNode node) {
         if ("workflow".equals(node.path("operation").asText())) return WorkflowSettings.parse(node);
         if ("export".equals(node.path("operation").asText())) return ExportSettings.parse(node);

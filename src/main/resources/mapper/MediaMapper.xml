@@ -44,6 +44,13 @@
             kind=NULL,probe_token=NULL,probe_started_at=NULL,updated_at=#{now}
         WHERE id=#{id} AND user_id=#{userId} AND status='FAILED' AND deleted_at IS NULL
     </update>
+    <update id="enrichMetadata">
+        <!-- 原文件不变，仅补齐旧元数据；并发补检、删除和重新检测后不覆盖新状态。 -->
+        UPDATE media SET metadata_json=#{metadataJson}
+        WHERE id=#{id} AND user_id=#{userId} AND status='READY' AND metadata_json=#{previousMetadata}
+            AND deleted_at IS NULL
+            AND EXISTS(SELECT 1 FROM app_user u WHERE u.id=media.user_id AND u.status='ACTIVE')
+    </update>
     <select id="findPending" resultType="org.example.ai_media_workbench.entity.MediaEntity">
         SELECT m.* FROM media m JOIN app_user u ON u.id=m.user_id
         WHERE m.status='PROBING' AND m.deleted_at IS NULL AND u.status='ACTIVE'

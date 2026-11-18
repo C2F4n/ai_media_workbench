@@ -86,22 +86,6 @@ for (const scenario of [
     else await expect(credentialWarning).toBeVisible();
   });
 
-  test(`connection warning follows actual browser security: ${scenario.origin} at ${scenario.width}px`, async ({ page }, testInfo) => {
-    await page.setViewportSize({ width: scenario.width, height: 900 });
-    await fixture(page, { signedIn: false });
-    await page.goto(scenario.origin + '/');
-    await expect(page.locator('#login-form')).toBeVisible();
-    const warning = page.locator('#auth-view [data-transport-warning]');
-    if (scenario.secure) await expect(warning).toBeHidden();
-    else {
-      await expect(warning).toBeVisible();
-      const bounds = await warning.boundingBox();
-      const tabs = await page.locator('#auth-view .tabs').boundingBox();
-      expect(bounds.y + bounds.height).toBeLessThanOrEqual(tabs.y);
-      await page.screenshot({ path: testInfo.outputPath(`http-warning-${scenario.width}.png`), fullPage: true });
-    }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  });
 }
 
 test('an HTTPS_REQUIRED API response is explained instead of a generic connection error', async ({ page }) => {
@@ -109,5 +93,5 @@ test('an HTTPS_REQUIRED API response is explained instead of a generic connectio
   await page.goto('http://workbench.test/');
   await expect(page.locator('#unavailable-view')).toBeVisible();
   await expect(page.locator('#unavailable-message')).toHaveText('请通过 HTTPS 安全连接访问本站。');
-  await expect(page.locator('#login-form')).toBeHidden();
+  await expect(page.locator('#auth-view')).toBeHidden();
 });

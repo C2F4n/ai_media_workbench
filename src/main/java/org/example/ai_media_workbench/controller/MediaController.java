@@ -27,6 +27,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+/**
+ * 原始素材管理入口（/api/media）：上传、分页查询、查看详情、重试检测、预览和删除。
+ * 调用 MediaService 保存素材并安排后台检测；上传返回 202 表示已受理，不代表格式检测已完成。
+ * Service 校验归属、状态和文件路径；通过后由 MediaStreams 返回预览文件流，不在此处执行转码。
+ */
 @RestController
 @RequestMapping("/api/media")
 public class MediaController {

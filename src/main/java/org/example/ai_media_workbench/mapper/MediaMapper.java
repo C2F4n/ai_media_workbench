@@ -18,6 +18,8 @@ public interface MediaMapper {
     void markOutputsDeleted(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
     List<MediaEntity> listOwned(@Param("userId") String userId, @Param("offset") long offset, @Param("limit") int limit);
     long countOwned(String userId);
+    int enrichMetadata(@Param("userId") String userId, @Param("id") String id,
+                       @Param("previousMetadata") String previousMetadata, @Param("metadataJson") String metadataJson);
     int retry(@Param("userId") String userId, @Param("id") String id, @Param("now") LocalDateTime now);
     List<MediaEntity> findPending(@Param("cutoff") LocalDateTime cutoff);
     int claim(@Param("id") String id, @Param("token") String token, @Param("cutoff") LocalDateTime cutoff,

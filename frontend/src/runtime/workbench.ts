@@ -1,18 +1,100 @@
+import { nextTick, shallowReactive } from 'vue';
 import { createHttpClient } from '../api/client';
-import { isTool } from '../workbench/catalog';
+import { burnAuthView } from '../auth/burn-transition';
+import { mountAuthTheme } from '../auth/theme';
+import { sizeText } from '../plan-format';
+import { mediaMetadataRows } from '../media-metadata';
+import { isTool, toolGroups, tools } from '../workbench/catalog';
+import type { ToolGroup, ToolId } from '../workbench/catalog';
+import { createMediaDetection } from '../workbench/media-detection';
+import { useLegacyWorkbench } from '../workbench/version';
 import * as ui from '../ui';
 import { element as $ } from './dom';
 import { errorInfo } from './types';
 import type * as API from '../api/contracts';
 import type { Parameters, Plan, PlanView, Task, Page, EditStep, TranslationDraft, TranslationRun, Confirmation, CloudConfirmation, DeletingResource, ErrorInfo } from './types';
-import type { ClipResult, FindResult } from '../types';
-import type { AuthMode } from '../auth/types';
+import type { ClipResult, FindResult, WorkbenchHome } from '../types';
 import type { ActionConfirmation } from '../cloud/catalog';
+import type { AuthEntryServices } from '../auth/types';
 
+/**
+ * 页面业务协调入口：挂载 Vue -> 维护当前账号/素材/方案/任务 -> 绑定操作 -> boot 恢复会话。
+ * 组件负责自己的编辑区域；这里负责跨区域流程、原生视频/对话框及服务端请求。
+ * 可先顺着 restoreSession、loadMedia、conversion-form、loadTasks 阅读一次完整处理流程。
+ */
 export function startWorkbench() {
   'use strict';
-  ui.mountApplication();
+  let loggingIn = false;
+  let loginRevision = 0;
+  const auth = shallowReactive<AuthEntryServices>({
+    visible: false,
+    registrationAllowed: false,
+    async login(body) {
+      loginRevision++;
+      loggingIn = true;
+      try {
+        const session = await request<API.SessionResponse>('/api/auth/login', { method: 'POST', body });
+        setCsrfToken(session.csrfToken);
+        showAccount(session.user, true);
+        notice('account-notice', '');
+        channel?.postMessage('account-changed');
+      } finally {
+        loggingIn = false;
+      }
+    },
+    sendCode: email => request<API.RegistrationEmailChallenge>('/api/auth/registration-email-code', { method: 'POST', body: { email } }),
+    register: body => request<API.User>('/api/auth/register', { method: 'POST', body })
+  });
+  const detection = useLegacyWorkbench() ? null : createMediaDetection(
+    (path, options) => request(path, options),
+    {
+      beforeUpload: () => confirmMediaSwitch(null),
+      showMedia(item) {
+        mediaPage = 1;
+        displayMedia(item);
+      },
+      sessionExpired() {
+        showAuth();
+        notice('auth-notice', messages.UNAUTHENTICATED, true);
+      }
+    }
+  );
+  const home = detection && shallowReactive<WorkbenchHome>({
+    userName: '',
+    section: 'regular',
+    tool: 'detect',
+    busy: false,
+    detection,
+    open(section) {
+      if (busy || !currentUser) return;
+      if (section === 'profile' || section === 'settings') {
+        selectPanel('account');
+        selectAccountTab(section === 'profile' ? 'profile' : 'security');
+      } else {
+        selectPanel('workbench');
+        selectToolFromNavigation(lastToolByGroup.get(section) ?? tools.find(tool => tool.group === section)!.id);
+      }
+    },
+    openTool(tool) {
+      if (currentUser && tool !== home?.tool) selectToolFromNavigation(tool);
+    },
+    logout() {
+      if (!busy && currentUser) void operation('account-notice', () => signOut(false));
+    },
+  });
+  ui.mountApplication(auth, home);
 
+  const mediaLibrary = $('recent-section');
+  if (home) {
+    $('detect-library-slot').append(mediaLibrary);
+    $('join-title').textContent = '片段顺序';
+    $('find-title').textContent = '查找条件';
+    $('ai-title').textContent = '处理方案';
+    $('subtitle-title').textContent = '字幕编辑与导出';
+    $('task-list-title').textContent = '任务列表';
+  } else {
+    $('import-library-slot').append(mediaLibrary);
+  }
 
   const findView = ui.mountFindResults($('find-results-view'), (action, item) => {
     if (busy || !findResult) return;
@@ -20,30 +102,12 @@ export function startWorkbench() {
     else useFindRange(item, action === 'join');
   });
   const planView = ui.mountPlanDetails($('ai-plan-details'));
-  // Vue owns authentication fields; all requests still use the existing session/CSRF client.
-  const authView = ui.mountAuthForm($('auth-form-content'), {
-    sendCode: email => request<API.RegistrationEmailChallenge>('/api/auth/registration-email-code', { method: 'POST', body: { email } }),
-    register: body => request<API.User>('/api/auth/register', { method: 'POST', body }),
-    login: async body => {
-      const data = await request<API.SessionResponse>('/api/auth/login', { method: 'POST', body });
-      setCsrfToken(data.csrfToken);
-      showAccount(data.user, true);
-      notice('account-notice', '');
-      channel?.postMessage('account-changed');
-    },
-    registered: () => showAuth('注册成功，请登录。'),
-    setBusy,
-    expired: async message => {
-      showAuth(); notice('auth-notice', message, true);
-      await refreshCsrf().catch(() => {});
-    }
-  });
   const { toolNames } = ui;
   const navigationView = ui.mountWorkspaceNavigation($('tool-sidebar'), $('workspace-phases'), {
     selectTool: selectToolFromNavigation,
     selectPhase: phase => selectWorkbenchPhase(phase)
   });
-  document.querySelectorAll<HTMLElement>('[data-transport-warning]:not(#auth-form-content [data-transport-warning])').forEach(element => {
+  document.querySelectorAll<HTMLElement>('[data-transport-warning]').forEach(element => {
     element.hidden = location.protocol !== 'http:' || window.isSecureContext;
   });
   // 登录令牌不是 JWT：AMW_SESSION HttpOnly Cookie 携带服务端会话 ID，JS 不读取令牌，也不将令牌存入 localStorage。
@@ -53,43 +117,17 @@ export function startWorkbench() {
   let busy = false;
   const narrowNavigation = window.matchMedia('(max-width: 900px)');
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const systemAuthTheme = window.matchMedia('(prefers-color-scheme: dark)');
-  let authThemePreference: 'light' | 'dark' | null = null;
-  try {
-    const saved = localStorage.getItem('amw-auth-theme');
-    if (saved === 'light' || saved === 'dark') authThemePreference = saved;
-  } catch { /* 外观偏好存储不可用时，仍可在当前页面切换。 */ }
-  function applyAuthTheme() {
-    const theme = authThemePreference || (systemAuthTheme.matches ? 'dark' : 'light');
-    $('auth-view').dataset.theme = theme;
-    const button = $('auth-theme-toggle'), dark = theme === 'dark';
-    button.title = dark ? '切换到亮色模式' : '切换到暗色模式';
-    button.setAttribute('aria-label', button.title);
-    button.setAttribute('aria-pressed', String(dark));
-    button.innerHTML = `<i data-lucide="${dark ? 'sun' : 'moon'}" aria-hidden="true"></i>`;
-    icons();
-  }
-  applyAuthTheme();
-  $('auth-theme-toggle').addEventListener('click', () => {
-    authThemePreference = $('auth-view').dataset.theme === 'dark' ? 'light' : 'dark';
-    try { localStorage.setItem('amw-auth-theme', authThemePreference); } catch { /* 不影响当前页面切换。 */ }
-    applyAuthTheme();
-  });
-  systemAuthTheme.addEventListener('change', () => { if (!authThemePreference) applyAuthTheme(); });
-  window.addEventListener('storage', event => {
-    if (event.key !== 'amw-auth-theme' && event.key !== null) return;
-    authThemePreference = event.newValue === 'light' || event.newValue === 'dark' ? event.newValue : null;
-    applyAuthTheme();
-  });
-  const authGallery = $('auth-gallery'), authSlides = [...authGallery.querySelectorAll<HTMLElement>('.auth-slide')];
-  let authSlideIndex = 0, authGalleryTimer: ReturnType<typeof setTimeout> | null = null, authGalleryHovered = false;
-  let authGalleryAnimations: Animation[] = [], authGalleryTransition = 0;
+  let finishAuthBurn: (() => void) | undefined;
+  const restoreAuthTheme = mountAuthTheme($('auth-view'));
   const cloudConfirmationKey = 'amw-cloud-confirmation';
   let skipCloudConfirmation: boolean = false, pendingCloudConfirmation: CloudConfirmation | null = null;
   let pendingActionConfirmation: Confirmation | null = null;
   let dependencySignature = '';
   const asrModelChoices = new Map<string, string>();
   let activePanel = 'workbench';
+  let activeWorkbenchGroup: ToolGroup = 'regular';
+  const lastToolByGroup = new Map<ToolGroup, ToolId>();
+  let activeAccountTab = 'profile';
   let mediaPage = 1;
   let mediaTotal = 0;
   let selectedMedia: API.Media | null = null;
@@ -117,6 +155,7 @@ export function startWorkbench() {
   let trimSourceId: string | null = null;
   let deletingMedia: DeletingResource | null = null;
   let deletingOutput: DeletingResource | null = null;
+  // 工作台代次：退出或删除等操作使旧请求失效，配合账号/素材 ID 检查拒绝迟到的响应。
   let workspaceRevision = 0;
   let subtitle: API.Transcript | null = null;
   let subtitleMediaId: string | null = null;
@@ -227,7 +266,6 @@ export function startWorkbench() {
 
   // 在指定位置显示或清除提示信息。
   function notice(id: string, text: string, error = false) {
-    if (id === 'auth-notice') { authView.notice(text, error); return; }
     const element = $(id);
     element.textContent = text;
     element.hidden = !text;
@@ -331,103 +369,52 @@ export function startWorkbench() {
   $('action-confirm-dialog').addEventListener('cancel', event => { event.preventDefault(); finishActionConfirmation(false); });
   $('action-confirm-dialog').addEventListener('close', () => { if (!$('action-confirm-dialog').open) finishActionConfirmation(false); });
 
-  // 只显示指定页面视图。
-  function showOnly(view: string) {
+  function showOnly(view: string, burnLogin = false) {
+    finishAuthBurn?.();
+    const authView = $('auth-view');
+    if (view === 'auth-view' && authView.hidden) restoreAuthTheme();
+    if (burnLogin && !reducedMotion.matches) {
+      const focused = document.activeElement;
+      const ignition = focused instanceof HTMLElement && authView.contains(focused) ? focused : null;
+      finishAuthBurn = burnAuthView(authView, ignition, () => {
+        finishAuthBurn = undefined;
+      });
+    }
     if (view !== 'account-view') { finishCloudConfirmation(false); finishActionConfirmation(false); }
     for (const id of ['loading-view', 'unavailable-view', 'auth-view', 'account-view'] as const) {
-      $(id).hidden = id !== view;
+      $(id).hidden = id !== view && (id !== 'auth-view' || !finishAuthBurn);
     }
-    document.querySelector<HTMLElement>('.app-header')!.hidden = view !== 'account-view';
-    if (view !== 'auth-view') stopAuthFormAnimation();
-    $('header-logout').hidden = view !== 'account-view';
-    $('header-account').hidden = view !== 'account-view';
+    $('app-header').hidden = !!home || view !== 'account-view';
+    auth.visible = view === 'auth-view';
     syncNavigation();
-    syncAuthGallery();
   }
 
-  function settleAuthGallery() {
-    authGalleryTransition++;
-    authGalleryAnimations.forEach(animation => animation.cancel()); authGalleryAnimations = [];
-    authSlides.forEach((slide, index) => { slide.hidden = index !== authSlideIndex; slide.inert = slide.hidden; });
-  }
-  function syncAuthGallery() {
-    clearTimeout(authGalleryTimer ?? undefined); authGalleryTimer = null;
-    const visible = !$('auth-view').hidden && !document.hidden;
-    if (visible) for (const image of authGallery.querySelectorAll<HTMLImageElement>('img[data-src]')) {
-      if (!image.hasAttribute('src')) image.src = image.dataset.src || '';
-    }
-    if (!visible) settleAuthGallery();
-    const ready = authSlides.every(slide => { const image = slide.querySelector('img')!; return image.hasAttribute('src') && image.complete; });
-    if (visible && ready && !reducedMotion.matches && !authGalleryHovered) {
-      authGalleryTimer = setTimeout(() => setAuthSlide((authSlideIndex + 1) % authSlides.length), 6000);
-    }
-  }
-  function setAuthSlide(index: number) {
-    const outgoing = authSlides[authSlideIndex], incoming = authSlides[index];
-    if (index === authSlideIndex) { syncAuthGallery(); return; }
-    settleAuthGallery(); authSlideIndex = index;
-    authGallery.dataset.slide = String(index);
-    incoming.hidden = false; incoming.inert = false; outgoing.inert = true;
-    if (reducedMotion.matches || $('auth-view').hidden) settleAuthGallery();
-    else {
-      const token = authGalleryTransition, options = { duration: 720, easing: 'cubic-bezier(.22,.75,.22,1)' };
-      authGalleryAnimations = [
-        outgoing.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-100%)' }], options),
-        incoming.animate([{ transform: 'translateX(100%)' }, { transform: 'translateX(0)' }], options)
-      ];
-      Promise.all(authGalleryAnimations.map(animation => animation.finished)).then(() => {
-        if (token === authGalleryTransition) settleAuthGallery();
-      }).catch(() => { /* 隐藏登录页或改变动态效果偏好时，取消旧动画并归一显示状态。 */ });
-    }
-    syncAuthGallery();
-  }
-  authSlides.forEach((slide, index) => {
-    slide.inert = index !== authSlideIndex;
-    slide.querySelector('img')!.addEventListener('load', () => { slide.querySelector<HTMLElement>('.auth-image-fallback')!.hidden = true; syncAuthGallery(); });
-    slide.querySelector('img')!.addEventListener('error', event => {
-      (event.currentTarget as HTMLImageElement).hidden = true;
-      slide.querySelector<HTMLElement>('.auth-image-fallback')!.hidden = false;
-      syncAuthGallery();
-    });
-  });
-  authGallery.addEventListener('pointerenter', event => { if (event.pointerType !== 'touch') { authGalleryHovered = true; syncAuthGallery(); } });
-  authGallery.addEventListener('pointerleave', () => { authGalleryHovered = false; syncAuthGallery(); });
-  document.addEventListener('visibilitychange', syncAuthGallery);
-  window.addEventListener('pagehide', () => { clearTimeout(authGalleryTimer ?? undefined); authGalleryTimer = null; settleAuthGallery(); });
-  window.addEventListener('pageshow', syncAuthGallery);
   reducedMotion.addEventListener('change', () => {
-    if (reducedMotion.matches) { settleAuthGallery(); stopAuthFormAnimation(); }
-    syncAuthGallery();
+    if (!reducedMotion.matches) return;
+    finishAuthBurn?.();
   });
 
   // 设置请求等待状态并禁用或恢复表单控件。
+  // 原生控件在这里锁定；Vue 所有的区域通过各 view 的状态更新，避免两边争写 disabled。
   function setBusy(value: boolean) {
     busy = value;
-    document.querySelectorAll<HTMLButtonElement>('button:not(#auth-theme-toggle), form input, form select').forEach((element) => {
-      if (!element.closest('#find-results-view, #ai-plan-details, #auth-form-content, #tool-sidebar, #workspace-phases, #toggle-sidebar, #sidebar-backdrop, #media-list, #plan-list, #task-list, #join-clips, #workflow-steps, #subtitle-segments, #translation-segments, #cloud-providers')) element.disabled = value || element.hasAttribute('data-unavailable');
+    if (home) home.busy = value;
+    document.querySelectorAll<HTMLButtonElement>('button, form input, form select').forEach((element) => {
+      if (!element.closest('#find-results-view, #ai-plan-details, #auth-view, #workspace-home-sidebar, .workspace-tool-tab-list, .media-detect, #tool-sidebar, #workspace-phases, #toggle-sidebar, #sidebar-backdrop, #media-list, #plan-list, #task-list, #join-clips, #workflow-steps, #subtitle-segments, #translation-segments, #cloud-providers')) element.disabled = value || element.hasAttribute('data-unavailable');
     });
-    updateRegistrationControls();
     navigationView.update({ busy: value });
     historyView.update({ busy: value });
     document.body.setAttribute('aria-busy', String(value));
     syncMediaControls();
   }
 
-  function updateRegistrationControls() {
-    authView.update({ busy, registration: capabilities ? !!capabilities.registration : null });
-  }
-  function stopAuthFormAnimation() { authView.stopAnimation(); }
-  function switchMode(mode: AuthMode, animate = false) { authView.switchMode(mode, animate); }
-
   // 清空密码输入框并恢复密码隐藏状态。
   function clearPasswords() {
-    authView.clearPasswords();
-    document.querySelectorAll<HTMLInputElement>('input[autocomplete="current-password"], input[autocomplete="new-password"]').forEach((input) => {
-      if (input.closest('#auth-form-content')) return;
+    document.querySelectorAll<HTMLInputElement>('#account-view :is(input[autocomplete="current-password"], input[autocomplete="new-password"])').forEach((input) => {
       input.value = '';
       input.type = 'password';
     });
-    document.querySelectorAll<HTMLButtonElement>('.password-toggle:not(#auth-form-content .password-toggle)').forEach((button) => {
+    document.querySelectorAll<HTMLButtonElement>('#account-view .password-toggle').forEach((button) => {
       button.title = '显示密码';
       button.setAttribute('aria-label', '显示密码');
       button.innerHTML = '<i data-lucide="eye" aria-hidden="true"></i>';
@@ -451,7 +438,6 @@ export function startWorkbench() {
     resetWorkbench();
     $('delete-dialog').close();
     clearPasswords();
-    switchMode('login');
     showOnly('auth-view');
     notice('auth-notice', message);
     notice('account-notice', '');
@@ -464,6 +450,7 @@ export function startWorkbench() {
     // Another tab may switch accounts without this page passing through logout.
     if (first && currentUser) resetWorkbench();
     currentUser = user;
+    if (home) home.userName = user.displayName || user.username;
     if (first || newLogin) loadCloudConfirmationSetting(newLogin);
     $('workspace-user').textContent = user.displayName;
     $('account-greeting').textContent = `你好，${user.displayName}`;
@@ -475,19 +462,31 @@ export function startWorkbench() {
     }).format(new Date(user.createdAt));
     $('profile-name').value = String(user.displayName);
     clearPasswords();
-    showOnly('account-view');
+    showOnly('account-view', newLogin);
+    if (newLogin) window.scrollTo({ top: 0, behavior: 'instant' });
     notice('auth-notice', '');
-    if (first) { clearCloud(); selectPanel('workbench'); refreshUserCapabilities(); loadMedia(); loadTasks(); }
+    if (first) {
+      detection?.setLimits(capabilities);
+      clearCloud();
+      selectPanel('workbench');
+      refreshUserCapabilities();
+      loadMedia();
+      if (!home) loadTasks();
+    }
   }
 
   // 向后端查询当前登录用户并恢复对应界面。
   async function restoreSession() {
+    if (loggingIn) return;
+    const revision = loginRevision;
     // 刷新页面后询问服务端恢复身份，不凭本地“已登录”标记判断；401 才切回登录界面。
     try {
       await refreshCsrf();
       const user = await request<API.User>('/api/users/me');
-      showAccount(user);
+      if (revision !== loginRevision) return;
+      showAccount(user, !$('auth-view').hidden && !$('auth-view').inert);
     } catch (caught) {
+      if (revision !== loginRevision) return;
       const error = errorInfo(caught);
       if (error.status === 401) showAuth();
       else showOnly('unavailable-view');
@@ -520,7 +519,7 @@ export function startWorkbench() {
     }
   }
 
-  // Authentication and account security share the same typed password rules.
+  // 注册与账户改密共用同一套密码规则，避免两个入口对同一密码给出不同结论。
   const { newPasswordIssue, existingPasswordIssue } = ui;
   function validateNewPassword(password: string, confirmation: string) {
     const issue = newPasswordIssue(password);
@@ -592,7 +591,7 @@ export function startWorkbench() {
     });
   }
 
-  document.querySelectorAll<HTMLButtonElement>('.password-toggle:not(#auth-form-content .password-toggle)').forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>('#account-view .password-toggle').forEach((button) => {
     button.addEventListener('click', () => {
       const input = $<HTMLInputElement>(button.dataset.passwordTarget || '');
       const reveal = input.type === 'password';
@@ -608,7 +607,7 @@ export function startWorkbench() {
   async function signOut(allDevices: boolean) {
     // logout 只退出当前会话，logout-all 撤销所有设备；二者都不注销账号。
     await request<void>(allDevices ? '/api/auth/logout-all' : '/api/auth/logout', { method: 'POST' });
-    showAuth(allDevices ? '已退出所有设备。' : '已退出登录。');
+    showAuth(allDevices ? '已退出所有设备。' : '');
     await refreshCsrf();
     channel?.postMessage('account-changed');
   }
@@ -666,22 +665,28 @@ export function startWorkbench() {
   });
 
   $('retry-connection').addEventListener('click', () => boot());
-  $('header-account').addEventListener('click', () => selectPanel(activePanel === 'account' ? 'workbench' : 'account'));
+  for (const panel of ['workbench', 'account'] as const) {
+    $(`header-${panel}`).addEventListener('click', () => {
+      if (panel !== activePanel) selectPanel(panel);
+    });
+  }
   $('back-workbench').addEventListener('click', () => selectPanel('workbench'));
 
-  function selectPanel(panel: string) {
+  function selectPanel(panel: 'workbench' | 'account') {
     activePanel = panel;
     clearCloudSecrets();
     if (panel === 'account' && currentUser && cloudOwner !== currentUser.id) loadCloudCredentials();
     $('workbench-panel').hidden = panel !== 'workbench';
     $('account-panel').hidden = panel !== 'account';
-    $('header-location').textContent = panel === 'workbench' ? '工作台' : '账户';
-    $('header-account').setAttribute('aria-expanded', String(panel === 'account'));
+    syncWorkbenchHomeSection();
+    $('header-workbench').setAttribute('aria-current', panel === 'workbench' ? 'page' : 'false');
+    $('header-account').setAttribute('aria-current', panel === 'account' ? 'page' : 'false');
     syncNavigation();
     if (panel !== 'workbench') document.querySelectorAll<HTMLMediaElement>('#workbench-panel video, #workbench-panel audio').forEach(player => player.pause());
   }
 
   function selectAccountTab(tab: string) {
+    activeAccountTab = tab;
     for (const name of ['profile', 'security', 'cloud'] as const) {
       const active = name === tab;
       $(`${name}-section`).hidden = !active;
@@ -689,6 +694,13 @@ export function startWorkbench() {
       $(`account-${name}-tab`).tabIndex = active ? 0 : -1;
     }
     $('account-danger-section').hidden = tab !== 'security';
+    syncWorkbenchHomeSection();
+  }
+
+  function syncWorkbenchHomeSection() {
+    if (home) {
+      home.section = activePanel === 'workbench' ? activeWorkbenchGroup : activeAccountTab === 'profile' ? 'profile' : 'settings';
+    }
   }
   for (const name of ['profile', 'security', 'cloud'] as const) $(`account-${name}-tab`).addEventListener('click', () => selectAccountTab(name));
   document.querySelector<HTMLElement>('.account-nav')!.addEventListener('keydown', event => {
@@ -783,7 +795,7 @@ export function startWorkbench() {
     try {
       const item = await request<API.Capabilities>('/api/system/capabilities');
       if (currentUser?.id !== owner || workspaceRevision !== revision || requestRevision !== userCapabilitiesRevision) return;
-      capabilities = item; updateRegistrationControls(); syncMediaControls();
+      capabilities = item; detection?.setLimits(item); auth.registrationAllowed = item.registration; syncMediaControls();
       const saved = cloudEntries?.find(entry => entry.provider === 'deepseek');
       if (saved?.mode === 'SERVER' && item.textAi?.source === 'SERVER') {
         cloudEntries = (cloudEntries ?? []).map(entry => entry.provider === 'deepseek' ? { ...entry, available: item.textAi.available, unavailableReason: item.textAi.unavailableReason } : entry);
@@ -821,7 +833,11 @@ export function startWorkbench() {
   }
   $('refresh-cloud').addEventListener('click', loadCloudCredentials);
 
+  // 切换身份时清空当前账号的草稿、结果和轮询，不能让下一账号沿用旧页面状态。
   function resetWorkbench() {
+    detection?.reset();
+    activeWorkbenchGroup = 'regular';
+    lastToolByGroup.clear();
     planListRevision++; taskListRevision++; planPage = 1; planTotal = 0; expandedRecords.clear(); recordInstructions.clear();
     historyView.clear(); notice('plan-list-error', ''); selectAccountTab('profile');
     navigationView.reset();
@@ -868,6 +884,7 @@ export function startWorkbench() {
     clearAIPlan();
     clearSubtitle();
     clearTimeout(probeTimer ?? undefined); probeTimer = null; selectedMedia = null;
+    detection?.setItem(null);
     clearSourcePreview();
     $('media-result').hidden = true; $('media-result-empty').hidden = false; $('media-status').hidden = true;
     compressionSourceId = null; $('compression-target').value = '';
@@ -894,13 +911,6 @@ export function startWorkbench() {
     if (pendingPlan?.mediaId === id) pendingPlan = null;
   }
 
-  function sizeText(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-    return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-  }
-
   function statusText(status: string) { return ({ PROBING: '检测中', READY: '已就绪', FAILED: '检测失败' })[status] || status; }
 
   function clearSourcePreview() {
@@ -917,6 +927,18 @@ export function startWorkbench() {
       if (url) { $('source-preview').src = url; $('source-preview').hidden = false; }
     }
     if (!url) notice('source-preview-status', item.status === 'READY' ? '当前格式不支持直接预览。' : '');
+  }
+
+  function updateSourcePreview() {
+    if (home?.tool === 'detect') {
+      if ($('source-preview').hasAttribute('src')) clearSourcePreview();
+    } else if (selectedMedia) {
+      displaySourcePreview(selectedMedia);
+    }
+  }
+
+  function mediaWritePending() {
+    return detection?.state.pending === 'upload' || detection?.state.pending === 'retry';
   }
 
   $('source-preview').addEventListener('error', () => {
@@ -947,19 +969,15 @@ export function startWorkbench() {
     if (selectedMedia?.id !== item.id) clearFind();
     if (selectedMedia?.id !== item.id) clearJoin();
     selectedMedia = item;
-    displaySourcePreview(item);
+    detection?.setItem(item);
+    updateSourcePreview();
     $('media-result-empty').hidden = true;
     $('media-result').hidden = false;
     $('media-result-name').textContent = item.originalFilename;
     $('media-status').hidden = false;
     $('media-status').textContent = statusText(item.status);
     $('media-status').className = 'media-status ' + (item.status === 'READY' ? 'ready' : item.status === 'FAILED' ? 'failed' : '');
-    const values = [['大小', sizeText(item.sizeBytes)]];
-    if (item.metadata) {
-      const m = item.metadata;
-      values.push(['时长', `${(m.durationMs / 1000).toFixed(2)} 秒`], ['分辨率', `${m.width} × ${m.height}`],
-        ['容器', m.container], ['视频编码', m.videoCodec || '未知'], ['音轨', m.hasAudio ? m.audioCodec || '未知' : '无音轨']);
-    }
+    const values = mediaMetadataRows(item.metadata, item.sizeBytes);
     $('media-metadata').replaceChildren(...values.map(([label, value]) => {
       const row = document.createElement('div');
       const key = document.createElement('dt'); key.textContent = label;
@@ -985,11 +1003,14 @@ export function startWorkbench() {
           displayMedia(updated);
           if (updated.status !== 'PROBING') await loadMedia();
         } catch (caught) {
-      const error = errorInfo(caught);
-          if (currentUser?.id !== owner || workspaceRevision !== revision) return;
+          const error = errorInfo(caught);
+          if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== item.id) return;
           if (error.status === 401) showAuth();
           else if (error.status === 404 && selectedMedia?.id === item.id) { forgetMedia(item.id); await loadMedia(); await loadTasks(); }
-          else notice('media-error', error.message, true);
+          else {
+            detection?.reportError(error.message);
+            notice('media-error', error.message, true);
+          }
         }
       }, 2000);
     }
@@ -1096,15 +1117,26 @@ export function startWorkbench() {
   $('media-prev').addEventListener('click', () => { if (mediaPage > 1) { mediaPage--; loadMedia(); } });
   $('media-next').addEventListener('click', () => { if (mediaPage * 10 < mediaTotal) { mediaPage++; loadMedia(); } });
 
-  function selectTool(tool: string, revealGroup = true) {
+  function selectTool(tool: string, revealGroup = !home) {
     if (!isTool(tool) || !navigationView.selectTool(tool, revealGroup)) return;
+    if (home) {
+      home.tool = tool;
+      const librarySlot = $(tool === 'detect' ? 'detect-library-slot' : 'import-library-slot');
+      if (mediaLibrary.parentElement !== librarySlot) librarySlot.append(mediaLibrary);
+      activeWorkbenchGroup = toolGroups[tool];
+      document.getElementById(`workspace-subnav-${activeWorkbenchGroup}`)?.append($('workspace-toolbar'));
+      lastToolByGroup.set(activeWorkbenchGroup, tool);
+      if (tool === 'detect') selectWorkbenchPhase('import', false);
+      updateSourcePreview();
+      syncWorkbenchHomeSection();
+    }
     $('workspace-tool-title').textContent = toolNames[tool];
     $('detect-editor').hidden = tool !== 'detect';
     const processing = ['convert', 'compress', 'audio', 'trim', 'mute'].includes(tool);
     processingOperation = tool === 'mute' ? 'mute' : tool === 'trim' ? 'trim' : tool === 'audio' ? 'extract_audio' : tool === 'compress' ? 'compress' : 'transcode';
     $('history-panel').hidden = tool !== 'history';
-    $('workspace-toolbar').hidden = tool === 'history';
-    $('tool-dependencies').hidden = tool === 'history';
+    $('workspace-toolbar').hidden = tool === 'history' || !!home && tool === 'detect';
+    $('tool-dependencies').hidden = tool === 'history' || !!home && tool === 'detect';
     $('conversion-section').hidden = !processing;
     $('task-section').hidden = false;
     $('ai-section').hidden = tool !== 'ai';
@@ -1120,7 +1152,7 @@ export function startWorkbench() {
     $('compression-target-field').hidden = processingOperation !== 'compress';
     $('compression-target').required = processingOperation === 'compress';
     $('compression-target').disabled = processingOperation !== 'compress';
-    $('conversion-title').textContent = tool === 'mute' ? '视频静音' : tool === 'trim' ? '视频裁切' : tool === 'audio' ? '提取音频' : tool === 'compress' ? '视频压缩' : '视频转换';
+    $('conversion-title').textContent = home ? '输出设置' : processing ? toolNames[tool] : '视频转换';
     $('start-processing-label').textContent = tool === 'mute' ? '开始静音' : tool === 'trim' ? '开始裁切' : tool === 'audio' ? '开始提取' : tool === 'compress' ? '开始压缩' : '开始转换';
     $('resolution-field').hidden = tool === 'audio' || tool === 'trim';
     $('trim-fields').hidden = tool !== 'trim';
@@ -1130,7 +1162,10 @@ export function startWorkbench() {
     $('processing-audio-mode').textContent = tool === 'mute' ? '移除音轨' : tool === 'audio' ? '第一条音轨' : '保留音轨';
     notice('conversion-error', '');
     syncMediaControls();
-    if (tool === 'history' && !$('history-plans-panel').hidden) loadPlans();
+    if (tool === 'history') {
+      if (!$('history-plans-panel').hidden) loadPlans();
+      else if (home) loadTasks();
+    }
   }
 
   function syncWorkbenchPhase() {
@@ -1153,7 +1188,9 @@ export function startWorkbench() {
     $('export-result-summary').textContent = srtReady ? `字幕 v${subtitle?.version} · SRT` : selectedTask?.kind === 'TRANSCRIPTION' ? '字幕识别结果保存在编辑区' : '尚未生成文件';
   }
   function selectWorkbenchPhase(phase: string, animate = true) {
-    if (navigationView.selectPhase(phase, animate)) syncWorkbenchPhase();
+    if (!navigationView.selectPhase(phase, animate)) return;
+    syncWorkbenchPhase();
+    if (home && animate) $('workbench-panel').closest('.workspace-tool-panel-body')?.scrollTo({ top: 0 });
   }
   function revealTask(task: Task) {
     displayTask(task);
@@ -1161,7 +1198,7 @@ export function startWorkbench() {
   }
 
   function syncNavigation() {
-    navigationView.update({ visible: !!currentUser && activePanel === 'workbench' && !$('account-view').hidden, busy });
+    navigationView.update({ visible: !home && !!currentUser && activePanel === 'workbench' && !$('account-view').hidden, busy });
   }
   function setNavigationOpen(value: boolean, focus = true) { navigationView.setOpen(value, focus); }
 
@@ -1317,7 +1354,7 @@ export function startWorkbench() {
   });
   function restoreExportPlan(found: Plan) {
     const p = found.parameters; if (!p) return; exportPlan = found; exportDirty = false;
-    selectTool(['mp3', 'm4a', 'wav', 'flac'].includes(p.outputFormat) ? 'audio' : 'convert');
+    selectTool(processingTool(p));
     if (p.videoCodec) { $('export-format').value = String(p.outputFormat); $('export-codec').value = String(p.videoCodec); }
     else $('export-audio-format').value = String(p.outputFormat);
     $('conversion-resolution').value = String(p.resolutionPreset || 'source');
@@ -1332,7 +1369,7 @@ export function startWorkbench() {
     $(id).addEventListener('input', () => { exportDirty = true; exportRevision++; notice('export-plan-state', '未保存'); syncMediaControls(); });
   }
   function selectToolFromNavigation(tool: string) {
-    if (busy) return;
+    if (busy || mediaWritePending()) return;
     selectTool(tool);
     const required = { convert: 'transcode', compress: 'compress', trim: 'trim', audio: 'extract_audio', mute: 'mute' }[tool];
     const unavailable = { convert: '视频转换工具暂不可用。', compress: '视频压缩工具暂不可用。', trim: '视频裁切工具暂不可用。', audio: 'MP3编码工具暂不可用。', mute: '视频静音工具暂不可用。' }[tool];
@@ -1506,18 +1543,23 @@ export function startWorkbench() {
       if (current.id !== snapshot.transcriptId || current.version !== snapshot.transcriptVersion) {
         clearFindResults(); findTranscript = current; throw new ApiError('TRANSCRIPT_VERSION_CONFLICT', 409);
       }
+      let editor: HTMLElement;
       if (join) {
         if (joinSourceId !== snapshot.mediaId) await loadJoinPlan();
         if (currentUser?.id !== owner || workspaceRevision !== revision || selectedMedia?.id !== snapshot.mediaId || token !== findRevision) return;
         const replace = !joinDirty && !pendingJoinPlan && joinRows.length === 1 && joinRows[0].start === '0' && Number(joinRows[0].end) * 1000 === (selectedMedia?.metadata?.durationMs ?? 0);
         if (!replace && joinRows.length >= 20) throw new Error('最多添加20个片段。');
         if (replace) joinRows = [];
-        joinRows.push(joinRow(item.startMs, item.endMs)); joinDirty = true; selectTool('join'); renderJoin(); $('join-section').scrollIntoView({ block: 'start' });
+        joinRows.push(joinRow(item.startMs, item.endMs)); joinDirty = true; selectTool('join'); renderJoin();
+        editor = $('join-section');
       } else {
         selectTool('trim'); trimSourceId = selectedMedia.id;
         $('trim-start').value = String(String(item.startMs / 1000)); $('trim-end').value = String(String(item.endMs / 1000));
-        syncMediaControls(); $('conversion-section').scrollIntoView({ block: 'start' });
+        syncMediaControls();
+        editor = $('conversion-section');
       }
+      await nextTick();
+      editor.scrollIntoView({ block: 'start' });
     });
   }
   function previewFind(item: ClipResult) {
@@ -2145,16 +2187,36 @@ export function startWorkbench() {
 
   async function openListedMedia(item: API.Media) {
     const owner = currentUser?.id, revision = workspaceRevision;
-    if (!await confirmMediaSwitch(item.id) || busy || currentUser?.id !== owner || workspaceRevision !== revision) return;
+    if (mediaWritePending() || !await confirmMediaSwitch(item.id) || busy || mediaWritePending()
+        || currentUser?.id !== owner || workspaceRevision !== revision) return;
     displayMedia(item);
-    if (selectedMedia?.id === item.id && item.status === 'READY') selectWorkbenchPhase('edit');
+    if (selectedMedia?.id === item.id && item.status === 'READY' && home?.tool !== 'detect') selectWorkbenchPhase('edit');
   }
   function removeListedMedia(item: API.Media) {
-    if (busy || !currentUser) return;
+    if (busy || mediaWritePending() || !currentUser) return;
     deletingMedia = { id: item.id, owner: currentUser.id, revision: workspaceRevision };
     $('delete-media-name').textContent = item.originalFilename; notice('delete-media-error', '');
     $('delete-media-dialog').showModal(); $('cancel-delete-media').focus();
   }
+
+  function processingTool(parameters: Parameters | null): ToolId {
+    switch (parameters?.operation) {
+      case 'extract_audio': return 'audio';
+      case 'trim': return 'trim';
+      case 'compress': return 'compress';
+      case 'mute': return 'mute';
+      case 'export': {
+        if (!parameters.videoCodec) return 'audio';
+        const edits: ToolId[] = [];
+        if (parameters.startMs != null) edits.push('trim');
+        if (parameters.targetSizeBytes != null) edits.push('compress');
+        if (parameters.audioMode === 'mute') edits.push('mute');
+        return edits.length === 1 && !parameters.extractAudio ? edits[0] : 'convert';
+      }
+      default: return 'convert';
+    }
+  }
+
   async function openListedTask(task: Task) {
     const owner = currentUser?.id, revision = workspaceRevision;
     if (task.mediaId) {
@@ -2172,11 +2234,10 @@ export function startWorkbench() {
                 selectTool('join'); joinRevision++; joinLoading = false; joinSourceId = task.mediaId;
                 joinRows = (task.parameters.clips ?? []).map((clip) => joinRow(clip.startMs, clip.endMs)); joinDirty = false; pendingJoinPlan = null; renderJoin();
               } else if (task.kind === 'TRANSCRIPTION' || task.parameters?.operation === 'burn_subtitles') selectTool('subtitle');
-              else selectTool(task.parameters?.operation === 'export' && !task.parameters.videoCodec || task.parameters?.operation === 'extract_audio' ? 'audio'
-                : (({ mute: 'mute', trim: 'trim', compress: 'compress' } as Record<string, string>)[task.parameters?.operation || ''] || 'convert'));
+              else selectTool(processingTool(task.parameters));
               revealTask(task);
             });
-          } else { selectTool(task.parameters?.operation === 'mute' ? 'mute' : task.parameters?.operation === 'trim' ? 'trim' : task.parameters?.operation === 'extract_audio' ? 'audio' : task.parameters?.operation === 'compress' ? 'compress' : 'convert'); revealTask(task); }
+          } else { selectTool(processingTool(task.parameters)); revealTask(task); }
   }
   async function inspectListedTask(task: Task) {
     if (!task.planId) return;
@@ -2286,6 +2347,7 @@ export function startWorkbench() {
   $('plan-prev').addEventListener('click', () => { if (planPage > 1) { planPage--; loadPlans(); } });
   $('plan-next').addEventListener('click', () => { if (planPage * 10 < planTotal) { planPage++; loadPlans(); } });
 
+  // 浏览器只轮询任务记录，实际编码在后端；序号检查避免较慢的旧列表覆盖新列表或恢复已删记录。
   async function loadTasks() {
     clearTimeout(taskTimer ?? undefined); taskTimer = null;
     const token = ++taskListRevision;
@@ -2328,6 +2390,7 @@ export function startWorkbench() {
     }
   }
 
+  // 常规处理主线：读取表单 -> 创建/复用方案 -> 显式 execute 入队 -> 显示任务并轮询结果。
   $('conversion-form').addEventListener('submit', (event) => {
     event.preventDefault();
     operation('conversion-error', async () => {
@@ -2348,7 +2411,7 @@ export function startWorkbench() {
       }
       if (usesExport() || exportPlan?.mediaId === mediaId && exportPlan.status === 'READY' && sameParameters(exportPlan.parameters, exportParameters())) parameters = exportParameters();
       const owner = currentUser?.id, revision = workspaceRevision;
-      // Retain the plan on an uncertain execute response so another click cannot enqueue a duplicate task.
+      // 执行响应丢失时保留方案 ID，用户重试仍执行同一方案；服务端幂等返回同一个任务。
       if (!pendingPlan || pendingPlan.mediaId !== mediaId || !sameParameters(pendingPlan.parameters, parameters)) {
         const plan = parameters.operation === 'export' ? await saveExportPlan(parameters)
           : await request<Plan>('/api/operation-plans', { method: 'POST', body: { mediaId, parameters } });
@@ -2407,6 +2470,7 @@ export function startWorkbench() {
     setBusy(true);
     try {
       capabilities = await request<API.Capabilities>('/api/system/capabilities');
+      auth.registrationAllowed = capabilities.registration;
       await restoreSession();
     } catch (caught) {
       const error = errorInfo(caught);
@@ -2419,7 +2483,6 @@ export function startWorkbench() {
   }
 
   // 只移动已有节点，保留表单、事件、任务轮询及未保存输入，阶段切换不重新创建业务视图。
-  $('import-library-slot').append($('recent-section'));
   $('history-tasks-slot').append($('task-section'));
   $('export-result-slot').append($('conversion-result'));
   $('editor-preview-slot').append($('source-preview'));
@@ -2429,6 +2492,7 @@ export function startWorkbench() {
   $('replace-source').addEventListener('click', () => selectWorkbenchPhase('import'));
   $('back-to-editing').addEventListener('click', () => selectWorkbenchPhase('edit'));
   document.querySelectorAll<HTMLElement>('[data-tool-target]').forEach(button => button.addEventListener('click', () => selectTool(button.dataset.toolTarget || '')));
+  if (home) selectTool('detect', false);
   icons();
   // 只刷新状态，不自动重发模型请求；服务停止或恢复后可更新按钮和不可用提示。
   let refreshingCapabilities = false;

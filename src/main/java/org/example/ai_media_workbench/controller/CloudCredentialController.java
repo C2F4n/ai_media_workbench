@@ -11,6 +11,11 @@ import org.example.ai_media_workbench.vo.cloud.CloudCredentialVO;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * 当前账号的云端配置入口（/api/users/me/cloud-credentials）：查询、保存和删除供应商凭据及服务来源。
+ * CloudCredentialService 负责格式/版本校验、凭据加密和账号隔离；响应只返回配置状态，不回显密钥。
+ * 保存配置不会发起付费验证，也不保证密钥有权限或余额；响应禁止缓存，避免保留个人配置状态。
+ */
 @RestController
 @RequestMapping("/api/users/me/cloud-credentials")
 public class CloudCredentialController {

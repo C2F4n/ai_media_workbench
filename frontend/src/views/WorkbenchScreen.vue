@@ -5,15 +5,21 @@ import HistoryScreen from './HistoryScreen.vue';
 import ExportPanel from './ExportPanel.vue';
 import EditorPanel from './EditorPanel.vue';
 import ImportPanel from './ImportPanel.vue';
+import WorkbenchBackdrop from '../components/WorkbenchBackdrop.vue';
+import type { WorkbenchHome } from '../types';
+
+defineProps<{ home: WorkbenchHome | null }>();
 </script>
 
 <template>
-<div id="workbench-panel">
+<Teleport :to="home ? `#workspace-tool-surface-${home.tool}` : 'body'" :disabled="!home" defer>
+<div id="workbench-panel" :class="{ 'workspace-embedded': home }">
+        <WorkbenchBackdrop v-if="!home" />
         <div id="workbench-layout" class="workbench-layout" data-nav-open="true" data-nav-pinned="true">
-        <aside id="tool-sidebar" class="tool-sidebar" aria-label="功能栏"></aside>
+        <aside id="tool-sidebar" class="tool-sidebar" aria-label="功能栏" :hidden="!!home"></aside>
         <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" tabindex="-1" aria-label="关闭功能栏" hidden></button>
         <div id="tool-content" class="tool-content">
-        <div class="workbench-heading"><div class="workspace-title"><button id="toggle-sidebar" class="icon-button" type="button" title="收起功能栏" aria-label="收起功能栏" aria-controls="tool-sidebar" aria-expanded="true"><i data-lucide="panel-left" aria-hidden="true"></i></button><div><p class="eyebrow">媒体工作台</p><h1 id="workspace-tool-title">视频检测</h1></div></div><span id="workspace-user" class="muted"></span></div>
+        <div class="workbench-heading" :hidden="!!home"><div class="workspace-title"><button id="toggle-sidebar" class="icon-button" type="button" title="收起功能栏" aria-label="收起功能栏" aria-controls="tool-sidebar" aria-expanded="true"><i data-lucide="panel-left" aria-hidden="true"></i></button><div><p class="eyebrow">FrameFlow</p><h1 id="workspace-tool-title">视频检测</h1></div></div><span id="workspace-user" class="muted"></span></div>
         <div id="workspace-toolbar" class="workspace-toolbar">
           <div id="workspace-phases" class="workspace-phases" role="tablist" aria-label="处理流程"></div>
           <span id="workspace-file-state" class="workspace-file-state">未选择素材</span>
@@ -24,7 +30,7 @@ import ImportPanel from './ImportPanel.vue';
           <dl id="dependency-services" class="dependency-services"></dl><p id="dependency-detail" class="dependency-detail"></p>
         </details>
         <div id="tool-stage" class="tool-stage">
-        <ImportPanel />
+        <ImportPanel :home="home" />
         <EditorPanel />
         <ExportPanel />
         <HistoryScreen />
@@ -34,4 +40,5 @@ import ImportPanel from './ImportPanel.vue';
         </div>
         </div>
         </div>
+</Teleport>
 </template>

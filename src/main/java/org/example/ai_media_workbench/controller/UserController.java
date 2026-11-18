@@ -22,7 +22,11 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** 当前账号接口依赖 UserService 接口；只组织请求、VO 与 Result，不直接调用 Mapper 或实现类。 */
+/**
+ * 当前账号管理入口（/api/users/me）：查询资料、修改昵称、修改密码和注销账号。
+ * 依赖 UserService 接口完成业务，只组织请求、VO 与 Result，不直接调用 Mapper 或实现类。
+ * 改密、注销后通过 LoginSessionManager 清除当前登录状态；注销账号与单纯退出登录不同。
+ */
 @RestController
 @RequestMapping("/api/users/me")
 public class UserController {

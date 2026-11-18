@@ -19,6 +19,7 @@ export const groups: readonly { id: ToolGroup; label: string }[] = [
 export const phases = ['import', 'edit', 'export'] as const;
 export type PhaseId = typeof phases[number];
 export const toolNames = Object.fromEntries(tools.map(tool => [tool.id, tool.label])) as Record<ToolId, string>;
+export const toolGroups = Object.fromEntries(tools.map(tool => [tool.id, tool.group])) as Record<ToolId, ToolGroup>;
 export function isTool(value: string): value is ToolId { return tools.some(tool => tool.id === value); }
 export function isPhase(value: string): value is PhaseId { return phases.some(phase => phase === value); }
 

@@ -37,7 +37,11 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
-/** 只在领取与恢复时持本机锁；处理阶段允许有界并发，不持数据库事务等FFmpeg或云端I/O。 */
+/**
+ * 后台执行主线：领取任务 -> 读取冻结参数 -> 调用工具 -> 检测结果 -> 短事务发布结果。
+ * 只在领取与恢复时持本机锁；处理阶段允许有界并发，不持数据库事务等待 FFmpeg 或云端 I/O。
+ * 浏览器轮询的是数据库任务状态，而不是直接连接 FFmpeg 子进程。
+ */
 @Component
 public class TranscodeWorker {
     private static final Logger log = LoggerFactory.getLogger(TranscodeWorker.class);
@@ -89,6 +93,7 @@ public class TranscodeWorker {
         var pending = mapper.pending();
         if (pending.isEmpty()) return null;
         var task = pending.getFirst();
+        // runToken 标识本次领取；数据库条件更新确保同一任务不会被两个执行者同时领走。
         task.setRunToken(UUID.randomUUID().toString());
         if (mapper.claim(task.getId(), task.getRunToken(), now()) != 1) return null;
         localRuns.add(task.getRunToken());
@@ -157,6 +162,7 @@ public class TranscodeWorker {
                     () -> mapper.running(task.getId(), task.getRunToken()) != 1);
             if(joining) storage.discardOutputAuxiliary(target.key());
             if (mapper.verifying(task.getId(), task.getRunToken()) != 1) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+            // 进程正常退出还不够：用 ffprobe 重新检测实际文件，验收时长、编码、尺寸和体积。
             var metadata = extractingAudio ? probe.inspectAudio(target.path()) : probe.inspect(target.path());
             verify(original, metadata, parameters);
             long size = Files.size(target.path());
@@ -197,7 +203,8 @@ public class TranscodeWorker {
             // 同一任务的多个结果在一个事务中发布，任意一个验收失败都不会暴露半成品。
             published = Boolean.TRUE.equals(transactions.execute(status -> finish(task, outputs, null)));
         } catch (Exception exception) {
-            // Background work has no HTTP response: persist a safe failure, never raw tool output or disk paths.
+            // 后台执行已脱离原 HTTP 请求，全局异常处理器不能替它更新任务；这里持久化安全错误码。
+            // 不记录原始工具输出或磁盘路径，前端随后查询任务即可知道失败原因。
             ErrorCode error = exception instanceof BusinessException business ? business.code() : ErrorCode.TRANSCODE_FAILED;
             if (extractingAudio && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.AUDIO_EXTRACTION_FAILED;
             if (trimming && error == ErrorCode.TRANSCODE_FAILED) error = ErrorCode.TRIM_FAILED;
@@ -210,12 +217,13 @@ public class TranscodeWorker {
             catch(Exception cleanupFailure) { cleaned=false; log.warn("Private subtitle cleanup deferred"); }
             if(cleaned) transactions.executeWithoutResult(status -> finish(task, null, failure));
         } finally {
-            // Unpublished/partial outputs must not become accessible after cancellation, deletion or a stale lease.
+            // 失败、取消或失去执行资格时删除未发布文件，不能把半成品暴露为可下载结果。
             if (!published && target != null) discard(target.key());
             if (!published && audioTarget != null) discard(audioTarget.key());
         }
     }
 
+    /** 发布前再次检查账号和 runToken，拒绝注销、取消或租约失效后才返回的旧执行结果。 */
     private boolean finish(TaskEntity task, java.util.List<OutputEntity> outputs, ErrorCode error) {
         var user = users.findByIdForUpdate(task.getUserId());
         if (user == null || user.getStatus() != UserStatus.ACTIVE) return false;

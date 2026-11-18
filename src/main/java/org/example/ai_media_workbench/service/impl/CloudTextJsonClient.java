@@ -27,12 +27,14 @@ public class CloudTextJsonClient {
     JsonNode complete(String prompt,String content,int maxTokens,ErrorCode failure,String userId) {
         return complete(prompt,content,maxTokens,failure,userId,null);
     }
+    /** Function Calling 只接收“提交方案/请求澄清”的工具结果，此处不会直接执行 FFmpeg。 */
     JsonNode plan(String prompt,String content,OperationPlanner.Context context,String userId) {
         return complete(prompt + "\n本次通过提供的function工具提交结果：必须且只能调用submit_media_plan或request_clarification一次，不输出普通JSON消息。",
                 content,3072,ErrorCode.AI_PLAN_FAILED,userId,MediaPlanTools.definitions(context));
     }
     private JsonNode complete(String prompt,String content,int maxTokens,ErrorCode failure,String userId,List<Map<String,Object>> tools) {
         if(userId==null) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
+        // deepseek 是历史保留的文字服务槽位名称；真正的厂商、模型和密钥由本次账号配置决定。
         var properties=credentials.effective(userId,"deepseek");
         if (!properties.textReady()) throw new BusinessException(ErrorCode.AI_UNAVAILABLE);
         if (!requests.tryAcquire()) throw new BusinessException(ErrorCode.AI_BUSY);
@@ -69,6 +71,7 @@ public class CloudTextJsonClient {
             var result=json.readTree(choice.path("message").path("content").asText());
             if (!result.isObject()) throw new BusinessException(failure);
             return result;
+        // 在外部服务边界统一错误类型；业务层和 Controller 不需要逐个捕获网络/JSON 解析异常。
         } catch (BusinessException exception) { throw exception; }
         catch (Exception exception) { throw new BusinessException(failure); }
         finally { requests.release(); }

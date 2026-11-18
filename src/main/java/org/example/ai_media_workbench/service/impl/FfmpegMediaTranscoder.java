@@ -26,7 +26,11 @@ import org.example.ai_media_workbench.service.MediaTranscoder;
 import org.example.ai_media_workbench.vo.media.MediaMetadataVO;
 import org.springframework.stereotype.Component;
 
-/** Fixed FFmpeg argument list, bounded runtime/output/threads; never invokes a shell. */
+/**
+ * FFmpeg 适配层：将已校验的 DTO 转为白名单参数列表，限制运行时间、输出大小及线程数。
+ * 二进制路径来自 TranscodeProperties；ProcessBuilder 直接启动进程，不经过 cmd / PowerShell。
+ * 本层只处理工具与文件，不查询账号、不创建任务，也不向浏览器组装 Result。
+ */
 @Component
 public class FfmpegMediaTranscoder implements MediaTranscoder {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(FfmpegMediaTranscoder.class);
@@ -351,10 +355,12 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
         run(command,target,cancelled,deadline,directory,null);
     }
 
+    /** 子进程运行期间轮询取消状态、共享截止时间和文件体积，异常路径也必须回收进程。 */
     private void run(List<String> command,Path target,BooleanSupplier cancelled,long deadline,Path directory,Path joinRoot) {
         Process process = null;
         try {
             if (cancelled.getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);
+            // 每个参数独立传入，不拼接为 shell 命令；带空格的路径也作为一个参数处理。
             var builder=new ProcessBuilder(command);
             if(directory!=null) {
                 // 过滤器只引用受控文件名，避免Windows盘符、空格、引号进入过滤表达式。
@@ -362,6 +368,7 @@ public class FfmpegMediaTranscoder implements MediaTranscoder {
                 if(binary.contains("/") || binary.contains("\\")) builder.command().set(0,Path.of(binary).toAbsolutePath().toString());
                 builder.directory(directory.toFile());
             }
+            // 不保留可能含私有路径的输出，同时避免无人读取 stdout/stderr 导致管道缓冲区阻塞。
             process = builder.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
             while (!process.waitFor(300, TimeUnit.MILLISECONDS)) {
                 if (cancelled.getAsBoolean()) throw new BusinessException(ErrorCode.TASK_CANCELLED);

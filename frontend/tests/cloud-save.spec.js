@@ -2,7 +2,16 @@ const { test, expect } = require('@playwright/test');
 const { handleActionConfirmations } = require('./helpers/cloud-confirmation.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
-const { selectTool } = require('./helpers/navigation.cjs');
+async function openCloudSettings(page) {
+  await page.locator('#workspace-home-sidebar').getByRole('button', { name: '设置', exact: true }).click();
+  await page.locator('#account-cloud-tab').click();
+  await expect(page.locator('.cloud-provider')).toHaveCount(3);
+}
+
+async function openAiTool(page) {
+  await page.locator('#workspace-home-sidebar').getByRole('button', { name: 'AI协作处理', exact: true }).click();
+  await page.getByRole('tab', { name: 'AI 处理', exact: true }).click();
+}
 
 // 所有页面资源和API均拦截为测试数据，不启动服务，也不接触真实凭据。
 async function fixture(page, savedText = {}, decide) {
@@ -35,8 +44,8 @@ async function fixture(page, savedText = {}, decide) {
     if (['/api/media', '/api/tasks'].includes(url.pathname)) return ok({ items: [], total: 0, page: 1, pageSize: 10 });
     throw new Error('Unexpected fixture request: ' + request.method() + ' ' + url.pathname);
   });
-  await page.goto('http://workbench.test/'); await expect(page.locator('#workbench-panel')).toBeVisible();
-  await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click(); await expect(page.locator('.cloud-provider')).toHaveCount(3);
+  await page.goto('http://workbench.test/');
+  await openCloudSettings(page);
   return writes;
 }
 
@@ -93,10 +102,10 @@ for (const width of [1365, 390]) test(`OpenAI and Bailian settings are classifie
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   await page.screenshot({ path: testInfo.outputPath(`text-providers-${width}.png`), fullPage: true, animations: 'disabled' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.reload(); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await page.reload(); await openCloudSettings(page);
   await expect(vendor).toHaveValue('bailian'); await expect(key).toHaveValue('');
   await expect(vendor.locator('option:checked')).toHaveText('千问 / 阿里云百炼');
-  await page.locator('#back-workbench').click(); await selectTool(page, 'ai');
+  await openAiTool(page);
   await expect(page.locator('#dependency-summary')).toContainText('阿里云百炼');
 });
 
@@ -117,13 +126,13 @@ for (const width of [1365, 390]) test(`Doubao uses its own key and explicit mode
   await model.selectOption('doubao-seed-2-1-lite-260915'); await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
   expect(writes[0].body).toEqual({ expectedVersion: 0, mode: 'PERSONAL', textProvider: 'doubao', apiKey: 'ark-fixture-not-real', model: 'doubao-seed-2-1-lite-260915' });
   await expect(key).toHaveValue('');
-  await page.reload(); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await page.reload(); await openCloudSettings(page);
   await expect(vendor).toHaveValue('doubao'); await expect(model).toHaveValue('doubao-seed-2-1-lite-260915'); await expect(key).toHaveValue('');
   await model.selectOption('doubao-seed-2-1-pro-260915'); await save.click(); await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
   expect(writes[1].body).toEqual({ expectedVersion: 1, mode: 'PERSONAL', textProvider: 'doubao', model: 'doubao-seed-2-1-pro-260915' });
   await page.screenshot({ path: testInfo.outputPath(`doubao-${width}.png`), fullPage: true, animations: 'disabled' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.locator('#back-workbench').click(); await selectTool(page, 'ai');
+  await openAiTool(page);
   await expect(page.locator('#dependency-summary')).toContainText('豆包 / 火山方舟');
 });
 
@@ -155,7 +164,7 @@ for (const width of [1365, 390]) test(`saved non-preset model stays selectable w
   page.on('dialog', dialog => dialog.accept());
   const card = page.locator('#cloud-deepseek'), vendor = card.locator('select[name=textProvider]'), model = card.locator('select[name=model]');
   await expect(model).toHaveValue(legacy); await expect(model.locator('option:checked')).toHaveText('已保存：' + legacy);
-  await page.reload(); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await page.reload(); await openCloudSettings(page);
   await expect(model).toHaveValue(legacy);
   await card.getByRole('button', { name: '保存文字 AI配置', exact: true }).click();
   await expect(card.locator('[role=status]')).toHaveText('个人凭据已配置');
@@ -202,7 +211,7 @@ for (const width of [1365, 390]) test(`custom model input validates saves and re
     await expect(key).toHaveValue(''); await expect(model).toHaveValue(id);
     await model.selectOption('__custom__'); await expect(custom).toHaveValue(id);
   }
-  await page.reload(); await page.locator('#header-account').click(); await page.locator('#account-cloud-tab').click();
+  await page.reload(); await openCloudSettings(page);
   await expect(model).toHaveValue('ep-custom-browser'); await model.selectOption('__custom__'); await expect(custom).toHaveValue('ep-custom-browser');
   await expect(custom).toHaveAttribute('placeholder', 'Model ID 或 Endpoint ID（ep-...）');
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));

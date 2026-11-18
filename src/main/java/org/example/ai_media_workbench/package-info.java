@@ -1,8 +1,8 @@
 /**
- * 轻量音视频工作台阅读入口。登录后直接使用工具，不创建项目；已实现账号、上传检测与删除、MP4转换、压缩、裁切、静音和MP3音频提取。
+ * FrameFlow 阅读入口。登录后直接使用工具，不创建项目；主要流程包括账号、媒体处理、AI方案与字幕处理。
  *
  * <p>一次请求的主线：安全过滤器 -> Controller -> Service 接口 -> 实现类 -> Mapper -> 数据库。
- * 返回时由 Controller 将 Entity 转成 VO，再由 Result.success 包装，避免暴露敏感字段。
+ * 返回时将内部数据转成 VO（可由 Service/视图转换类完成），Controller 再用 Result.success 包装，避免暴露敏感字段。
  * 业务失败向上抛出异常，由 common.exception 中的全局处理器统一返回 Result.error。
  *
  * <p>各目录职责：controller 接收 HTTP 请求；service 定义业务接口，service.impl 实现业务；
@@ -52,5 +52,9 @@
  * FfmpegMediaTranscoder顺序处理受控临时片段并拼接，限制合计大小/共享时限；TranscodeWorker发布前清理辅助文件。
  * 有音轨源在选段缺失音频处补静音对齐，无音轨源不补；跨素材及拼接字幕重映射仍不支持。
  * V5 将资源直接归属用户，legacy_project 仅保留历史数据，不参与新的上传或处理业务。
+ *
+ * <p>前端源码从 frontend/src/main.ts -> runtime/workbench.ts 阅读；前者启动，后者协调请求、组件和原生视频。
+ * App.vue/views 定义页面结构，components 定义交互组件，api/client.ts 统一处理 Result、Cookie 请求和 CSRF。
+ * api/contracts.ts 是 OpenAPI 生成类型，不手改；static/assets/ui 是构建产物，学习或修改逻辑应看 frontend/src。
  */
 package org.example.ai_media_workbench;

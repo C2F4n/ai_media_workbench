@@ -9,7 +9,11 @@ import org.example.ai_media_workbench.service.OperationPlanner;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.*;
 
-/** 模型只负责理解意图；业务层再次校验所有参数、素材边界和工具能力。 */
+/**
+ * 自然语言转方案的适配器。名称沿用早期 DeepSeek 实现，实际供应商由 TextAiJsonClient 根据账号配置选择。
+ * 提示词描述可用步骤和字段，模型据此生成参数，不是 Java 穷举每一种“裁切 + 缩放”等组合。
+ * 本类只解析候选结果；业务层再次校验素材边界和工具能力，用户确认后才创建执行任务。
+ */
 @Component
 public class DeepSeekOperationPlanner implements OperationPlanner {
     private static final String PROMPT="""
@@ -81,6 +85,7 @@ public class DeepSeekOperationPlanner implements OperationPlanner {
         var result=client.plan(PROMPT,json.writeValueAsString(Map.of("instruction",instruction,"context",context)),context,userId);
         return parse(result);
     }
+    /** 结果必须是完整参数或固定澄清问题之一，不把模型的任意文字当成执行指令。 */
     static Proposal parse(JsonNode result) {
         if (result==null || !result.isObject() || result.size()!=1) throw new BusinessException(ErrorCode.AI_PLAN_FAILED);
         if (result.has("parameters") && result.path("parameters").isObject()) return new Proposal(result.path("parameters"),List.of());

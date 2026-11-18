@@ -1,5 +1,6 @@
 export interface Elements {
-  "header-location": HTMLElement;
+  "app-header": HTMLElement;
+  "header-workbench": HTMLButtonElement;
   "header-account": HTMLButtonElement;
   "header-logout": HTMLButtonElement;
   "loading-view": HTMLElement;
@@ -7,10 +8,7 @@ export interface Elements {
   "unavailable-message": HTMLElement;
   "retry-connection": HTMLButtonElement;
   "auth-view": HTMLElement;
-  "auth-theme-toggle": HTMLButtonElement;
-  "auth-gallery": HTMLElement;
-  "auth-gallery-stage": HTMLElement;
-  "auth-form-content": HTMLElement;
+  "auth-notice": HTMLElement;
   "account-view": HTMLElement;
   "account-notice": HTMLElement;
   "workbench-panel": HTMLElement;
@@ -55,6 +53,7 @@ export interface Elements {
   "media-error": HTMLElement;
   "retry-probe": HTMLButtonElement;
   "import-library-slot": HTMLElement;
+  "detect-library-slot": HTMLElement;
   "phase-edit": HTMLElement;
   "editor-filename": HTMLElement;
   "editor-file-info": HTMLElement;

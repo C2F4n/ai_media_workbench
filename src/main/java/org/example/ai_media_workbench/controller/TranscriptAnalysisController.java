@@ -10,6 +10,11 @@ import org.example.ai_media_workbench.vo.transcript.*;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * 基于已保存字幕的内容分析入口：按文字要求搜索片段，或按目标和时长预算推荐片段。
+ * 调用 TranscriptAnalysisService 完成字幕 RAG 召回、模型筛选，以及原文/时间引用和版本校验。
+ * 只返回有字幕依据的候选区间，不直接剪辑视频；用户带入裁切或拼接工具确认后才创建处理任务。
+ */
 @RestController
 public class TranscriptAnalysisController {
     private final TranscriptAnalysisService service;

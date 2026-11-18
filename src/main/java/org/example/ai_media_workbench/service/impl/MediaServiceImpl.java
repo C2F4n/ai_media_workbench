@@ -80,7 +80,21 @@ public class MediaServiceImpl implements MediaService {
     }
 
     @Override
-    public MediaVO get(String userId, String id) { return view(owned(userId,id)); }
+    public MediaVO get(String userId, String id) {
+        var media = owned(userId, id);
+        String previousMetadata = media.getMetadataJson();
+        if (media.getStatus() != MediaStatus.READY || previousMetadata == null || !probe.isAvailable()
+                || json.readTree(previousMetadata).has("bitRate")) return view(media);
+        MediaMetadataVO metadata;
+        try {
+            // 旧版素材首次打开时补齐检测信息；补检失败仍可使用已保存的素材。
+            metadata = probe.inspect(storage.resolve(media.getStorageKey()));
+        } catch (BusinessException | IOException unavailable) {
+            return view(owned(userId, id));
+        }
+        mapper.enrichMetadata(userId, id, previousMetadata, json.writeValueAsString(metadata));
+        return view(owned(userId, id));
+    }
 
     @Override
     public MediaFile preview(String userId, String id) {

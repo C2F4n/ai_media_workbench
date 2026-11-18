@@ -64,6 +64,11 @@ public final class WorkflowSettings {
         return new WorkflowParameters("workflow", last.outputFormat(), List.copyOf(steps));
     }
 
+    /**
+     * 按数组顺序逐步更新虚拟时间轴、尺寸和音轨状态，最后得到源区间与固定滤镜链。
+     * 例如先保留源视频 5-15 秒、再保留当前结果 2-4 秒，会映射为源视频 7-9 秒，而非再次取源 2-4 秒。
+     * 此处只计算与校验，不生成媒体文件；FfmpegMediaTranscoder 使用编译结果做最终导出。
+     */
     public static Compiled compile(WorkflowParameters plan, MediaMetadataVO source, long sourceBytes, long maxBytes) {
         if (plan.steps() == null || plan.steps().isEmpty() || plan.steps().size() > MAX_STEPS
                 || !(plan.steps().getLast() instanceof Export) || source.width() == null || source.height() == null) throw invalid();
@@ -71,6 +76,7 @@ public final class WorkflowSettings {
         var filters = new ArrayList<String>();
         var state = source;
         ExportParameters output = null;
+        // 每种步骤只定义自身的变换规则，组合由 steps 顺序决定，不枚举 A+B、A+C 等需求。
         for (Step step : plan.steps()) {
             switch (step) {
                 case Trim trim -> clips = select(clips, List.of(new ClipRange(trim.startMs(), trim.endMs())), 100);

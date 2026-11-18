@@ -34,10 +34,12 @@ public class MediaTaskDispatcher {
         policy=new TaskLoadPolicy(properties,Runtime.getRuntime().availableProcessors());
         int maximum=properties.parallelLimit(Runtime.getRuntime().availableProcessors());
         // 私有线程池不注册为全局Executor Bean，避免替换Spring MVC的下载/异步请求执行器。
+        // SynchronousQueue 只向空闲线程交接工作，不把待执行任务再堆到另一条内存队列中。
         executor=new ThreadPoolExecutor(maximum,maximum,30,TimeUnit.SECONDS,new SynchronousQueue<>(),
                 Thread.ofPlatform().name("workbench-media-",0).factory());
         executor.allowCoreThreadTimeOut(true);
     }
+    /** 每轮先回收失效任务，再根据本机 CPU/内存负载决定是否允许启动下一项；不是取消已运行任务。 */
     @Scheduled(fixedDelay=1000)
     public synchronized void scheduledRun() {
         if(stopping || !transcode.workerEnabled()) return;
@@ -48,6 +50,7 @@ public class MediaTaskDispatcher {
             previous=decision;
         }
         if(decision.paused() || active.get()>=decision.parallelLimit() || clock.instant().isBefore(nextStart)) return;
+        // active 统计本进程已分配的执行槽；等待任务数量仍以数据库为准。
         active.incrementAndGet();
         try {
             executor.execute(()->{

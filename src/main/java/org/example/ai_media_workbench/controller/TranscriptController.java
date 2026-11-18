@@ -20,6 +20,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * 字幕基础接口入口：提交素材的语音识别任务、读取最新或历史字幕、保存编辑、下载 SRT 和单句校对。
+ * TranscriptService 负责账号归属、版本校验与持久化；识别交给后台任务，返回 202 不表示识别已经完成。
+ * 校对只返回待采纳建议，不直接改写字幕；保存仍走版本更新接口，SRT 下载成功时直接返回文件内容。
+ */
 @RestController
 public class TranscriptController {
     private final TranscriptService service;

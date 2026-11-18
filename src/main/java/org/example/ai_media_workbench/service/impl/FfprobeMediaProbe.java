@@ -49,7 +49,7 @@ public class FfprobeMediaProbe implements MediaProbe {
         try {
             process=new ProcessBuilder(List.of(properties.ffprobe(),"-v","error","-protocol_whitelist","file",
                     "-format_whitelist",audioOnly ? "mov,matroska,webm,mp3,wav,flac" : "mov,matroska,webm","-show_entries",
-                    "format=format_name,duration:stream=codec_type,codec_name,width,height,duration:stream_tags=rotate,DURATION:stream_side_data=rotation",
+                    "format=format_name,duration,bit_rate:stream=codec_type,codec_name,width,height,duration,bit_rate,avg_frame_rate,sample_rate,channels,channel_layout,pix_fmt:stream_tags=rotate,DURATION:stream_side_data=rotation",
                     "-of","json","-i",file.toAbsolutePath().toString()))
                     .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             Process running=process;
@@ -92,7 +92,8 @@ public class FfprobeMediaProbe implements MediaProbe {
             if (audioDuration <= 0) audioDuration = taggedDuration(audioStream.path("tags").path("DURATION").asText());
             if (audioDuration <= 0) audioDuration = duration(document.path("format").path("duration").asText());
             if (audioDuration <= 0) throw new BusinessException(ErrorCode.MEDIA_PROBE_FAILED);
-            return new MediaMetadataVO(container, audioDuration, null, null, null, true, audio);
+            return withStreamDetails(new MediaMetadataVO(container, audioDuration, null, null, null, true, audio),
+                    document, null, audioStream);
         }
         if(video==null) throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA);
         int width=video.path("width").asInt(),height=video.path("height").asInt();
@@ -104,7 +105,51 @@ public class FfprobeMediaProbe implements MediaProbe {
         for(JsonNode side:video.path("side_data_list")) if(side.has("rotation")) rotation=side.path("rotation").asDouble();
         if(Math.abs(Math.round(rotation))%180==90) { int swap=width; width=height; height=swap; }
         String container=document.path("format").path("format_name").asText();
-        return new MediaMetadataVO(container,duration,width,height,video.path("codec_name").asText(),audio!=null,audio);
+        return withStreamDetails(new MediaMetadataVO(container,duration,width,height,video.path("codec_name").asText(),audio!=null,audio),
+                document, video, audioStream);
+    }
+
+    private MediaMetadataVO withStreamDetails(MediaMetadataVO basic, JsonNode document, JsonNode video, JsonNode audio) {
+        return new MediaMetadataVO(basic.container(), basic.durationMs(), basic.width(), basic.height(),
+                basic.videoCodec(), basic.hasAudio(), basic.audioCodec(),
+                positiveLong(document.path("format"), "bit_rate"), positiveLong(video, "bit_rate"),
+                positiveLong(audio, "bit_rate"), frameRate(video), positiveInteger(audio, "sample_rate"),
+                positiveInteger(audio, "channels"), optionalText(audio, "channel_layout"), optionalText(video, "pix_fmt"));
+    }
+
+    private Long positiveLong(JsonNode stream, String field) {
+        if (stream == null) return null;
+        try {
+            long value = Long.parseLong(stream.path(field).asText());
+            return value > 0 ? value : null;
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
+    }
+
+    private Integer positiveInteger(JsonNode stream, String field) {
+        Long value = positiveLong(stream, field);
+        return value != null && value <= Integer.MAX_VALUE ? value.intValue() : null;
+    }
+
+    private String optionalText(JsonNode stream, String field) {
+        if (stream == null) return null;
+        String value = stream.path(field).asText("");
+        return value.isBlank() || value.equals("N/A") || value.equals("unknown") ? null : value;
+    }
+
+    private Double frameRate(JsonNode video) {
+        String rate = optionalText(video, "avg_frame_rate");
+        if (rate == null) return null;
+        try {
+            String[] parts = rate.split("/", -1);
+            BigDecimal numerator = new BigDecimal(parts[0]);
+            BigDecimal denominator = parts.length == 2 ? new BigDecimal(parts[1]) : BigDecimal.ONE;
+            double value = numerator.divide(denominator, 6, RoundingMode.HALF_UP).doubleValue();
+            return parts.length <= 2 && Double.isFinite(value) && value > 0 ? value : null;
+        } catch (NumberFormatException | ArithmeticException invalid) {
+            return null;
+        }
     }
 
     private long duration(String value) {

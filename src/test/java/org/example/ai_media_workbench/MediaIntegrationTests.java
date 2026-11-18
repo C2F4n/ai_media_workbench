@@ -33,6 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -122,6 +125,52 @@ class MediaIntegrationTests {
         assertThat(media.complete(stale)).isZero();
         mvc.perform(post("/api/media/"+id+"/probe").cookie(browser.cookie()).header("X-CSRF-Token",browser.csrf()))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void legacyMetadataIsEnrichedOnceWhenItsOwnerOpensDetails() throws Exception {
+        Browser browser = login(), other = login();
+        String id = ready(browser, "legacy.mp4", new byte[]{1});
+        String legacy = """
+                {"container":"mov,mp4","durationMs":1200,"width":160,"height":90,
+                 "videoCodec":"h264","hasAudio":false,"audioCodec":null}
+                """;
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?", legacy, id);
+        var enriched = new MediaMetadataVO("mov,mp4", 1200, 160, 90, "h264", false, null,
+                520000L, 510000L, null, 29.97, null, null, null, "yuv420p");
+        when(probe.inspect(any())).thenReturn(enriched);
+        mvc.perform(get("/api/media/" + id).cookie(other.cookie())).andExpect(status().isNotFound());
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mvc.perform(get("/api/media/" + id).cookie(browser.cookie())).andExpect(status().isOk())
+                    .andExpect(jsonPath("data.status").value("READY"))
+                    .andExpect(jsonPath("data.metadata.bitRate").value(520000))
+                    .andExpect(jsonPath("data.metadata.frameRate").value(29.97));
+        }
+        // 一次为初始探测，一次为旧数据补检；第二次读取详情直接复用保存的结果。
+        verify(probe, times(2)).inspect(any());
+        assertThat(json.readTree(media.findOwned(browser.id(), id).getMetadataJson()).path("pixelFormat").asText())
+                .isEqualTo("yuv420p");
+    }
+
+    @Test
+    void enrichmentFailureKeepsOldDetailsAndConcurrentDeletionCannotRestoreMetadata() throws Exception {
+        Browser browser = login();
+        String id = ready(browser, "legacy.mp4", new byte[]{1});
+        String legacy = """
+                {"container":"mov,mp4","durationMs":1200,"width":160,"height":90,
+                 "videoCodec":"h264","hasAudio":false,"audioCodec":null}
+                """;
+        jdbc.update("UPDATE media SET metadata_json=? WHERE id=?", legacy, id);
+        when(probe.inspect(any())).thenThrow(new BusinessException(ErrorCode.MEDIA_PROBE_FAILED));
+        mvc.perform(get("/api/media/" + id).cookie(browser.cookie())).andExpect(status().isOk())
+                .andExpect(jsonPath("data.status").value("READY")).andExpect(jsonPath("data.metadata.width").value(160));
+        assertThat(media.findOwned(browser.id(), id).getMetadataJson()).isEqualTo(legacy);
+        doAnswer(call -> {
+            mediaService.delete(browser.id(), id);
+            return metadata;
+        }).when(probe).inspect(any());
+        mvc.perform(get("/api/media/" + id).cookie(browser.cookie())).andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT metadata_json FROM media WHERE id=?", String.class, id)).isEqualTo(legacy);
     }
 
     @Test

@@ -46,6 +46,14 @@ export type MediaMetadata = {
   "videoCodec": (string) | null;
   "hasAudio": boolean;
   "audioCodec": (string) | null;
+  "bitRate"?: (number) | null;
+  "videoBitRate"?: (number) | null;
+  "audioBitRate"?: (number) | null;
+  "frameRate"?: (number) | null;
+  "sampleRate"?: (number) | null;
+  "channels"?: (number) | null;
+  "channelLayout"?: (string) | null;
+  "pixelFormat"?: (string) | null;
 };
 
 export type ResourceError = {

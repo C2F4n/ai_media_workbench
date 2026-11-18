@@ -63,4 +63,17 @@ tasks.register('frontendBuild', Exec) {
 
 tasks.named('processResources') {
     dependsOn tasks.named('frontendBuild')
+    inputs.files(tasks.named('frontendBuild'))
+    doLast {
+        copy {
+            from 'src/main/resources/static/assets/ui'
+            into layout.buildDirectory.dir('resources/main/static/assets/ui')
+        }
+        ['components.js', 'THIRD_PARTY_NOTICES.md'].each { name ->
+            def asset = layout.buildDirectory.file("resources/main/static/assets/ui/${name}").get().asFile
+            if (!asset.isFile() || asset.length() == 0) {
+                throw new GradleException("Frontend asset missing: ${name}")
+            }
+        }
+    }
 }

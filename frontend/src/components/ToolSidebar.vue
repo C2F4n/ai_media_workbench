@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { AudioLines, Captions, ChevronDown, FileVideo, HardDrive, History, ListVideo, Minimize2, PanelLeftClose, Pin, ScanLine, Scissors, Search, Sparkles, VolumeX } from '@lucide/vue';
+import { AudioLines, Captions, ChevronDown, FileVideo, HardDrive, History, ListVideo, Minimize2, PanelLeftClose, Pin, ScanLine, Scissors, Search, SlidersHorizontal, Sparkles, VolumeX } from '@lucide/vue';
 import { groups, tools } from '../workbench/catalog';
 import type { NavigationState, ToolGroup, ToolId } from '../workbench/catalog';
 const props = defineProps<{ state: NavigationState }>();
 const emit = defineEmits<{ select: [tool: ToolId]; group: [group: ToolGroup, expanded: boolean]; pin: []; close: [] }>();
 const icons = { AudioLines, Captions, FileVideo, History, ListVideo, Minimize2, ScanLine, Scissors, Search, Sparkles, VolumeX };
+const groupIcons = { regular: SlidersHorizontal, ai: Sparkles, history: History };
 function kind(tool: typeof tools[number]) { return props.state.localTextAI && ['ai', 'find'].includes(tool.id) ? 'local' : tool.kind; }
 function title(tool: typeof tools[number]) {
   const service = ['ai', 'find'].includes(tool.id) && props.state.textService ? props.state.textService
@@ -22,7 +23,11 @@ function title(tool: typeof tools[number]) {
   <nav id="tool-navigation" class="tool-list" aria-label="处理功能">
     <span id="tool-indicator" class="tool-indicator" aria-hidden="true" :hidden="!state.indicator.visible" :style="{ transform: `translateY(${state.indicator.top}px)`, height: `${state.indicator.height}px` }"></span>
     <div v-for="group in groups" :key="group.id" class="tool-group" :data-tool-group="group.id" :data-collapsed="String(!state.groups[group.id])" :data-active="String(tools.some(tool => tool.id === state.tool && tool.group === group.id))">
-      <button :id="`${group.id}-group-toggle`" class="tool-group-toggle" type="button" :aria-expanded="state.groups[group.id]" :aria-controls="`${group.id}-group-body`" :disabled="state.busy" @click="emit('group', group.id, !state.groups[group.id])">{{ group.label }}<ChevronDown aria-hidden="true" /></button>
+      <button :id="`${group.id}-group-toggle`" class="tool-group-toggle" type="button" :aria-expanded="state.groups[group.id]" :aria-controls="`${group.id}-group-body`" :disabled="state.busy" @click="emit('group', group.id, !state.groups[group.id])">
+        <component :is="groupIcons[group.id]" class="tool-group-icon" aria-hidden="true" />
+        <span>{{ group.label }}</span>
+        <ChevronDown class="tool-group-chevron" aria-hidden="true" />
+      </button>
       <div :id="`${group.id}-group-body`" class="tool-group-body" :inert="!state.groups[group.id]"><div class="tool-group-items" role="group" :aria-labelledby="`${group.id}-group-toggle`">
         <button v-for="tool in tools.filter(tool => tool.group === group.id)" :id="`${tool.id}-tool`" :key="tool.id" class="tool-choice" :class="{ active: tool.id === state.tool }" type="button" :aria-current="tool.id === state.tool ? 'page' : undefined" :aria-label="tool.label" :title="title(tool)" :disabled="state.busy" @click="emit('select', tool.id)">
           <component :is="icons[tool.icon]" aria-hidden="true" /><span class="tool-name">{{ tool.label }}</span><small class="tool-dependency" :data-kind="kind(tool)" aria-hidden="true">{{ { local: '站点', cloud: 'API', mixed: '混合' }[kind(tool)] }}</small>

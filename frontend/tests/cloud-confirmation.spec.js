@@ -17,7 +17,6 @@ async function fixture(page, local = false) {
     const reply = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status === 401 ? 'UNAUTHENTICATED' : 'SUCCESS', data, details: [] }) });
     if (path === '/api/auth/csrf') return reply({ token: 'fixture-csrf' });
     if (path === '/api/users/me') return state.signedIn ? reply(user()) : reply(null, 401);
-    if (path === '/api/auth/login') { state.signedIn = true; return reply({ user: user(), csrfToken: 'fixture-csrf' }); }
     if (path === '/api/auth/logout') { state.signedIn = false; return reply(null); }
     if (path === '/api/system/capabilities') return reply({ registration: false, mediaTool: true, supportedOperations: ['transcode'],
       aiPlans: true, semanticSearch: true, clipRecommendations: true, asr: true, asrProviders: ['tencent', 'aliyun'], subtitleCorrection: true, subtitleTranslation: true,
@@ -121,7 +120,8 @@ test('accepted suppression survives reload, synchronizes with settings and reset
   await start(page, 'ai'); await expect(page.locator('#cloud-confirm-dialog')).toBeVisible(); await page.locator('#cancel-cloud-confirm').click();
   await openSettings(page); await page.locator('#skip-cloud-confirmation').check(); await page.locator('#header-logout').click();
   await expect(page.locator('#auth-view')).toBeVisible(); expect(await page.evaluate(() => localStorage.getItem('amw-cloud-confirmation'))).toBeNull();
-  await page.locator('#login-username').fill('fixture_user'); await page.locator('#login-password').fill('Abc123'); await page.locator('#login-form button[type="submit"]').click();
+  state.signedIn = true;
+  await page.evaluate(() => { const channel = new BroadcastChannel('amw-account'); channel.postMessage('account-changed'); channel.close(); });
   await expect(page.locator('#media-status')).toHaveText('已就绪'); await start(page, 'ai'); await expect(page.locator('#cloud-confirm-dialog')).toBeVisible();
   expect(state.calls).toHaveLength(2);
 });

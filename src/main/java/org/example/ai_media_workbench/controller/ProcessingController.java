@@ -20,7 +20,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
-/** HTTP validation and Result wrapping only; business logic depends on the service interface. */
+/**
+ * 处理方案与任务的 HTTP 入口：创建方案只保存参数，execute 才将确认过的方案放入后台队列。
+ * 提供方案创建/更新/查询/删除，以及任务查询、取消和历史记录删除；不在请求线程里运行 FFmpeg。
+ * Controller 注入 ProcessingService 接口，不绑定实现类；@Valid 校验 DTO，Service 校验业务规则。
+ * {@code @AuthenticationPrincipal} 的账号来自已验证会话，不接受前端传入 userId 来决定资源归属。
+ */
 @RestController
 public class ProcessingController {
     private final ProcessingService processing;
@@ -49,6 +54,7 @@ public class ProcessingController {
     public ResponseEntity<Result<TaskVO>> execute(@AuthenticationPrincipal AccountPrincipal user, @PathVariable UUID id,
                                                   @Valid @RequestBody ExecutePlanRequest input) {
         var task = processing.execute(user.userId(), id.toString(), input.expectedVersion());
+        // 202 只表示任务已受理，前端需继续查询任务状态；幂等重试拿到终态任务时返回 200。
         return ResponseEntity.status(task.active() ? 202 : 200).body(Result.success(task));
     }
     @DeleteMapping("/api/operation-plans/{id}")

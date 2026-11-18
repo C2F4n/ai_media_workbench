@@ -1,10 +1,9 @@
 import { createApp, h, shallowReactive } from 'vue';
 import App from './App.vue';
+import type { AuthEntryServices } from './auth/types';
 import FindResults from './components/FindResults.vue';
 import PlanDetailsView from './components/PlanDetails.vue';
-import AuthForms from './components/AuthForms.vue';
-import type { AuthServices, AuthView } from './auth/types';
-import type { ClipAction, ClipResult, FindState, PlanDetails } from './types';
+import type { ClipAction, ClipResult, FindState, PlanDetails, WorkbenchHome } from './types';
 import ToolSidebar from './components/ToolSidebar.vue';
 import WorkbenchPhases from './components/WorkbenchPhases.vue';
 import { createNavigation } from './workbench/navigation';
@@ -16,7 +15,10 @@ export { mountSequenceEditors } from './workbench/editor-views';
 export { mountTranscriptEditors } from './workbench/transcript-views';
 export { mountCloudSettings } from './cloud/view';
 export { textVendors } from './cloud/catalog';
-export function mountApplication() { return createApp(App).mount('#app'); }
+// 页面骨架必须先挂载，下面各组件才能找到自己的容器；业务请求不在展示组件中重复建立。
+export function mountApplication(auth: AuthEntryServices, home: WorkbenchHome | null) {
+  return createApp(App, { auth, home }).mount('#app');
+}
 
 export function mountWorkspaceNavigation(sidebar: HTMLElement, phases: HTMLElement, services: NavigationServices) {
   const navigation = createNavigation();
@@ -34,11 +36,7 @@ export function mountWorkspaceNavigation(sidebar: HTMLElement, phases: HTMLEleme
   };
 }
 
-export function mountAuthForm(element: HTMLElement, services: AuthServices): AuthView {
-  return createApp(AuthForms, { services }).mount(element) as unknown as AuthView;
-}
-
-// Components own their DOM and state; the typed coordinator handles business commands.
+// Vue 负责容器内的列表和禁用状态；协调器通过 update 更新数据、接收动作，不直接重写其 DOM。
 export function mountFindResults(element: HTMLElement, action: (action: ClipAction, item: ClipResult) => void) {
   const state = shallowReactive<FindState>({ result: null, recommend: false, busy: false, previewAvailable: false, canTrim: false, canJoin: false });
   const app = createApp({ render: () => h(FindResults, { ...state, onAction: action }) });

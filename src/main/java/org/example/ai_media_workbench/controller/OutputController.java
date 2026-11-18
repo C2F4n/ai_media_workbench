@@ -15,6 +15,12 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+/**
+ * 处理结果管理入口（/api/outputs）：列出结果、查询详情、删除、下载和兼容格式预览。
+ * 与 MediaController 的原始素材区分：这里操作的是任务成功后发布的输出文件，不重新执行处理。
+ * OutputService 校验当前账号的访问权限，MediaStreams 负责下载响应和预览 Range 分段传输。
+ * 普通业务响应使用 Result；文件下载/预览成功时直接返回文件流，失败仍交给统一异常处理。
+ */
 @RestController
 public class OutputController {
     private final OutputService outputs;

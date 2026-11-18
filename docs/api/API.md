@@ -1,4 +1,4 @@
-# AI音视频工作台：轻量版接口契约
+# FrameFlow 轻量版接口契约
 
 版本：2.25.0。日期：2026-10-26。
 
@@ -94,6 +94,8 @@ username为4-32位字母/数字/下划线并规范化为小写；email去除首�
 服务端生成受控文件名、流式保存，originalFilename仅展示。上传202返回PROBING及Location，后台ffprobe检测后变READY或FAILED。不靠扩展名或浏览器Content-Type判断。当前仅视频，支持目标MP4/MOV/MKV/WebM；不接受远程URL、播放列表或用户自定义命令。
 
 metadata包含container/durationMs/width/height/videoCodec/hasAudio/audioCodec，尺寸应用旋转信息；无音轨audioCodec=null。无视频、损坏、超时长会FAILED，文件超大小413。检测进程限制耗时和输出大小，工作持久化并支持租约恢复，不启动无限线程。
+
+metadata另含总码率bitRate、首条视频流码率videoBitRate、首条音频流码率audioBitRate（均为bit/s）、平均帧率frameRate（fps）、音频采样率sampleRate（Hz）、声道数channels、声道布局channelLayout和像素格式pixelFormat。扩展字段缺失或无法探测时为null；纯音频结果的视频字段为null。读取旧版READY素材详情时按需补检并保存，补检失败继续返回旧信息。补检通过原元数据比较后更新，避免覆盖并发删除或重新检测的状态。界面统一换算kbps/Mbps、kHz；只有总码率可按文件大小和时长估算，并标注“估算”。
 
 查询FAILED素材仍返回200，错误位于data.error；前端按状态轮询。FAILED可重试，PROBING幂等202，READY为409。素材不返回storageKey或userId。账号注销后旧素材ID不可访问。
 

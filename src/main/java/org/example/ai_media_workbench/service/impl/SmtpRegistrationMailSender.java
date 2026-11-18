@@ -40,7 +40,7 @@ public class SmtpRegistrationMailSender implements RegistrationMailSender {
         var message = new SimpleMailMessage();
         message.setFrom(properties.from());
         message.setTo(email);
-        message.setSubject("音视频工作台 - 注册邮箱验证码");
+        message.setSubject("FrameFlow - 注册邮箱验证码");
         message.setText("注册验证码：" + code + "\n有效期 " + ttl.toMinutes()
                 + " 分钟。请勿向他人透露验证码。\n如果不是您本人操作，请忽略此邮件，账号尚未创建。");
         try {

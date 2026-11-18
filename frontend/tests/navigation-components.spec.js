@@ -1,8 +1,6 @@
 const { test, expect } = require('@playwright/test');
-const { serveStatic } = require('./helpers/static.cjs');
+const { readIndex, serveStatic } = require('./helpers/static.cjs');
 const { selectTool } = require('./helpers/navigation.cjs');
-const fs = require('node:fs');
-const path = require('node:path');
 
 async function fixture(page) {
   await serveStatic(page);
@@ -17,7 +15,6 @@ async function fixture(page) {
     if (url.pathname === '/api/users/me') return state.signedIn ? reply(state.user) : reply(null, 401, 'UNAUTHENTICATED');
     if (url.pathname === '/api/users/me/cloud-credentials') return reply([]);
     if (url.pathname === '/api/auth/logout') { if (state.logoutGate) await state.logoutGate; state.signedIn = false; return reply(null); }
-    if (url.pathname === '/api/auth/login') { state.signedIn = true; return reply({ user: state.user, csrfToken: 'after-login' }); }
     if (['/api/media', '/api/tasks', '/api/operation-plans'].includes(url.pathname) && request.method() === 'GET') return reply({ items: [], page: 1, pageSize: 10, total: 0 });
     throw new Error('Unexpected fixture request: ' + url.pathname);
   });
@@ -118,11 +115,13 @@ test('navigation controls remain locked during logout and a new login resets per
     await expect(page.locator('#convert-tool')).toHaveAttribute('aria-current', 'page');
     await expect(page.locator('#phase-export-tab')).toHaveAttribute('aria-selected', 'true');
     release(); await expect(page.locator('#auth-view')).toBeVisible();
-    await page.locator('#login-username').fill('fixture_user'); await page.locator('#login-password').fill('Abc123');
-    await page.locator('#login-form button[type="submit"]').click(); await expect(page.locator('#account-view')).toBeVisible();
+    await expect(page.locator('#auth-notice')).toBeHidden();
+    state.signedIn = true;
+    await page.evaluate(() => { const channel = new BroadcastChannel('amw-account'); channel.postMessage('account-changed'); channel.close(); });
+    await expect(page.locator('#account-view')).toBeVisible();
     await expect(page.locator('#detect-tool')).toHaveAttribute('aria-current', 'page'); await expect(page.locator('#phase-import')).toBeVisible();
     await selectTool(page, 'convert'); await expect(page.locator('#phase-edit')).toBeVisible();
-    expect(state.writes).toBe(2);
+    expect(state.writes).toBe(1);
   } finally { release(); }
 });
 
@@ -146,7 +145,7 @@ test('Vue sidebar and phase navigation work under the production CSP', async ({ 
   });
   await page.route('**/', route => route.fulfill({ status: 200, contentType: 'text/html',
     headers: { 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" },
-    body: fs.readFileSync(path.resolve(__dirname, '../../src/main/resources/static/index.html'))
+    body: readIndex()
   }));
   await page.goto('/'); await selectTool(page, 'convert'); await page.locator('#phase-export-tab').click();
   await expect(page.locator('#phase-export')).toBeVisible();

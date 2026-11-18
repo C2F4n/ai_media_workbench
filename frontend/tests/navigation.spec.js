@@ -23,8 +23,15 @@ async function workspace(page) {
 test('vertical navigation labels API dependencies, slides in both directions and remembers docking', async ({ page }, testInfo) => {
   const errors = []; page.on('pageerror', (e) => errors.push(e.message));
   await workspace(page);
-  await expect(page.locator('.app-header')).toHaveCSS('background-color', 'rgb(237, 242, 252)');
-  await expect(page.locator('.brand')).toHaveCSS('color', 'rgb(51, 66, 93)');
+  const workbenchTab = page.getByRole('button', { name: '工作台', exact: true });
+  const accountTab = page.getByRole('button', { name: '账户设置', exact: true });
+  await expect(workbenchTab).toHaveAttribute('aria-current', 'page');
+  await accountTab.click();
+  await expect(accountTab).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('#account-panel')).toBeVisible();
+  await workbenchTab.click();
+  await expect(workbenchTab).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('#workbench-panel')).toBeVisible();
   const positions = await page.locator('.tool-choice').evaluateAll((items) => items.map((e) => ({ x: e.getBoundingClientRect().x, y: e.getBoundingClientRect().y })));
   expect(new Set(positions.map((p) => p.x)).size).toBe(1);
   expect(positions.every((p, i) => !i || p.y > positions[i - 1].y)).toBe(true);
@@ -54,8 +61,9 @@ test('vertical navigation labels API dependencies, slides in both directions and
   await expect(page.locator('#sidebar-backdrop')).toBeHidden(); await expect(page.locator('#pin-sidebar')).toHaveAttribute('aria-pressed', 'true');
   for (const width of [1920, 1365, 1001]) {
     await page.setViewportSize({ width, height: 900 });
+    await expect.poll(async () => (await page.locator('#tool-sidebar').boundingBox())?.x).toBe(8);
     const sidebar = await page.locator('#tool-sidebar').boundingBox(), content = await page.locator('#tool-content').boundingBox();
-    expect(sidebar.x).toBe(8); expect(content.x).toBeGreaterThan(sidebar.x + sidebar.width);
+    expect(content.x).toBeGreaterThan(sidebar.x + sidebar.width);
     await page.evaluate(() => window.scrollTo(0, 160));
     expect((await page.locator('#tool-sidebar').boundingBox()).x).toBe(8);
     expect((await page.locator('#tool-sidebar').boundingBox()).y).toBe(80);
@@ -78,12 +86,15 @@ for (const width of [1365, 390]) test(`light surfaces preserve readable control 
       return (values[0] + .05) / (values[1] + .05);
     };
     const style = selector => getComputedStyle(document.querySelector(selector));
-    const page = style(':root'), header = style('.app-header'), sidebar = style('.tool-sidebar'), active = style('.tool-choice.active');
+    const page = style(':root'), header = style('.header-bar'), sidebar = style('.tool-sidebar'), active = style('.tool-choice.active');
     const brand = style('.brand'), group = style('.tool-group-toggle'), primary = style('#upload-submit'), indicator = style('.tool-indicator');
+    const tab = style('.header-nav [aria-current="page"]');
+    const pill = getComputedStyle(document.querySelector('.header-nav'), '::before');
     return {
       surfaces: [page.backgroundColor, header.backgroundColor, sidebar.backgroundColor].map(luminance),
       textContrast: [contrast(page.color, page.backgroundColor), contrast(brand.color, header.backgroundColor),
-        contrast(group.color, sidebar.backgroundColor), contrast(active.color, indicator.backgroundColor), contrast(primary.color, primary.backgroundColor)]
+        contrast(group.color, sidebar.backgroundColor), contrast(active.color, indicator.backgroundColor), contrast(primary.color, primary.backgroundColor),
+        contrast(tab.color, pill.backgroundColor)]
     };
   });
   expect(palette.surfaces.every(value => value > .85)).toBe(true);
@@ -93,12 +104,14 @@ for (const width of [1365, 390]) test(`light surfaces preserve readable control 
 
 test('mobile drawer closes on selection, backdrop or Escape and links to cloud configuration', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 }); await workspace(page);
-  await expect(page.locator('#header-logout')).toHaveCSS('color', 'rgb(82, 97, 122)');
+  await expect(page.getByRole('button', { name: '退出登录' })).toBeVisible();
   await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
   await page.locator('#toggle-sidebar').click(); await expect(page.locator('#tool-sidebar')).toHaveAttribute('aria-modal', 'true');
+  await expect(page.locator('#app-header')).toHaveAttribute('inert', '');
   await expect(page.locator('#detect-tool')).toBeFocused();
   await page.screenshot({ path: testInfo.outputPath('sidebar-mobile-open.png'), fullPage: true, animations: 'disabled' });
   await page.locator('#find-tool').click(); await expect(page.locator('#toggle-sidebar')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('button', { name: '账户设置' })).toBeVisible();
   await expect(page.locator('#dependency-services')).toContainText('DeepSeek');
   await page.locator('#tool-dependencies summary').click();
   await page.locator('#dependency-settings').click(); await expect(page.locator('#account-panel')).toBeVisible();

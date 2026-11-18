@@ -26,13 +26,19 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
     private final ObjectMapper json;
     private final Clock clock;
     private final AuthRateLimiter limiter;
+    /** 通过构造器接收 Spring 注入的数据库访问、模型、加密和限流等依赖。 */
     public CloudCredentialServiceImpl(CloudCredentialMapper mapper,UserMapper users,LocalAiClient local,CloudCredentialCipher cipher,
                                       ObjectMapper json,Clock clock,AuthRateLimiter limiter) {
         this.mapper=mapper; this.users=users; this.local=local; this.cipher=cipher; this.json=json; this.clock=clock; this.limiter=limiter;
     }
+    /** 查询该用户各项服务的配置状态，不返回密钥；未配置的项目也会返回默认状态。 */
     @Override public List<CloudCredentialVO> list(String userId) {
         active(userId,false); return PROVIDERS.stream().map(provider->view(provider,mapper.find(userId,provider))).toList();
     }
+    /**
+     * 保存或更新用户的服务来源、模型和凭据：个人配置加密入库，切换为服务端或停用时清空旧密文。
+     * 校验账号、格式及版本后写库，返回不含密钥的状态；不调用云端验证权限或余额。
+     */
     @Override @Transactional public CloudCredentialVO save(String userId,String provider,SaveCloudCredentialRequest input) {
         provider(provider); active(userId,true); limiter.check("cloud-credentials:user:"+userId,20);
         var old=mapper.find(userId,provider); version(old,input.expectedVersion());
@@ -56,9 +62,14 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
         if(old==null) mapper.insert(item); else if(mapper.update(item)!=1) throw new BusinessException(ErrorCode.CLOUD_CREDENTIALS_CONFLICT);
         return view(provider,item);
     }
+    /**
+     * 删除个人凭据并停用服务：复用 save 清空密文、将来源设为 OFF 并递增版本。
+     * 保留数据库中的停用记录，不物理删行，也不自动切换到服务端模型。
+     */
     @Override @Transactional public CloudCredentialVO delete(String userId,String provider,int expectedVersion) {
         return save(userId,provider,new SaveCloudCredentialRequest(expectedVersion,SaveCloudCredentialRequest.Mode.OFF,null,null,null,null,null,null));
     }
+    /** 供后端调用云端时读取并解密个人配置；未使用个人来源时返回空配置。 */
     @Override public AiProperties effective(String userId,String provider) {
         provider(provider);
         if(userId==null) return EMPTY;
@@ -68,6 +79,7 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
         var settings=decode(item); if(!ready(settings,provider)) throw new BusinessException(ErrorCode.CLOUD_CREDENTIALS_UNAVAILABLE);
         return settings;
     }
+    /** 判断服务可用状态：服务端模型检查健康，个人云端仅检查配置完整性，不发云端验证请求。 */
     @Override public boolean available(String userId,String provider) {
         if(source(userId,provider)==SaveCloudCredentialRequest.Mode.SERVER) return provider.equals("deepseek") && local.isAvailable();
         try { return ready(effective(userId,provider),provider); }
@@ -76,6 +88,7 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
             throw failure;
         }
     }
+    /** 查询服务来源：服务端、个人或停用；没有保存过配置时默认使用服务端来源。 */
     @Override public SaveCloudCredentialRequest.Mode source(String userId,String provider) {
         provider(provider);
         if(userId==null) return SaveCloudCredentialRequest.Mode.SERVER;
@@ -83,12 +96,14 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
         var item=mapper.find(userId,provider);
         return item==null ? SaveCloudCredentialRequest.Mode.SERVER : SaveCloudCredentialRequest.Mode.valueOf(item.getMode());
     }
+    /** 汇总当前文字 AI 的来源、供应商、模型及不可用原因，供前端显示。 */
     @Override public org.example.ai_media_workbench.vo.system.TextAiStatusVO textStatus(String userId) {
         if(userId!=null) active(userId,false);
         var item=view("deepseek",userId==null ? null : mapper.find(userId,"deepseek"));
         return new org.example.ai_media_workbench.vo.system.TextAiStatusVO(item.mode(),item.model(),item.available(),item.unavailableReason(),
                 "SERVER".equals(item.mode()) ? "local" : item.textProvider());
     }
+    /** 将数据库配置转成可返回前端的 VO，只保留允许展示的字段和状态，不包含密钥或密文。 */
     private CloudCredentialVO view(String provider,CloudCredentialEntity item) {
         String mode=item==null ? "SERVER" : item.getMode(); AiProperties settings=EMPTY;
         boolean stored=item!=null && item.getEncryptedPayload()!=null;
@@ -105,6 +120,7 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
                 text ? localMode ? local.model() : settings.deepseekModel() : null,item==null ? null : item.getUpdatedAt().toInstant(ZoneOffset.UTC),available,reason,
                 text && !localMode ? settings.textProvider() : null);
     }
+    /** 合并文字 AI 的新旧配置；只有同一供应商可以沿用旧密钥，切换供应商必须重新填写。 */
     private static AiProperties textSettings(SaveCloudCredentialRequest input, AiProperties previous) {
         String selected = input.textProvider() == null ? previous.textProvider() : input.textProvider();
         if (!Set.of("deepseek", "openai", "bailian", "doubao").contains(selected)) invalid();
@@ -116,17 +132,24 @@ public class CloudCredentialServiceImpl implements CloudCredentialService {
         if (!"bailian".equals(selected) && input.workspaceId() != null) invalid();
         return new AiProperties("", "", "", "", workspace, value(input.apiKey(), same ? previous.deepseekApiKey() : ""), model, selected);
     }
+    /** 解密并还原配置对象；密文或主密钥异常时统一报告凭据不可用。 */
     private AiProperties decode(CloudCredentialEntity item) {
         try { return json.readValue(cipher.decrypt(item.getUserId(),item.getProvider(),item.getEncryptedPayload()),AiProperties.class); }
         catch(Exception failure) { throw new BusinessException(ErrorCode.CLOUD_CREDENTIALS_UNAVAILABLE); }
     }
+    /** 确认账号存在且启用；写配置时可同时锁定用户记录，避免与注销操作冲突。 */
     private void active(String userId,boolean lock) {
         var user=lock ? users.findByIdForUpdate(userId) : users.findById(userId);
         if(user==null || user.getStatus()!=UserStatus.ACTIVE) throw new BusinessException(ErrorCode.UNAUTHENTICATED);
     }
+    /** 未传字段时沿用旧值；传入新内容时去除首尾空白，空字符串不视为未传。 */
     private static String value(String input,String previous) { return input==null ? previous : input.strip(); }
+    /** 只允许本系统预定义的服务配置标识。 */
     private static void provider(String provider) { if(!PROVIDERS.contains(provider)) invalid(); }
+    /** 按服务类型检查调用所需配置是否完整，不验证云端权限或余额。 */
     private static boolean ready(AiProperties value,String provider) { return switch(provider) { case "tencent" -> value.tencentReady(); case "aliyun" -> value.aliyunReady(); case "deepseek" -> value.textReady(); default -> false; }; }
+    /** 核对预期版本号，防止覆盖其他请求刚保存的新配置；首次保存要求版本为 0。 */
     private static void version(CloudCredentialEntity row,int expected) { if((row==null ? 0 : row.getVersion())!=expected) throw new BusinessException(ErrorCode.CLOUD_CREDENTIALS_CONFLICT); }
+    /** 将不合法的配置输入统一转换为参数错误。 */
     private static void invalid() { throw new BusinessException(ErrorCode.INVALID_PARAMETERS); }
 }

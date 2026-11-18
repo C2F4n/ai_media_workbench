@@ -1,3 +1,6 @@
+import type { ToolGroup, ToolId } from './workbench/catalog';
+import type { MediaDetection } from './workbench/media-detection';
+
 export interface TranscriptEvidence { segmentId: string; startMs: number; endMs: number; text: string }
 export interface RetrievalInfo { method: 'BM25' | 'BM25_COVERAGE'; totalSegments: number; indexedChunks: number; retrievedSegments: number; contextBytes: number }
 export interface ClipResult { startMs: number; endMs: number; evidence: TranscriptEvidence[]; score?: number; title?: string; reason?: string }
@@ -27,3 +30,15 @@ export interface MediaParameters {
   extractAudio?: boolean;
 }
 export interface PlanDetails { parameters: MediaParameters | null; questions: { code: string; message: string }[] }
+
+export type WorkbenchHomeSection = ToolGroup | 'profile' | 'settings';
+export interface WorkbenchHome {
+  userName: string;
+  section: WorkbenchHomeSection;
+  tool: ToolId;
+  busy: boolean;
+  detection: MediaDetection;
+  open(section: WorkbenchHomeSection): void;
+  openTool(tool: ToolId): void;
+  logout(): void;
+}

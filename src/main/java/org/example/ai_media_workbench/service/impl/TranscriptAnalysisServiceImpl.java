@@ -28,6 +28,7 @@ public class TranscriptAnalysisServiceImpl implements TranscriptAnalysisService 
         var matches=bind(snapshot,selections,TranscriptAnalyzer.Mode.SEARCH,input.limit(),0).stream()
                 .map(item->new TranscriptSearchVO.Match(item.startMs(),item.endMs(),item.selection().score(),item.evidence()))
                 .sorted(Comparator.comparingDouble(TranscriptSearchVO.Match::score).reversed()).toList();
+        // 模型返回前用户可能编辑、重识别或删除字幕；不能发布基于旧快照得出的引用。
         snapshot(userId,mediaId,UUID.fromString(snapshot.id()),snapshot.version());
         return new TranscriptSearchVO(mediaId,snapshot.id(),snapshot.version(),matches,matches.isEmpty() ? "未找到有字幕依据的相关内容。" : null,selections.candidates().retrieval());
     }
@@ -52,6 +53,7 @@ public class TranscriptAnalysisServiceImpl implements TranscriptAnalysisService 
         var candidates=retriever.retrieve(snapshot.segments(),query.strip(),mode==TranscriptAnalyzer.Mode.RECOMMEND);
         return new Analysis(candidates.segments().isEmpty() ? List.of() : analyzer.analyze(query.strip(),candidates.segments(),mode,limit,budget,userId),candidates);
     }
+    /** 模型仅选择段 ID；时间与原文必须由后端从已保存快照重建，不能信任模型生成的引文。 */
     private List<BoundSelection> bind(TranscriptVO snapshot,Analysis analysis,TranscriptAnalyzer.Mode mode,int limit,long budget) {
         var selections=analysis.selections();
         if(selections==null || selections.size()>limit) invalid();
@@ -64,6 +66,7 @@ public class TranscriptAnalysisServiceImpl implements TranscriptAnalysisService 
             Integer start=positions.get(selection.startSegmentId()),end=positions.get(selection.endSegmentId());
             if(start==null || end==null || start>end) invalid();
             var range=snapshot.segments().subList(start,end+1);
+            // 首尾 ID 合法还不够：中间每一段也必须实际召回，且不同结果不能重复占用同一段。
             for(var segment:range) if(!allowed.contains(segment.id()) || !used.add(segment.id())) invalid();
             long startMs=range.getFirst().startMs(),endMs=range.getLast().endMs();
             if(mode==TranscriptAnalyzer.Mode.SEARCH) {

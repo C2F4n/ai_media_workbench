@@ -1,13 +1,23 @@
-# 登录页影视图片来源
+# 认证首页素材来源
 
-下载日期：2026-10-24。三张均来自照片详情页标注的免费 Unsplash License，不是 Unsplash+ 素材。仅作为登录/注册页插图，不表示摄影师或设备品牌对本站背书。
+## 暗色透视方块背景
 
-| 本地文件（src/main/resources/static/assets/auth/） | 摄影师 | 原始作品页 | 本地版本 |
-| --- | --- | --- | --- |
-| studio-desk.webp | Jakub Żerdzicki | [Filmmaker's desk with camera, lenses, and monitors](https://unsplash.com/photos/filmmakers-desk-with-camera-lenses-and-monitors-_XaZCGUFXeE) | 1600 x 2399，WebP |
-| studio-lighting.webp | Hossein Nasr | [Professional lighting equipment on a film set](https://unsplash.com/photos/professional-lighting-equipment-on-a-film-set-BKrrf8FAKEo) | 1600 x 1067，WebP |
-| studio-editing.webp | Jefferson Sees | [Desk with multiple computer monitors and plants](https://unsplash.com/photos/desk-with-multiple-computer-monitors-and-plants-thpCFCYfoqA) | 1600 x 2395，WebP |
+暗色登录页移植自 Aceternity UI 的 Background Cubes Grid 公开组件中的 Perspective 示例。保留圆角方块、橙色波峰、鼠标波纹与空闲波动，并适配 Vue、亮暗分屏、减少动态效果及可见性暂停。Three.js 随应用打包，场景使用实例化绘制，帧率限制为 30 fps，渲染像素数设有上限。[组件及源码](https://ui.aceternity.com/components/background-cubes-grid)
 
-授权依据：[Unsplash License](https://unsplash.com/license)。原作品版权、摄影师署名与作品链接保留在本文档；图片展示区域不叠加文字或按钮。照片通过原站图片CDN的WebP/宽度参数下载，未使用电影海报、剧照或第三方转载图。没有在项目中调用Unsplash API或建立图库服务。
+## 瓦解画廊
 
-网站从本站 `/assets/auth/` 提供图片，不请求外站图片或使用访客账号/凭据下载。图片仅在显示登录/注册页时开始加载，随JAR一同分发，保持现有仅同源图片的CSP策略。更换图片时应同步核对来源和授权并更新本记录。
+登录页左下角画廊使用 [Disintegrating Gallery 公开预览](https://ui.aceternity.com/interactions/disintegrating-gallery) 中的五张 Unsplash 照片。本地 WebP 放在 `src/main/resources/static/assets/auth/gallery/`，页面直接从本站加载。
+
+| 本地文件 | 原图 |
+| --- | --- |
+| `mountain-ridges.webp` | [蓝色山脊](https://images.unsplash.com/photo-1778431193202-b0e2345eeab9) |
+| `turquoise-surf.webp` | [碧蓝海浪](https://images.unsplash.com/photo-1505144808419-1957a94ca61e) |
+| `sunset-meadow.webp` | [日落草地](https://images.unsplash.com/photo-1470252649378-9c29740c9fa8) |
+| `forest-path.webp` | [林间小径](https://images.unsplash.com/photo-1441974231531-c6227db76b6e) |
+| `aerial-shore.webp` | [海岸俯瞰](https://images.unsplash.com/photo-1505142468610-359e7d316be0) |
+
+[Unsplash License](https://unsplash.com/license)
+
+## 虚拟键盘音效
+
+键盘外观参考 Aceternity UI 的 [Keyboard](https://ui.aceternity.com/components/keyboard)。音效包为 CherryMX Black - ABS keycaps，使用安装说明提供的 [sound.ogg](https://ui.aceternity.com/sounds/sound.ogg) 和 [config.json](https://ui.aceternity.com/sounds/config.json)。两份资源放在 `src/main/resources/static/assets/auth/keyboard/`，前端打开桌面键盘时从本站加载。各键的采样偏移和时长取自配置，按下、松开分别播放片段。

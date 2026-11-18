@@ -1,4 +1,5 @@
 <template>
+<div id="account-notice" class="notice" role="status" hidden></div>
 <div id="account-panel" hidden>
       <button id="back-workbench" class="button secondary compact back-workbench" type="button"><i data-lucide="arrow-left" aria-hidden="true"></i>返回工作台</button>
       <div class="account-heading">

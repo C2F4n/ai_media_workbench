@@ -29,7 +29,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 认证接口入口：校验请求、调用 Service 接口、包装 Result；具体业务实现由 Spring 注入。
+ * 认证接口入口（/api/auth）：获取 CSRF、发送注册验证码、注册、登录、退出当前或全部设备。
+ * 校验请求、调用 AuthService/RegistrationEmailService/SessionService 接口、包装 Result；具体实现由 Spring 注入。
  * 阅读登录流程可依次看：login -> AuthService.authenticate -> LoginSessionManager.start。
  * 会话轮换、身份保存和退出交给安全组件，Controller 不重复实现安全生命周期。
  */

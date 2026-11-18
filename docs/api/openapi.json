@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "AI音视频工作台接口文档",
+    "title": "FrameFlow 接口文档",
     "version": "2.25.0",
     "x-source-policy": "SERVER表示服务端千问；PERSONAL文字供应商由deepseek槽位内的textProvider选择DeepSeek/OpenAI/千问百炼北京/豆包火山方舟北京。旧密文默认DeepSeek，同厂商省略秘密可保留，换厂商必须重填密钥。个人文字共用2并发/35秒，不回退、不付费重试；配置可用不等于余额、模型权限或网络已验证。本地推理超时依部署者LOCAL_AI_TIMEOUT_SECONDS配置，不支持ASR。",
     "x-latest-change": "2.25个人云端方案改用标准Function Calling，本地保留JSON；字幕RAG使用Lucene BM25召回最多96段/32KiB候选后由模型筛选，结果新增retrieval统计，拒绝跨未召回段引用。无新接口、表或迁移。2.24.1公网public环境启用HTTPS、Secure Cookie及可信回环代理；2.24语音模型选择保持兼容。",
@@ -6621,9 +6621,59 @@
           "audioCodec": {
             "type": "string",
             "nullable": true
+          },
+          "bitRate": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true,
+            "description": "容器总平均码率，单位bit/s；旧记录或探测不到时为null。"
+          },
+          "videoBitRate": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true,
+            "description": "首条视频流平均码率，单位bit/s。"
+          },
+          "audioBitRate": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "nullable": true,
+            "description": "首条音频流平均码率，单位bit/s。"
+          },
+          "frameRate": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "nullable": true,
+            "description": "首条视频流平均帧率，单位fps。变帧率素材显示平均值。"
+          },
+          "sampleRate": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true,
+            "description": "首条音频流采样率，单位Hz。"
+          },
+          "channels": {
+            "type": "integer",
+            "minimum": 1,
+            "nullable": true,
+            "description": "首条音频流声道数量。"
+          },
+          "channelLayout": {
+            "type": "string",
+            "nullable": true,
+            "description": "首条音频流声道布局，例如mono、stereo、5.1。"
+          },
+          "pixelFormat": {
+            "type": "string",
+            "nullable": true,
+            "description": "首条视频流像素格式，例如yuv420p或yuv420p10le。"
           }
         },
-        "description": "视频素材保留展示尺寸与视频编码；纯音频结果的width、height、videoCodec均为null。音频结果durationMs表示真实音轨时长，可与源视频总时长不同。"
+        "description": "视频素材保留展示尺寸与视频编码；纯音频结果的width、height、videoCodec及视频扩展字段均为null。音频结果durationMs表示真实音轨时长，可与源视频总时长不同。扩展字段允许缺失或为null以兼容旧记录；读取旧版就绪素材详情时尝试补检，失败保留原有信息。"
       },
       "ResourceError": {
         "type": "object",

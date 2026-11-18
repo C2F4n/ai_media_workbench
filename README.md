@@ -1,4 +1,4 @@
-# AI音视频工作台
+# FrameFlow
 
 Java 21 / Spring Boot 4.0.8 / Gradle Wrapper 9.7.1 / MyBatis / MySQL 8。
 
@@ -219,9 +219,9 @@ Cookie默认只适合本机HTTP联调；HTTPS部署设置COOKIE_SECURE=true。�
 
 注册先获取邮箱验证码，再设置初始密码，不自动登录。登录后可刷新恢复、退出当前/全部设备、修改密码与注销。注销须输入当前密码和用户名；注销后不提供恢复，用户名/已验证邮箱仍保留占用，不能直接重复注册。
 
-登录/注册页不显示工作台顶栏，桌面采用左侧全高影视图片、右侧表单布局，手机上图片收为顶部图片区。三张现代数字拍摄、灯光、剪辑工作台照片存于本站assets/auth，仅在显示登录页时加载，不放宽同源图片CSP。每6秒横向轮播，图片区域不叠加标题、署名、页码或轮播控制按钮，也不进入键盘焦点。鼠标悬停、标签页隐藏或离开登录页时停止自动切换，系统减少动态效果时显示静态图片。照片加载失败用无文字图标占位，不影响认证。原摄影师和授权来源保留于[登录页图片记录](docs/assets/auth-images.md)。
+认证首页使用手机模型、矩阵背景和瓦解画廊。手机框底部可打开登录和注册表单，注册使用邮件验证码。键盘按钮在桌面打开虚拟键盘，触屏设备由浏览器唤起系统键盘。素材来源见[认证首页素材记录](docs/assets/auth-images.md)。
 
-登录/注册页右上角可切换亮色、暗色模式，初次跟随系统外观；手动选择保存于浏览器localStorage的amw-auth-theme，不涉及登录令牌或凭据。存储不可用时仍可切换本页外观。切换不清空表单；工作台导航与配色不受此登录页外观偏好影响。
+认证首页默认全亮，主题滑块从右侧起步。手动拖动后的位置保存在浏览器 localStorage 的 `amw-auth-theme-split`。存储不可用时仍可调整本页外观。
 
 登录/注册共用固定位置的标题与标签栏，下方表单独立滚动，避免注册内容较长时整个区域重新居中跳位。切换时表单按方向滑入、标签下划线平滑移动，保留已填写内容并回到表单顶部；隐藏的表单不参与键盘焦点。快速反向切换会取消旧动画，系统减少动态效果时直接切换。
 
@@ -229,7 +229,7 @@ Cookie默认只适合本机HTTP联调；HTTPS部署设置COOKIE_SECURE=true。�
 
 其他业务确认也使用站内dialog，不再调用window.confirm/alert/prompt：个人凭据保存/切换来源/删除，未保存修改时切换素材或上传新素材，恢复导出/拼接/AI/历史方案，退出未保存的步骤编辑，放弃译文、保存字幕新版本、字幕刷新与烧录，拼接导出，以及删除任务记录/保存方案。共用确认弹窗按提示、警告、删除区分图标与按钮，凭据不显示在弹窗中；确认在进入busy状态和业务请求之前完成，避免异步弹窗被禁用或取消后仍执行。取消、关闭、Escape不改业务状态，重复点击不共享一次批准，账号/素材/工作台上下文变化会让旧批准失效。原有删除素材、结果和注销账号弹窗保留专用表单与校验，统一遮罩、动画、移动端排版和键盘焦点边界。浏览器关闭/刷新页面的beforeunload离站保护受平台限制，保留原生提醒，不以异步dialog替代。
 
-注册、登录和改密表单提供字段级中文提示：用户名格式、新密码6–16个字符/至少3个不同字符/避免常见弱密码、昵称上限和验证码格式。规则未改动，也不强制大小写、数字和符号组合；登录与当前密码仍兼容1–128字符历史密码。失焦或提交校验后，错误显示在对应输入框下并定位首个问题，修正后更新提示；服务端Result.details同样映射到字段。认证失败仍统一显示“用户名或密码不正确”，不泄露账号存在性。注册成功在表单解锁后聚焦登录密码框；密码、验证码和被拒绝值不包含在校验消息中。浏览器离线用例为auth-validation.spec.js，不发真实邮件或写开发库。
+注册和登录 API 继续校验用户名、邮箱验证码和密码。新密码须为 6–16 个字符，至少使用 3 个不同字符并避开常见弱密码。账户改密表单会在对应输入框下显示中文提示，提交失败时聚焦首个错误。离线浏览器用例见 `auth-validation.spec.js`。
 
 本机开发库的保留测试账号登录名为`admin`，密码未变，不具有额外管理员权限。它不是代码或迁移自动创建的默认账号，其他环境需单独准备，生产环境不要沿用开发测试账号。
 
@@ -260,7 +260,7 @@ $env:LOCAL_SMTP_TEST_ONLY = 'true'
 node tests/mailbox-fixture.cjs
 ```
 
-该进程仅监听127.0.0.1:2526（SMTP）和127.0.0.1:8026（测试邮件API），不会转发真实邮件，不能公开端口或部署到生产。另一个终端启动测试后端：`REGISTRATION_MAIL_ENABLED=true`、`SMTP_HOST=127.0.0.1`、`SMTP_PORT=2526`、`SMTP_FROM=workbench@example.com`、`SMTP_AUTH=false`、`SMTP_SSL_ENABLED=false`、`SMTP_STARTTLS_ENABLED=false`。仅测试时可将`APP_AUTH_REGISTRATION_ATTEMPTS`、`APP_AUTH_LOGIN_ATTEMPTS`设为1000以避免多个回归账号共用本机IP触发默认限额。随后在frontend目录设置`TEST_MAILBOX_URL=http://127.0.0.1:8026`并运行`npm test -- auth.spec.js`。测试结束后关闭测试收件箱，清除这些测试环境变量并恢复真实邮件设置；不要把本地收件箱作为注册验证的生产替代。无邮件配置时运行`npm test -- registration-closed.spec.js`检查注册关闭与登录可用状态。
+该进程仅监听127.0.0.1:2526（SMTP）和127.0.0.1:8026（测试邮件API），不会转发真实邮件，不能公开端口或部署到生产。另一个终端启动测试后端：`REGISTRATION_MAIL_ENABLED=true`、`SMTP_HOST=127.0.0.1`、`SMTP_PORT=2526`、`SMTP_FROM=workbench@example.com`、`SMTP_AUTH=false`、`SMTP_SSL_ENABLED=false`、`SMTP_STARTTLS_ENABLED=false`。仅测试时可将`APP_AUTH_REGISTRATION_ATTEMPTS`、`APP_AUTH_LOGIN_ATTEMPTS`设为1000以避免多个回归账号共用本机IP触发默认限额。随后在frontend目录设置`TEST_MAILBOX_URL=http://127.0.0.1:8026`并运行`npm test -- auth.spec.js`。测试结束后关闭测试收件箱，清除这些测试环境变量并恢复真实邮件设置；不要把本地收件箱作为注册验证的生产替代。无邮件配置时运行`npm test -- registration-closed.spec.js`验证注册接口的关闭状态。
 
 在相同测试配置下运行`npm test -- workbench.spec.js`可验证视频工作台；该测试需要ffmpeg在PATH中，并会生成临时视频。桌面和手机截图保存在frontend/test-results（不提交）。如未安装浏览器，运行npx playwright install chromium；也可通过PLAYWRIGHT_EXECUTABLE_PATH指定已有浏览器。默认测试地址8088，可用APP_BASE_URL修改。测试会在实际后端创建带随机ui_前缀的账号并注销；注销记录与用户名/邮箱占用保留，密码哈希已清除。不要将端到端测试指向生产服务。
 
